@@ -3472,9 +3472,21 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         env: claudeEnvironment,
         ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
-        ...(mcpSession
-          ? {
-              mcpServers: {
+        mcpServers: {
+          // Chrome DevTools MCP — lets Claude drive a real Chrome: navigate,
+          // click, fill forms, read the DOM/console, take snapshots, and run
+          // performance/Lighthouse traces. A dedicated persistent Chrome is
+          // launched lazily on the first browser tool call (so idle sessions
+          // pay nothing). To drive your own logged-in Chrome instead, start
+          // Chrome with --remote-debugging-port=9222 and append
+          // "--browser-url=http://127.0.0.1:9222" to the args below.
+          "chrome-devtools": {
+            type: "stdio",
+            command: "npx",
+            args: ["-y", "chrome-devtools-mcp@latest"],
+          },
+          ...(mcpSession
+            ? {
                 "t3-code": {
                   type: "http",
                   url: mcpSession.endpoint,
@@ -3482,9 +3494,9 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                     Authorization: mcpSession.authorizationHeader,
                   },
                 },
-              },
-            }
-          : {}),
+              }
+            : {}),
+        },
       };
 
       yield* Effect.annotateCurrentSpan({
