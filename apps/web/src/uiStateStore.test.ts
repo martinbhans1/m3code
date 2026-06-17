@@ -12,6 +12,7 @@ import {
   reorderProjects,
   setDefaultAdvertisedEndpointKey,
   setProjectExpanded,
+  setThreadPinned,
   setThreadChangedFilesExpanded,
   syncProjects,
   syncThreads,
@@ -24,6 +25,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     projectOrder: [],
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
+    pinnedThreadKeys: [],
     defaultAdvertisedEndpointKey: null,
     ...overrides,
   };
@@ -416,32 +418,62 @@ describe("uiStateStore pure functions", () => {
     expect(next.threadChangedFilesExpandedById).toEqual({});
   });
 
-  it("setThreadChangedFilesExpanded stores collapsed turns per thread", () => {
+  it("setThreadChangedFilesExpanded stores expanded turns per thread", () => {
     const thread1 = ThreadId.make("thread-1");
     const initialState = makeUiState();
 
-    const next = setThreadChangedFilesExpanded(initialState, thread1, "turn-1", false);
+    const next = setThreadChangedFilesExpanded(initialState, thread1, "turn-1", true);
 
     expect(next.threadChangedFilesExpandedById).toEqual({
       [thread1]: {
-        "turn-1": false,
+        "turn-1": true,
       },
     });
   });
 
-  it("setThreadChangedFilesExpanded removes thread overrides when expanded again", () => {
+  it("setThreadChangedFilesExpanded removes thread overrides when collapsed again", () => {
     const thread1 = ThreadId.make("thread-1");
     const initialState = makeUiState({
       threadChangedFilesExpandedById: {
         [thread1]: {
-          "turn-1": false,
+          "turn-1": true,
         },
       },
     });
 
-    const next = setThreadChangedFilesExpanded(initialState, thread1, "turn-1", true);
+    const next = setThreadChangedFilesExpanded(initialState, thread1, "turn-1", false);
 
     expect(next.threadChangedFilesExpandedById).toEqual({});
+  });
+
+  it("setThreadPinned stores and removes pinned thread keys", () => {
+    const initialState = makeUiState();
+
+    const pinned = setThreadPinned(initialState, "env:thread-1", true);
+    expect(pinned.pinnedThreadKeys).toEqual(["env:thread-1"]);
+
+    const unpinned = setThreadPinned(pinned, "env:thread-1", false);
+    expect(unpinned.pinnedThreadKeys).toEqual([]);
+  });
+
+  it("syncThreads preserves pins for temporarily missing threads", () => {
+    const initialState = makeUiState({
+      pinnedThreadKeys: ["env:thread-1", "env:thread-2"],
+    });
+
+    const next = syncThreads(initialState, [{ key: "env:thread-2" }]);
+
+    expect(next.pinnedThreadKeys).toEqual(["env:thread-1", "env:thread-2"]);
+  });
+
+  it("clearThreadUi removes pins for deleted threads", () => {
+    const initialState = makeUiState({
+      pinnedThreadKeys: ["env:thread-1", "env:thread-2"],
+    });
+
+    const next = clearThreadUi(initialState, "env:thread-1");
+
+    expect(next.pinnedThreadKeys).toEqual(["env:thread-2"]);
   });
 });
 
