@@ -61,8 +61,8 @@ import {
 import { Button } from "../ui/button";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
-import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
+import { ChangedFilesTree } from "./ChangedFilesTree";
 import { MessageCopyButton } from "./MessageCopyButton";
 import {
   computeStableMessagesTimelineRows,
@@ -89,7 +89,6 @@ import {
   type ParsedPreviewAnnotation,
 } from "~/lib/previewAnnotation";
 import { cn } from "~/lib/utils";
-import { useUiStateStore } from "~/uiStateStore";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatShortTimestamp } from "../../timestampFormat";
 
@@ -350,6 +349,65 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   // Stable renderItem — no closure deps. Row components read shared state
   // from TimelineRowCtx, which propagates through LegendList's memo.
+  const userPromptRows = useMemo(
+    () =>
+      rows.flatMap((row, index) =>
+        row.kind === "message" && row.message.role === "user" ? [{ row, index }] : [],
+      ),
+    [rows],
+  );
+  const latestUserPromptId = userPromptRows.at(-1)?.row.message.id ?? null;
+  const [selectedUserPromptOffset, setSelectedUserPromptOffset] = useState<number | null>(null);
+  useEffect(() => {
+    setSelectedUserPromptOffset(null);
+  }, [latestUserPromptId]);
+  const selectedUserPrompt =
+    userPromptRows.length > 0
+      ? userPromptRows[selectedUserPromptOffset ?? userPromptRows.length - 1]
+      : undefined;
+  const selectedUserPromptIndex =
+    selectedUserPromptOffset ?? Math.max(0, userPromptRows.length - 1);
+  const latestChangedFilesSummary = useMemo(() => {
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const row = rows[index];
+      if (
+        row?.kind === "message" &&
+        row.assistantTurnDiffSummary &&
+        row.assistantTurnDiffSummary.files.length > 0
+      ) {
+        return row.assistantTurnDiffSummary;
+      }
+    }
+    return null;
+  }, [rows]);
+  // The changed-files indicator now lives in its own collapsible mini-panel in
+  // the right gutter, so the top strip is only for the user-prompt navigator.
+  const showContextStrip = Boolean(selectedUserPrompt);
+
+  const scrollToTimelineRow = useCallback(
+    (index: number) => {
+      void listRef.current?.scrollToIndex?.({
+        index,
+        animated: true,
+        viewPosition: 0.12,
+        viewOffset: 12,
+      });
+    },
+    [listRef],
+  );
+
+  const selectUserPrompt = useCallback(
+    (offset: number) => {
+      const nextOffset = Math.min(Math.max(offset, 0), Math.max(0, userPromptRows.length - 1));
+      setSelectedUserPromptOffset(nextOffset);
+      const target = userPromptRows[nextOffset];
+      if (target) {
+        scrollToTimelineRow(target.index);
+      }
+    },
+    [scrollToTimelineRow, userPromptRows],
+  );
+
   const renderItem = useCallback(
     ({ item }: { item: MessagesTimelineRow }) => (
       <div className="mx-auto w-full min-w-0 max-w-3xl overflow-x-clip" data-timeline-root="true">
@@ -372,21 +430,45 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   return (
     <TimelineRowCtx value={sharedState}>
       <TimelineRowActivityCtx value={activityState}>
-        <LegendList<MessagesTimelineRow>
-          ref={listRef}
-          data={rows}
-          keyExtractor={keyExtractor}
-          renderItem={renderItem}
-          estimatedItemSize={90}
-          initialScrollAtEnd
-          maintainScrollAtEnd={!foldToggleSettling}
-          maintainScrollAtEndThreshold={0.1}
-          maintainVisibleContentPosition
-          onScroll={handleScroll}
-          className="scrollbar-gutter-both h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
-          ListHeaderComponent={TIMELINE_LIST_HEADER}
-          ListFooterComponent={TIMELINE_LIST_FOOTER}
-        />
+        <div className="relative h-full min-h-0">
+          {showContextStrip ? (
+            <ConversationContextStrip
+              selectedUserPrompt={selectedUserPrompt}
+              selectedUserPromptIndex={selectedUserPromptIndex}
+              userPromptCount={userPromptRows.length}
+              onSelectUserPrompt={selectUserPrompt}
+              onJumpToSelectedUserPrompt={() => {
+                if (selectedUserPrompt) {
+                  scrollToTimelineRow(selectedUserPrompt.index);
+                }
+              }}
+            />
+          ) : null}
+          {latestChangedFilesSummary ? (
+            <ChangedFilesMiniPanel
+              summary={latestChangedFilesSummary}
+              resolvedTheme={resolvedTheme}
+              onOpenTurnDiff={onOpenTurnDiff}
+            />
+          ) : null}
+          <LegendList<MessagesTimelineRow>
+            ref={listRef}
+            data={rows}
+            keyExtractor={keyExtractor}
+            renderItem={renderItem}
+            estimatedItemSize={90}
+            initialScrollAtEnd
+            maintainScrollAtEnd={!foldToggleSettling}
+            maintainScrollAtEndThreshold={0.1}
+            maintainVisibleContentPosition
+            onScroll={handleScroll}
+            className="scrollbar-gutter-both h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
+            ListHeaderComponent={
+              showContextStrip ? <div className="h-[4.75rem] sm:h-16" /> : TIMELINE_LIST_HEADER
+            }
+            ListFooterComponent={TIMELINE_LIST_FOOTER}
+          />
+        </div>
       </TimelineRowActivityCtx>
     </TimelineRowCtx>
   );
@@ -399,6 +481,171 @@ function keyExtractor(item: MessagesTimelineRow) {
 // ---------------------------------------------------------------------------
 // TimelineRowContent — the actual row component
 // ---------------------------------------------------------------------------
+
+const ConversationContextStrip = memo(function ConversationContextStrip(props: {
+  selectedUserPrompt:
+    | { row: Extract<MessagesTimelineRow, { kind: "message" }>; index: number }
+    | undefined;
+  selectedUserPromptIndex: number;
+  userPromptCount: number;
+  onSelectUserPrompt: (offset: number) => void;
+  onJumpToSelectedUserPrompt: () => void;
+}) {
+  const {
+    onJumpToSelectedUserPrompt,
+    onSelectUserPrompt,
+    selectedUserPrompt,
+    selectedUserPromptIndex,
+    userPromptCount,
+  } = props;
+  const visiblePromptText = selectedUserPrompt
+    ? summarizeUserPromptForContextStrip(selectedUserPrompt.row.message.text)
+    : "";
+  const promptLabel = visiblePromptText || "Empty prompt";
+
+  return (
+    <div className="pointer-events-none absolute inset-x-3 top-2 z-20 mx-auto flex max-w-3xl items-center gap-2 sm:inset-x-5">
+      {selectedUserPrompt ? (
+        <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-border/70 bg-background/92 px-2 py-1.5 shadow-sm backdrop-blur">
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            disabled={selectedUserPromptIndex <= 0}
+            aria-label="Previous prompt"
+            onClick={() => onSelectUserPrompt(selectedUserPromptIndex - 1)}
+          >
+            <ChevronUpIcon className="size-3.5" />
+          </Button>
+          <button
+            type="button"
+            className="min-w-0 flex-1 truncate text-left text-xs text-foreground/82 hover:text-foreground"
+            onClick={onJumpToSelectedUserPrompt}
+            title={promptLabel}
+          >
+            <span className="mr-1 text-muted-foreground/60">You:</span>
+            {promptLabel}
+          </button>
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            disabled={selectedUserPromptIndex >= userPromptCount - 1}
+            aria-label="Next prompt"
+            onClick={() => onSelectUserPrompt(selectedUserPromptIndex + 1)}
+          >
+            <ChevronDownIcon className="size-3.5" />
+          </Button>
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
+/**
+ * Collapsible "Changed files" indicator docked in the right gutter of the chat.
+ * Minimized by default to a small chip; expands in place into a scrollable file
+ * tree. Clicking a file (or "View diff") opens the full diff in the right panel.
+ */
+const ChangedFilesMiniPanel = memo(function ChangedFilesMiniPanel(props: {
+  summary: TurnDiffSummary;
+  resolvedTheme: "light" | "dark";
+  onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
+}) {
+  const { summary, resolvedTheme, onOpenTurnDiff } = props;
+  const [expanded, setExpanded] = useState(false);
+  const [allDirectoriesExpanded, setAllDirectoriesExpanded] = useState(false);
+  const diffStats = summarizeTurnDiffStats(summary.files);
+
+  return (
+    <div className="pointer-events-none absolute right-3 top-2 z-20 flex max-w-[min(20rem,calc(100%-1.5rem))] flex-col items-end sm:right-5">
+      {expanded ? (
+        <div className="pointer-events-auto flex max-h-[min(60vh,32rem)] w-72 flex-col overflow-hidden rounded-lg border border-border/70 bg-background/95 shadow-md backdrop-blur">
+          <div className="flex items-center justify-between gap-2 border-b border-border/60 px-2.5 py-1.5">
+            <p className="flex min-w-0 items-center gap-1 text-xs font-medium text-foreground">
+              <span className="truncate">{summary.files.length} changed files</span>
+              {hasNonZeroStat(diffStats) ? (
+                <DiffStatLabel
+                  additions={diffStats.additions}
+                  deletions={diffStats.deletions}
+                  layout="inline"
+                />
+              ) : null}
+            </p>
+            <div className="flex shrink-0 items-center gap-0.5">
+              <Button
+                type="button"
+                size="xs"
+                variant="ghost"
+                onClick={() => setAllDirectoriesExpanded((value) => !value)}
+              >
+                {allDirectoriesExpanded ? "Collapse all" : "Expand all"}
+              </Button>
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="ghost"
+                aria-label="View full diff"
+                onClick={() => onOpenTurnDiff(summary.turnId, summary.files[0]?.path)}
+              >
+                <EyeIcon className="size-3.5" />
+              </Button>
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="ghost"
+                aria-label="Minimize changed files"
+                onClick={() => setExpanded(false)}
+              >
+                <MinusIcon className="size-3.5" />
+              </Button>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1.5">
+            <ChangedFilesTree
+              turnId={summary.turnId}
+              files={summary.files}
+              allDirectoriesExpanded={allDirectoriesExpanded}
+              resolvedTheme={resolvedTheme}
+              onOpenTurnDiff={onOpenTurnDiff}
+            />
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          className="pointer-events-auto flex shrink-0 items-center gap-1.5 rounded-lg border border-border/70 bg-background/92 px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur hover:text-foreground"
+          onClick={() => setExpanded(true)}
+          title="Show changed files"
+        >
+          <span>Changed files ({summary.files.length})</span>
+          {hasNonZeroStat(diffStats) ? (
+            <DiffStatLabel additions={diffStats.additions} deletions={diffStats.deletions} />
+          ) : null}
+          <ChevronDownIcon className="size-3.5 opacity-70" />
+        </button>
+      )}
+    </div>
+  );
+});
+
+function summarizeUserPromptForContextStrip(prompt: string): string {
+  const visibleText = deriveDisplayedUserMessageState(prompt).visibleText.trim();
+  const reviewCommentSegments = parseReviewCommentMessageSegments(visibleText);
+  if (!reviewCommentSegments.some((segment) => segment.kind === "review-comment")) {
+    return visibleText;
+  }
+
+  return reviewCommentSegments
+    .flatMap((segment) => {
+      if (segment.kind === "text") {
+        const text = segment.text.trim();
+        return text.length > 0 ? [text] : [];
+      }
+      return [`Review comment: ${segment.comment.filePath} ${segment.comment.rangeLabel}`];
+    })
+    .join(" ");
+}
 
 type TimelineEntry = ReturnType<typeof deriveTimelineEntries>[number];
 type TimelineMessage = Extract<TimelineEntry, { kind: "message" }>["message"];
@@ -592,12 +839,6 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           threadRef={ctx.threadRef ?? undefined}
           isStreaming={Boolean(row.message.streaming)}
           skills={ctx.skills}
-        />
-        <AssistantChangedFilesSection
-          turnSummary={row.assistantTurnDiffSummary}
-          routeThreadKey={ctx.routeThreadKey}
-          resolvedTheme={ctx.resolvedTheme}
-          onOpenTurnDiff={ctx.onOpenTurnDiff}
         />
         {row.showAssistantMeta ? (
           <div className="mt-1.5 flex items-center gap-2 text-xs tabular-nums opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/assistant:opacity-100">
@@ -833,100 +1074,6 @@ function findNearestVerticalScroller(element: HTMLElement): HTMLElement | null {
     parent = parent.parentElement;
   }
   return null;
-}
-
-/** Subscribes directly to the UI state store for expand/collapse state,
- *  so toggling re-renders only this component — not the entire list. */
-const AssistantChangedFilesSection = memo(function AssistantChangedFilesSection({
-  turnSummary,
-  routeThreadKey,
-  resolvedTheme,
-  onOpenTurnDiff,
-}: {
-  turnSummary: TurnDiffSummary | undefined;
-  routeThreadKey: string;
-  resolvedTheme: "light" | "dark";
-  onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
-}) {
-  if (!turnSummary) return null;
-  const checkpointFiles = turnSummary.files;
-  if (checkpointFiles.length === 0) return null;
-
-  return (
-    <AssistantChangedFilesSectionInner
-      turnSummary={turnSummary}
-      checkpointFiles={checkpointFiles}
-      routeThreadKey={routeThreadKey}
-      resolvedTheme={resolvedTheme}
-      onOpenTurnDiff={onOpenTurnDiff}
-    />
-  );
-});
-
-/** Inner component that only mounts when there are actual changed files,
- *  so the store subscription is unconditional (no hooks after early return). */
-function AssistantChangedFilesSectionInner({
-  turnSummary,
-  checkpointFiles,
-  routeThreadKey,
-  resolvedTheme,
-  onOpenTurnDiff,
-}: {
-  turnSummary: TurnDiffSummary;
-  checkpointFiles: TurnDiffSummary["files"];
-  routeThreadKey: string;
-  resolvedTheme: "light" | "dark";
-  onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
-}) {
-  const allDirectoriesExpanded = useUiStateStore(
-    (store) => store.threadChangedFilesExpandedById[routeThreadKey]?.[turnSummary.turnId] ?? true,
-  );
-  const setExpanded = useUiStateStore((store) => store.setThreadChangedFilesExpanded);
-  const summaryStat = summarizeTurnDiffStats(checkpointFiles);
-  const changedFileCountLabel = String(checkpointFiles.length);
-
-  return (
-    <div className="mt-2 rounded-lg border border-border/80 bg-card/45 p-2.5">
-      <div className="sticky top-2 z-10 mb-1.5 flex items-center justify-between gap-2 bg-[color-mix(in_srgb,var(--card)_45%,var(--background))] before:absolute before:inset-x-0 before:-top-2 before:h-2 before:bg-[color-mix(in_srgb,var(--card)_45%,var(--background))] before:content-['']">
-        <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/65">
-          <span>Changed files ({changedFileCountLabel})</span>
-          {hasNonZeroStat(summaryStat) && (
-            <>
-              <span className="mx-1">•</span>
-              <DiffStatLabel additions={summaryStat.additions} deletions={summaryStat.deletions} />
-            </>
-          )}
-        </p>
-        <div className="flex items-center gap-1.5">
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            data-scroll-anchor-ignore
-            onClick={() => setExpanded(routeThreadKey, turnSummary.turnId, !allDirectoriesExpanded)}
-          >
-            {allDirectoriesExpanded ? "Collapse all" : "Expand all"}
-          </Button>
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            onClick={() => onOpenTurnDiff(turnSummary.turnId, checkpointFiles[0]?.path)}
-          >
-            View diff
-          </Button>
-        </div>
-      </div>
-      <ChangedFilesTree
-        key={`changed-files-tree:${turnSummary.turnId}`}
-        turnId={turnSummary.turnId}
-        files={checkpointFiles}
-        allDirectoriesExpanded={allDirectoriesExpanded}
-        resolvedTheme={resolvedTheme}
-        onOpenTurnDiff={onOpenTurnDiff}
-      />
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------

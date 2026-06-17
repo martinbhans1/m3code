@@ -3060,7 +3060,18 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef) return;
     setMaximizedRightPanelThreadKey(null);
     useRightPanelStore.getState().close(activeThreadRef);
-  }, [activeThreadRef]);
+    // Closing the diff surface must also clear the `diff=1` URL flag. Otherwise
+    // the effect that mirrors the URL into the store re-opens the diff panel on
+    // the next remount/thread-switch/reload — the "pops open by itself" bug.
+    if (diffOpen) {
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId, threadId },
+        replace: true,
+        search: (previous) => ({ ...stripDiffSearchParams(previous), diff: undefined }),
+      });
+    }
+  }, [activeThreadRef, diffOpen, environmentId, navigate, threadId]);
   const activateRightPanelSurface = useCallback(
     (surface: RightPanelSurface) => {
       if (!activeThreadRef) return;
