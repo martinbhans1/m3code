@@ -98,6 +98,7 @@ import {
   type RightPanelSurface,
   useRightPanelStore,
 } from "../rightPanelStore";
+import { usePlanSidebarAutoOpenStore } from "../planSidebarAutoOpenStore";
 import {
   isPreviewSupportedInRuntime,
   selectThreadPreviewState,
@@ -1171,11 +1172,6 @@ function ChatViewContent(props: ChatViewProps) {
   const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
     useState<Record<string, number>>({});
   const shouldUsePlanSidebarSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
-  // Turn keys (turn ids) the user has explicitly closed the Tasks/plan sidebar
-  // for. A Set — not a single value — and intentionally NOT reset on thread
-  // switch, so an explicit close survives navigating between conversations
-  // (fixes the "Tasks panel re-opens when I come back" bug).
-  const planSidebarDismissedTurnsRef = useRef<Set<string>>(new Set());
   // When set, the thread-change reset effect will open the sidebar instead of closing it.
   // Used by "Implement in a new thread" to carry the sidebar-open intent across navigation.
   const planSidebarOpenOnNextThreadRef = useRef(false);
@@ -3040,36 +3036,15 @@ function ChatViewContent(props: ChatViewProps) {
   const toggleInteractionMode = useCallback(() => {
     handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
   }, [handleInteractionModeChange, interactionMode]);
-  const dismissPlanSidebarForCurrentTurn = useCallback(() => {
-    planSidebarDismissedTurnsRef.current.add(
-      activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__",
-    );
-  }, [activePlan?.turnId, sidebarProposedPlan?.turnId]);
-  const undismissPlanSidebarForCurrentTurn = useCallback(() => {
-    planSidebarDismissedTurnsRef.current.delete(
-      activePlan?.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__",
-    );
-  }, [activePlan?.turnId, sidebarProposedPlan?.turnId]);
   const togglePlanSidebar = useCallback(() => {
     if (!activeThreadRef) return;
-    if (planSidebarOpen) {
-      dismissPlanSidebarForCurrentTurn();
-    } else {
-      undismissPlanSidebarForCurrentTurn();
-    }
     useRightPanelStore.getState().toggle(activeThreadRef, "plan");
-  }, [
-    activeThreadRef,
-    dismissPlanSidebarForCurrentTurn,
-    planSidebarOpen,
-    undismissPlanSidebarForCurrentTurn,
-  ]);
+  }, [activeThreadRef]);
   const closePlanSidebar = useCallback(() => {
     if (!activeThreadRef) return;
     setMaximizedRightPanelThreadKey(null);
     useRightPanelStore.getState().close(activeThreadRef);
-    dismissPlanSidebarForCurrentTurn();
-  }, [activeThreadRef, dismissPlanSidebarForCurrentTurn]);
+  }, [activeThreadRef]);
   const closePreviewPanel = useCallback(() => {
     if (!activeThreadRef) return;
     setMaximizedRightPanelThreadKey(null);
@@ -3089,11 +3064,6 @@ function ChatViewContent(props: ChatViewProps) {
   const activateRightPanelSurface = useCallback(
     (surface: RightPanelSurface) => {
       if (!activeThreadRef) return;
-      if (surface.kind === "plan") {
-        undismissPlanSidebarForCurrentTurn();
-      } else if (planSidebarOpen) {
-        dismissPlanSidebarForCurrentTurn();
-      }
       useRightPanelStore.getState().activateSurface(activeThreadRef, surface.id);
       if (surface.kind === "preview" && surface.resourceId) {
         usePreviewStateStore.getState().setActiveTab(activeThreadRef, surface.resourceId);
@@ -3118,17 +3088,7 @@ function ChatViewContent(props: ChatViewProps) {
         });
       }
     },
-    [
-      activeThreadRef,
-      diffOpen,
-      dismissPlanSidebarForCurrentTurn,
-      environmentId,
-      navigate,
-      onDiffPanelOpen,
-      planSidebarOpen,
-      threadId,
-      undismissPlanSidebarForCurrentTurn,
-    ],
+    [activeThreadRef, diffOpen, environmentId, navigate, onDiffPanelOpen, threadId],
   );
   const toggleRightPanel = useCallback(() => {
     if (!activeThreadRef) return;
@@ -3151,9 +3111,6 @@ function ChatViewContent(props: ChatViewProps) {
   const cleanupRightPanelSurfaces = useCallback(
     (surfaces: readonly RightPanelSurface[]) => {
       if (!activeThreadRef) return;
-      if (surfaces.some((surface) => surface.kind === "plan")) {
-        dismissPlanSidebarForCurrentTurn();
-      }
 
       const api = readEnvironmentApi(activeThreadRef.environmentId);
       for (const surface of surfaces) {
@@ -3184,14 +3141,7 @@ function ChatViewContent(props: ChatViewProps) {
         });
       }
     },
-    [
-      activeThreadRef,
-      diffOpen,
-      dismissPlanSidebarForCurrentTurn,
-      environmentId,
-      navigate,
-      threadId,
-    ],
+    [activeThreadRef, diffOpen, environmentId, navigate, threadId],
   );
   const syncActivePreviewSurface = useCallback(() => {
     if (!activeThreadRef) return;
@@ -3376,17 +3326,23 @@ function ChatViewContent(props: ChatViewProps) {
     if (!autoOpenPlanSidebar) return;
     if (!activePlan) return;
     if (planSidebarOpen) return;
+    if (!activeThreadRef || !activeThreadKey) return;
     const latestTurnId = activeLatestTurn?.turnId ?? null;
     if (latestTurnId && activePlan.turnId !== latestTurnId) return;
     const turnKey = activePlan.turnId ?? sidebarProposedPlan?.turnId ?? "__dismissed__";
-    if (planSidebarDismissedTurnsRef.current.has(turnKey)) return;
-    if (activeThreadRef) {
-      useRightPanelStore.getState().open(activeThreadRef, "plan");
-    }
+    // Auto-open each plan/turn at most once per thread, persisted across
+    // navigation and reload. After that the panel's open state is the user's
+    // call — closing it (via any control) sticks, because we never re-open the
+    // same turn. A genuinely new turn re-triggers this one-time auto-open.
+    const autoOpenStore = usePlanSidebarAutoOpenStore.getState();
+    if (autoOpenStore.openedTurnByThread[activeThreadKey] === turnKey) return;
+    autoOpenStore.markAutoOpened(activeThreadKey, turnKey);
+    useRightPanelStore.getState().open(activeThreadRef, "plan");
   }, [
     activePlan,
     activeLatestTurn?.turnId,
     activeThreadRef,
+    activeThreadKey,
     autoOpenPlanSidebar,
     planSidebarOpen,
     sidebarProposedPlan?.turnId,
