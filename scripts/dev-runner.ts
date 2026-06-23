@@ -145,6 +145,7 @@ interface CreateDevRunnerEnvInput {
   readonly host: string | undefined;
   readonly port: number | undefined;
   readonly devUrl: URL | undefined;
+  readonly usePrimaryState?: boolean | undefined;
 }
 
 export function createDevRunnerEnv({
@@ -159,6 +160,7 @@ export function createDevRunnerEnv({
   host,
   port,
   devUrl,
+  usePrimaryState,
 }: CreateDevRunnerEnvInput): Effect.Effect<NodeJS.ProcessEnv, never, Path.Path> {
   return Effect.gen(function* () {
     const serverPort = port ?? BASE_SERVER_PORT + serverOffset;
@@ -208,6 +210,12 @@ export function createDevRunnerEnv({
       output.T3CODE_LOG_WS_EVENTS = logWebSocketEvents ? "1" : "0";
     } else {
       delete output.T3CODE_LOG_WS_EVENTS;
+    }
+
+    if (usePrimaryState) {
+      output.T3CODE_DEV_USE_PRIMARY_STATE = "1";
+    } else {
+      delete output.T3CODE_DEV_USE_PRIMARY_STATE;
     }
 
     if (mode === "dev") {
@@ -388,6 +396,7 @@ interface DevRunnerCliInput {
   readonly host: string | undefined;
   readonly port: number | undefined;
   readonly devUrl: URL | undefined;
+  readonly usePrimaryState: boolean | undefined;
   readonly dryRun: boolean;
   readonly runArgs: ReadonlyArray<string>;
 }
@@ -433,6 +442,7 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
       host: input.host,
       port: input.port,
       devUrl: input.devUrl,
+      usePrimaryState: input.usePrimaryState,
     });
 
     const selectionSuffix =
@@ -521,6 +531,12 @@ const devRunnerCli = Command.make("dev-runner", {
     Flag.withSchema(Schema.URLFromString),
     Flag.withDescription("Web dev URL override (forwards to VITE_DEV_SERVER_URL)."),
     Flag.withFallbackConfig(optionalUrlConfig("VITE_DEV_SERVER_URL")),
+  ),
+  usePrimaryState: Flag.boolean("use-primary-state").pipe(
+    Flag.withDescription(
+      "Point dev mode at the primary (userdata) state store instead of the dev sandbox, so the dev window sees the installed app's conversations/settings (sets T3CODE_DEV_USE_PRIMARY_STATE). Run only while the installed app is closed.",
+    ),
+    Flag.withFallbackConfig(optionalBooleanConfig("T3CODE_DEV_USE_PRIMARY_STATE")),
   ),
   dryRun: Flag.boolean("dry-run").pipe(
     Flag.withDescription("Resolve mode/ports/env and print, but do not spawn Vite+."),

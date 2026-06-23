@@ -160,7 +160,13 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     appVersion: input.appVersion,
   });
   const displayName = branding.displayName;
-  const stateDir = path.join(baseDir, isDevelopment ? "dev" : "userdata");
+  // Dev mode normally uses an isolated `dev` state store so it can't touch the
+  // packaged app's data. Setting T3CODE_DEV_USE_PRIMARY_STATE points dev mode at
+  // the primary `userdata` store instead, so a hot-reloading dev window sees the
+  // same conversations/settings as the installed app. Only safe to run when the
+  // installed app is closed — both processes opening one state.sqlite conflict.
+  const useDevStateStore = isDevelopment && !config.devUsePrimaryState;
+  const stateDir = path.join(baseDir, useDevStateStore ? "dev" : "userdata");
   const userDataDirName = isDevelopment ? "m3code-dev" : "m3code";
   const legacyUserDataDirName = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
   const resourcesPath = input.resourcesPath;
