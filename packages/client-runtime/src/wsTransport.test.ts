@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { createWsRpcProtocolLayer } from "./wsRpcProtocol.ts";
 import { WsTransport } from "./wsTransport.ts";
 
 type WsEventType = "open" | "message" | "close" | "error";
@@ -359,6 +360,65 @@ describe("WsTransport", () => {
       keybindings: [],
       issues: [],
     });
+
+    await transport.dispose();
+  });
+
+  it("rebuilds the session when the socket silently reconnects within a session", async () => {
+    // Use a fast backoff so Effect's transport-level retry constructs the second
+    // socket promptly instead of waiting on the 1s default.
+    const transport = createTransport("ws://localhost:3020", undefined, {
+      createProtocolLayer: (url, handlers) =>
+        createWsRpcProtocolLayer(url, handlers, {
+          backoff: { initialDelayMs: 10, backoffFactor: 1, maxDelayMs: 10, maxRetries: 7 },
+        }),
+    });
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+
+    // First open: the initial connection. Must not trigger a rebuild.
+    const firstSocket = getSocket();
+    firstSocket.open();
+
+    // A transient close makes Effect retry *within the same session*, producing
+    // a second socket — the silent reconnect that today orphans subscriptions.
+    firstSocket.close(1006, "transient drop");
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(2);
+    });
+
+    // Second open on the same session: this is the signal that should force a
+    // full session rebuild so subscriptions re-establish.
+    const reconnectedSocket = getSocket();
+    reconnectedSocket.open();
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(3);
+    });
+
+    const rebuiltSocket = getSocket();
+    expect(rebuiltSocket).not.toBe(reconnectedSocket);
+    expect(reconnectedSocket.readyState).toBe(MockWebSocket.CLOSED);
+
+    await transport.dispose();
+  });
+
+  it("does not rebuild the session on the initial socket open", async () => {
+    const transport = createTransport("ws://localhost:3020");
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+
+    getSocket().open();
+
+    // Give any errant rebuild a chance to create a second socket.
+    await Effect.runPromise(Effect.sleep(Duration.millis(50)));
+
+    expect(sockets).toHaveLength(1);
 
     await transport.dispose();
   });

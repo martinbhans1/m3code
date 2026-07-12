@@ -17,6 +17,8 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 
 import { ProviderRegistry, type ProviderRegistryShape } from "./Services/ProviderRegistry.ts";
 import * as ProviderMaintenanceRunner from "./providerMaintenanceRunner.ts";
@@ -121,22 +123,35 @@ function mockSpawnerLayer(
   handler: (
     command: string,
     args: ReadonlyArray<string>,
+    shell: boolean | undefined,
   ) => {
     readonly stdout?: string;
     readonly stderr?: string;
     readonly code?: number;
     readonly exitCode?: Effect.Effect<ChildProcessSpawner.ExitCode>;
   },
+  options: {
+    readonly platform?: NodeJS.Platform;
+    readonly resolveExecutable?: () => string | undefined;
+  } = {},
 ) {
-  return Layer.succeed(
+  const spawnerLayer = Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
     ChildProcessSpawner.make((command) => {
       const childProcess = command as unknown as {
         readonly command: string;
         readonly args: ReadonlyArray<string>;
+        readonly options: { readonly shell?: boolean };
       };
-      return Effect.succeed(mockHandle(handler(childProcess.command, childProcess.args)));
+      return Effect.succeed(
+        mockHandle(handler(childProcess.command, childProcess.args, childProcess.options.shell)),
+      );
     }),
+  );
+  return Layer.mergeAll(
+    spawnerLayer,
+    Layer.succeed(HostProcessPlatform, options.platform ?? "linux"),
+    Layer.succeed(SpawnExecutableResolution, options.resolveExecutable ?? (() => undefined)),
   );
 }
 
@@ -319,6 +334,45 @@ describe("providerMaintenanceRunner", () => {
       );
     },
   );
+
+  it.effect("resolves Windows command shims for provider updates", () => {
+    const calls: Array<{
+      command: string;
+      args: ReadonlyArray<string>;
+      shell: boolean | undefined;
+    }> = [];
+    return Effect.gen(function* () {
+      const { registry } = yield* makeRegistry(baseProvider);
+      const runner = yield* makeTestRunner(registry);
+
+      const result = yield* runner.updateProvider(CODEX_DRIVER);
+
+      assert.deepStrictEqual(calls, [
+        {
+          command: '^"C:\\Program^ Files\\nodejs\\npm.cmd^"',
+          args: ['^"install^"', '^"-g^"', '^"@openai/codex@latest^"'],
+          shell: true,
+        },
+      ]);
+      assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          latestVersionHttpClient("0.0.0"),
+          mockSpawnerLayer(
+            (command, args, shell) => {
+              calls.push({ command, args, shell });
+              return { stdout: "updated" };
+            },
+            {
+              platform: "win32",
+              resolveExecutable: () => "C:\\Program Files\\nodejs\\npm.cmd",
+            },
+          ),
+        ),
+      ),
+    );
+  });
 
   it.effect("updates a single provider instance without touching sibling instances", () => {
     const calls: Array<{ command: string; args: ReadonlyArray<string> }> = [];

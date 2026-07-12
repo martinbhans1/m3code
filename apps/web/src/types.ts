@@ -34,7 +34,9 @@ export interface ThreadTerminalGroup {
 }
 
 export interface ChatImageAttachment {
-  type: "image";
+  // `"image"` renders as a thumbnail; `"file"` (PDF, docx, json, …) renders as
+  // a file chip. The name is kept for back-compat across the many references.
+  type: "image" | "file";
   id: string;
   name: string;
   mimeType: string;

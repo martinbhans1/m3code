@@ -119,6 +119,19 @@ export interface LatestProposedPlanState {
   implementationThreadId: ThreadId | null;
 }
 
+export type FollowupStatus = "pending" | "spunOff" | "done" | "dismissed";
+
+export interface FollowupState {
+  id: string;
+  title: string;
+  detail: string | null;
+  rationale: string | null;
+  status: FollowupStatus;
+  turnId: TurnId | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type TimelineEntry =
   | {
       id: string;
@@ -563,6 +576,63 @@ export function deriveActivePlanState(
       : {}),
     steps,
   };
+}
+
+// Follow-ups are stored as thread activities of kind "turn.followup.suggested"
+// (see buildFollowupActivity in contracts). Each create/update appends a new
+// activity carrying the full follow-up in its payload; the latest activity per
+// follow-up id wins. Mirrors deriveActivePlanState's latest-wins approach.
+export function deriveFollowups(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): FollowupState[] {
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const byId = new Map<string, FollowupState>();
+  for (const activity of ordered) {
+    if (activity.kind !== "turn.followup.suggested") {
+      continue;
+    }
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    const raw =
+      payload?.followup && typeof payload.followup === "object"
+        ? (payload.followup as Record<string, unknown>)
+        : null;
+    if (!raw) {
+      continue;
+    }
+    const id = typeof raw.id === "string" ? raw.id : "";
+    const title = typeof raw.title === "string" ? raw.title.trim() : "";
+    if (id.length === 0 || title.length === 0) {
+      continue;
+    }
+    const status: FollowupStatus =
+      raw.status === "spunOff" || raw.status === "done" || raw.status === "dismissed"
+        ? raw.status
+        : "pending";
+    byId.set(id, {
+      id,
+      title,
+      detail: typeof raw.detail === "string" && raw.detail.length > 0 ? raw.detail : null,
+      rationale:
+        typeof raw.rationale === "string" && raw.rationale.length > 0 ? raw.rationale : null,
+      status,
+      turnId: (typeof raw.turnId === "string" ? raw.turnId : null) as TurnId | null,
+      createdAt: typeof raw.createdAt === "string" ? raw.createdAt : activity.createdAt,
+      updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : activity.createdAt,
+    });
+  }
+  return [...byId.values()].toSorted(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+  );
+}
+
+export function derivePendingFollowups(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): FollowupState[] {
+  return deriveFollowups(activities).filter((followup) => followup.status === "pending");
 }
 
 export function findLatestProposedPlan(

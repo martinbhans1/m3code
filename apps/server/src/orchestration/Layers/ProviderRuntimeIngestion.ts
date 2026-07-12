@@ -1,6 +1,7 @@
 import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
+  buildFollowupActivity,
   CommandId,
   MessageId,
   type OrchestrationEvent,
@@ -12,6 +13,7 @@ import {
   type ThreadTokenUsageSnapshot,
   TurnId,
   type OrchestrationCheckpointSummary,
+  type OrchestrationFollowup,
   type OrchestrationProposedPlan,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
@@ -399,6 +401,30 @@ function runtimeEventToActivities(
               : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "turn.followup.suggested": {
+      const followup = {
+        id: event.payload.followupId,
+        turnId: toTurnId(event.turnId) ?? null,
+        title: event.payload.title,
+        detail: event.payload.detail ?? null,
+        rationale: event.payload.rationale ?? null,
+        status: "pending" as const,
+        implementationThreadId: null,
+        createdAt: event.createdAt,
+        updatedAt: event.createdAt,
+      } satisfies OrchestrationFollowup;
+      return [
+        {
+          ...buildFollowupActivity({
+            id: event.eventId,
+            followup,
+            createdAt: event.createdAt,
+          }),
           ...maybeSequence,
         },
       ];

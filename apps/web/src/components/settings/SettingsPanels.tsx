@@ -30,7 +30,17 @@ import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
 import { isElectron } from "../../env";
 import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hostedPairing";
-import { useTheme } from "../../hooks/useTheme";
+import {
+  THEME_DEFINITIONS,
+  isValidEnvironment,
+  isValidTheme,
+  useChromeTint,
+  useEnvironment,
+  useSmoothCaret,
+  useTheme,
+  type Theme,
+} from "../../hooks/useTheme";
+import { SidebarTintControl } from "./SidebarTintControl";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import {
@@ -52,7 +62,15 @@ import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
 import { formatRelativeTime, formatRelativeTimeLabel } from "../../timestampFormat";
 import { Button } from "../ui/button";
 import { DraftInput } from "../ui/draft-input";
-import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import {
+  Select,
+  SelectGroup,
+  SelectGroupLabel,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "../ui/select";
 import { Switch } from "../ui/switch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -80,20 +98,21 @@ import {
 import { ProjectFavicon } from "../ProjectFavicon";
 import { useServerObservability, useServerProviders } from "../../rpc/serverState";
 
-const THEME_OPTIONS = [
+const THEME_GROUPS = [
   {
-    value: "system",
-    label: "System",
-  },
-  {
-    value: "light",
     label: "Light",
+    themes: THEME_DEFINITIONS.filter((definition) => definition.group === "Light"),
   },
   {
-    value: "dark",
     label: "Dark",
+    themes: THEME_DEFINITIONS.filter((definition) => definition.group === "Dark"),
   },
 ] as const;
+
+function themeLabel(value: Theme): string {
+  if (value === "system") return "System";
+  return THEME_DEFINITIONS.find((definition) => definition.id === value)?.label ?? "System";
+}
 
 const TIMESTAMP_FORMAT_LABELS = {
   locale: "System default",
@@ -398,6 +417,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.sidebarThreadPreviewCount !== DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount
         ? ["Visible threads"]
         : []),
+      ...(settings.sidebarThreadShowMoreIncrement !==
+      DEFAULT_UNIFIED_SETTINGS.sidebarThreadShowMoreIncrement
+        ? ["Show more increment"]
+        : []),
       ...(settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap
         ? ["Diff line wrapping"]
         : []),
@@ -440,6 +463,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
       settings.sidebarThreadPreviewCount,
+      settings.sidebarThreadShowMoreIncrement,
       settings.timestampFormat,
       theme,
     ],
@@ -461,6 +485,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
+      sidebarThreadShowMoreIncrement: DEFAULT_UNIFIED_SETTINGS.sidebarThreadShowMoreIncrement,
       autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
@@ -481,6 +506,13 @@ export function useSettingsRestore(onRestored?: () => void) {
 
 export function GeneralSettingsPanel() {
   const { theme, setTheme } = useTheme();
+  const {
+    environment,
+    setEnvironment,
+    definitions: environmentDefinitions,
+  } = useEnvironment();
+  const { chromeTint, setChromeTint } = useChromeTint();
+  const { smoothCaret, setSmoothCaret } = useSmoothCaret();
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const observability = useServerObservability();
@@ -531,24 +563,82 @@ export function GeneralSettingsPanel() {
             <Select
               value={theme}
               onValueChange={(value) => {
-                if (value === "system" || value === "light" || value === "dark") {
+                if (isValidTheme(value)) {
                   setTheme(value);
                 }
               }}
             >
               <SelectTrigger className="w-full sm:w-40" aria-label="Theme preference">
+                <SelectValue>{themeLabel(theme)}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="system">
+                  System
+                </SelectItem>
+                {THEME_GROUPS.map((group) => (
+                  <SelectGroup key={group.label}>
+                    <SelectGroupLabel>{group.label}</SelectGroupLabel>
+                    {group.themes.map((definition) => (
+                      <SelectItem hideIndicator key={definition.id} value={definition.id}>
+                        {definition.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+
+        <SettingsRow
+          title="Ambient background"
+          description="How lively the backdrop behind the sidebar and chat is. Works with any theme."
+          control={
+            <Select
+              value={environment}
+              onValueChange={(value) => {
+                if (isValidEnvironment(value)) {
+                  setEnvironment(value);
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-40" aria-label="Ambient background">
                 <SelectValue>
-                  {THEME_OPTIONS.find((option) => option.value === theme)?.label ?? "System"}
+                  {environmentDefinitions.find((definition) => definition.id === environment)
+                    ?.label ?? environment}
                 </SelectValue>
               </SelectTrigger>
               <SelectPopup align="end" alignItemWithTrigger={false}>
-                {THEME_OPTIONS.map((option) => (
-                  <SelectItem hideIndicator key={option.value} value={option.value}>
-                    {option.label}
+                {environmentDefinitions.map((definition) => (
+                  <SelectItem hideIndicator key={definition.id} value={definition.id}>
+                    {definition.label}
                   </SelectItem>
                 ))}
               </SelectPopup>
             </Select>
+          }
+        />
+
+        <SettingsRow
+          title="Sidebar & header tint"
+          description="Tint the sidebar and header (and the ambient glow) toward a hue you pick. Auto follows the theme."
+          control={<SidebarTintControl value={chromeTint} onChange={setChromeTint} />}
+        />
+
+        <SettingsRow
+          title="Smooth caret"
+          description="Animate the chat composer's text cursor so it glides between positions as you type and move."
+          resetAction={
+            smoothCaret ? (
+              <SettingResetButton label="smooth caret" onClick={() => setSmoothCaret(false)} />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={smoothCaret}
+              onCheckedChange={(checked) => setSmoothCaret(Boolean(checked))}
+              aria-label="Smooth caret animation"
+            />
           }
         />
 

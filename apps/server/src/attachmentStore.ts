@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 
 import type { ChatAttachment } from "@t3tools/contracts";
 
@@ -8,7 +8,11 @@ import {
   normalizeAttachmentRelativePath,
   resolveAttachmentRelativePath,
 } from "./attachmentPaths.ts";
-import { inferImageExtension, SAFE_IMAGE_FILE_EXTENSIONS } from "./imageMime.ts";
+import {
+  inferAttachmentFileExtension,
+  inferImageExtension,
+  SAFE_IMAGE_FILE_EXTENSIONS,
+} from "./imageMime.ts";
 
 const ATTACHMENT_FILENAME_EXTENSIONS = [...SAFE_IMAGE_FILE_EXTENSIONS, ".bin"];
 const ATTACHMENT_ID_THREAD_SEGMENT_MAX_CHARS = 80;
@@ -63,6 +67,13 @@ export function attachmentRelativePath(attachment: ChatAttachment): string {
       });
       return `${attachment.id}${extension}`;
     }
+    case "file": {
+      const extension = inferAttachmentFileExtension({
+        mimeType: attachment.mimeType,
+        fileName: attachment.name,
+      });
+      return `${attachment.id}${extension}`;
+    }
   }
 }
 
@@ -92,6 +103,25 @@ export function resolveAttachmentPathById(input: {
     if (maybePath && existsSync(maybePath)) {
       return maybePath;
     }
+  }
+  // Generic file attachments keep their original extension (`.pdf`, `.docx`,
+  // `.json`, …), which is not in the fixed list above. Fall back to scanning
+  // the directory for any `<id>.<ext>` entry so those can still be resolved.
+  try {
+    for (const entry of readdirSync(input.attachmentsDir)) {
+      if (parseAttachmentIdFromRelativePath(entry) !== normalizedId) {
+        continue;
+      }
+      const maybePath = resolveAttachmentRelativePath({
+        attachmentsDir: input.attachmentsDir,
+        relativePath: entry,
+      });
+      if (maybePath && existsSync(maybePath)) {
+        return maybePath;
+      }
+    }
+  } catch {
+    // attachmentsDir may not exist yet — treat as "not found".
   }
   return null;
 }

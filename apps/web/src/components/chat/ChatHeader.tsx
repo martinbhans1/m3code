@@ -11,7 +11,6 @@ import GitActionsControl from "../GitActionsControl";
 import { type DraftId } from "~/composerDraftStore";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
-import { SidebarTrigger } from "../ui/sidebar";
 import { OpenInPicker } from "./OpenInPicker";
 import { usePrimaryEnvironmentId } from "../../environments/primary/context";
 import { cn } from "~/lib/utils";
@@ -71,22 +70,31 @@ export const ChatHeader = memo(function ChatHeader({
     activeThreadEnvironmentId,
     primaryEnvironmentId,
   });
+  // Brand-new draft threads have no title yet; show a placeholder so the header
+  // is never blank and always signals which repo you're in.
+  const titleText = activeThreadTitle.trim().length > 0 ? activeThreadTitle : "New thread";
+  const headerLabel = activeProjectName ? `${activeProjectName} / ${titleText}` : titleText;
   return (
     <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
-        <SidebarTrigger className="size-7 shrink-0 md:hidden" />
         <Tooltip>
           <TooltipTrigger
             render={
               <h2
-                aria-label={activeThreadTitle}
+                aria-label={headerLabel}
                 className="min-w-0 flex-1 truncate text-sm font-medium text-foreground"
               >
-                {activeThreadTitle}
+                {activeProjectName ? (
+                  <span className="font-normal text-muted-foreground">
+                    {activeProjectName}
+                    <span className="px-1 text-muted-foreground/50">/</span>
+                  </span>
+                ) : null}
+                {titleText}
               </h2>
             }
           />
-          <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
+          <TooltipPopup side="top">{headerLabel}</TooltipPopup>
         </Tooltip>
       </div>
       <div

@@ -142,6 +142,11 @@ export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 const PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS = 14_000_000;
+// Non-image files (PDF, docx, xlsx, json, csv, code, …) can be larger than
+// images. The base64 data URL inflates the byte count by ~4/3, so the char
+// budget tracks the byte budget.
+export const PROVIDER_SEND_TURN_MAX_FILE_BYTES = 20 * 1024 * 1024;
+const PROVIDER_SEND_TURN_MAX_FILE_DATA_URL_CHARS = 28_000_000;
 const CHAT_ATTACHMENT_ID_MAX_CHARS = 128;
 // Correlation id is command id by design in this model.
 export const CorrelationId = CommandId;
@@ -173,9 +178,33 @@ const UploadChatImageAttachment = Schema.Struct({
 });
 export type UploadChatImageAttachment = typeof UploadChatImageAttachment.Type;
 
-export const ChatAttachment = Schema.Union([ChatImageAttachment]);
+// Generic, non-image file attachment (PDF, docx, xlsx, json, csv, code, …).
+// Unlike images these carry an unconstrained MIME type: the server decides how
+// to deliver each one to the model (PDFs as native document blocks; everything
+// else written to disk for the agent to parse with its own tools).
+export const ChatFileAttachment = Schema.Struct({
+  type: Schema.Literal("file"),
+  id: ChatAttachmentId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(150)),
+  sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_FILE_BYTES)),
+});
+export type ChatFileAttachment = typeof ChatFileAttachment.Type;
+
+const UploadChatFileAttachment = Schema.Struct({
+  type: Schema.Literal("file"),
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(255)),
+  mimeType: TrimmedNonEmptyString.check(Schema.isMaxLength(150)),
+  sizeBytes: NonNegativeInt.check(Schema.isLessThanOrEqualTo(PROVIDER_SEND_TURN_MAX_FILE_BYTES)),
+  dataUrl: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_FILE_DATA_URL_CHARS),
+  ),
+});
+export type UploadChatFileAttachment = typeof UploadChatFileAttachment.Type;
+
+export const ChatAttachment = Schema.Union([ChatImageAttachment, ChatFileAttachment]);
 export type ChatAttachment = typeof ChatAttachment.Type;
-const UploadChatAttachment = Schema.Union([UploadChatImageAttachment]);
+const UploadChatAttachment = Schema.Union([UploadChatImageAttachment, UploadChatFileAttachment]);
 export type UploadChatAttachment = typeof UploadChatAttachment.Type;
 
 export const ProjectScriptIcon = Schema.Literals([
@@ -256,6 +285,58 @@ const SourceProposedPlanReference = Schema.Struct({
   threadId: ThreadId,
   planId: OrchestrationProposedPlanId,
 });
+
+export const OrchestrationFollowupId = TrimmedNonEmptyString;
+export type OrchestrationFollowupId = typeof OrchestrationFollowupId.Type;
+
+export const OrchestrationFollowupStatus = Schema.Literals([
+  "pending",
+  "spunOff",
+  "done",
+  "dismissed",
+]);
+export type OrchestrationFollowupStatus = typeof OrchestrationFollowupStatus.Type;
+
+// A lightweight, agent-suggested follow-up to-do that the user can act on
+// later — either in the current thread or by spinning it off into a brand-new
+// conversation. Modeled on OrchestrationProposedPlan (dual-destiny shape:
+// status + implementationThreadId) so it reuses the same upsert/projection
+// plumbing.
+export const OrchestrationFollowup = Schema.Struct({
+  id: OrchestrationFollowupId,
+  turnId: Schema.NullOr(TurnId),
+  title: TrimmedNonEmptyString,
+  detail: Schema.NullOr(TrimmedNonEmptyString),
+  rationale: Schema.NullOr(TrimmedNonEmptyString),
+  status: OrchestrationFollowupStatus,
+  implementationThreadId: Schema.NullOr(ThreadId),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationFollowup = typeof OrchestrationFollowup.Type;
+
+// Follow-ups are stored as thread activities (kind below) rather than as a
+// first-class thread field, so they ride the existing activity persistence,
+// projection, and snapshot plumbing. The full follow-up lives in the activity
+// payload; the latest activity per follow-up id wins (status changes append a
+// new activity). See deriveFollowups on the web side.
+export const FOLLOWUP_ACTIVITY_KIND = "turn.followup.suggested";
+
+export function buildFollowupActivity(input: {
+  readonly id: EventId;
+  readonly followup: OrchestrationFollowup;
+  readonly createdAt: string;
+}): OrchestrationThreadActivity {
+  return {
+    id: input.id,
+    tone: "info",
+    kind: FOLLOWUP_ACTIVITY_KIND,
+    summary: input.followup.title,
+    payload: { followup: input.followup },
+    turnId: input.followup.turnId,
+    createdAt: input.createdAt,
+  };
+}
 
 export const OrchestrationSessionStatus = Schema.Literals([
   "idle",
@@ -656,6 +737,18 @@ const ThreadSessionStopCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+// Create or update a follow-up. Dispatched server-side by provider runtime
+// ingestion (to create a follow-up from the agent's suggest_followup tool) and
+// client-side by the follow-up chip (to mark a follow-up done/dismissed or
+// record the thread a spin-off created).
+const ThreadFollowupUpsertCommand = Schema.Struct({
+  type: Schema.Literal("thread.followup.upsert"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  followup: OrchestrationFollowup,
+  createdAt: IsoDateTime,
+});
+
 const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
@@ -673,6 +766,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
+  ThreadFollowupUpsertCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
@@ -694,6 +788,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
+  ThreadFollowupUpsertCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 

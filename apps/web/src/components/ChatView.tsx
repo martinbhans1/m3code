@@ -53,12 +53,16 @@ import {
   deriveTimelineEntries,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
+  derivePendingFollowups,
+  type FollowupState,
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveWorkLogEntries,
   hasActionableProposedPlan,
   isLatestTurnSettled,
 } from "../session-logic";
+import { FollowupChips } from "./chat/FollowupChip";
+import { buildFollowupPrompt, buildFollowupThreadTitle } from "../followup";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
   buildPendingUserInputAnswers,
@@ -1827,6 +1831,11 @@ function ChatViewContent(props: ChatViewProps) {
   const phase = derivePhase(activeThread?.session ?? null);
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
+  const pendingFollowups = useMemo(
+    () => derivePendingFollowups(threadActivities),
+    [threadActivities],
+  );
+  const [followupBusyId, setFollowupBusyId] = useState<string | null>(null);
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -3847,7 +3856,7 @@ function ChatViewContent(props: ChatViewProps) {
     });
     const turnAttachmentsPromise = Promise.all(
       composerImagesSnapshot.map(async (image) => ({
-        type: "image" as const,
+        type: image.type,
         name: image.name,
         mimeType: image.mimeType,
         sizeBytes: image.sizeBytes,
@@ -3855,7 +3864,7 @@ function ChatViewContent(props: ChatViewProps) {
       })),
     );
     const optimisticAttachments = composerImagesSnapshot.map((image) => ({
-      type: "image" as const,
+      type: image.type,
       id: image.id,
       name: image.name,
       mimeType: image.mimeType,
@@ -4503,6 +4512,246 @@ function ChatViewContent(props: ChatViewProps) {
     composerRef,
   ]);
 
+  // Record a follow-up status change (done / dismissed / spun off). Targets the
+  // source thread by id, so it stays valid even after navigating away.
+  const upsertFollowupStatus = useCallback(
+    async (
+      followup: FollowupState,
+      patch: { status: FollowupState["status"]; implementationThreadId?: ThreadId | null },
+    ) => {
+      const api = readEnvironmentApi(environmentId);
+      if (!api || !activeThread || !isServerThread) {
+        return;
+      }
+      const now = new Date().toISOString();
+      await api.orchestration.dispatchCommand({
+        type: "thread.followup.upsert",
+        commandId: newCommandId(),
+        threadId: activeThread.id,
+        followup: {
+          id: followup.id,
+          turnId: followup.turnId,
+          title: followup.title,
+          detail: followup.detail,
+          rationale: followup.rationale,
+          status: patch.status,
+          implementationThreadId: patch.implementationThreadId ?? null,
+          createdAt: followup.createdAt,
+          updatedAt: now,
+        },
+        createdAt: now,
+      });
+    },
+    [activeThread, environmentId, isServerThread],
+  );
+
+  const onDismissFollowup = useCallback(
+    (followup: FollowupState) => {
+      void upsertFollowupStatus(followup, { status: "dismissed" });
+    },
+    [upsertFollowupStatus],
+  );
+
+  const onDoFollowupNow = useCallback(
+    async (followup: FollowupState) => {
+      const api = readEnvironmentApi(environmentId);
+      if (
+        !api ||
+        !activeThread ||
+        !isServerThread ||
+        isSendBusy ||
+        isConnecting ||
+        activeEnvironmentUnavailable ||
+        sendInFlightRef.current
+      ) {
+        return;
+      }
+      const sendCtx = composerRef.current?.getSendContext();
+      if (!sendCtx) {
+        return;
+      }
+      const createdAt = new Date().toISOString();
+      const outgoingText = formatOutgoingPrompt({
+        provider: sendCtx.selectedProvider,
+        model: sendCtx.selectedModel,
+        models: sendCtx.selectedProviderModels,
+        effort: sendCtx.selectedPromptEffort,
+        text: buildFollowupPrompt(followup),
+      });
+      setFollowupBusyId(followup.id);
+      sendInFlightRef.current = true;
+      beginLocalDispatch({ preparingWorktree: false });
+      try {
+        await api.orchestration.dispatchCommand({
+          type: "thread.turn.start",
+          commandId: newCommandId(),
+          threadId: activeThread.id,
+          message: {
+            messageId: newMessageId(),
+            role: "user",
+            text: outgoingText,
+            attachments: [],
+          },
+          modelSelection: sendCtx.selectedModelSelection,
+          titleSeed: activeThread.title,
+          runtimeMode,
+          interactionMode: "default",
+          createdAt,
+        });
+        await upsertFollowupStatus(followup, { status: "done" });
+      } catch (err) {
+        setThreadError(
+          activeThread.id,
+          err instanceof Error ? err.message : "Failed to start follow-up.",
+        );
+      } finally {
+        sendInFlightRef.current = false;
+        resetLocalDispatch();
+        setFollowupBusyId(null);
+      }
+    },
+    [
+      activeThread,
+      activeEnvironmentUnavailable,
+      beginLocalDispatch,
+      composerRef,
+      environmentId,
+      isConnecting,
+      isSendBusy,
+      isServerThread,
+      resetLocalDispatch,
+      runtimeMode,
+      setThreadError,
+      upsertFollowupStatus,
+    ],
+  );
+
+  const onSpinOffFollowup = useCallback(
+    async (followup: FollowupState) => {
+      const api = readEnvironmentApi(environmentId);
+      if (
+        !api ||
+        !activeThread ||
+        !activeProject ||
+        !isServerThread ||
+        isSendBusy ||
+        isConnecting ||
+        activeEnvironmentUnavailable ||
+        sendInFlightRef.current
+      ) {
+        return;
+      }
+      const sendCtx = composerRef.current?.getSendContext();
+      if (!sendCtx) {
+        return;
+      }
+      const sourceThread = activeThread;
+      const createdAt = new Date().toISOString();
+      const nextThreadId = newThreadId();
+      const outgoingText = formatOutgoingPrompt({
+        provider: sendCtx.selectedProvider,
+        model: sendCtx.selectedModel,
+        models: sendCtx.selectedProviderModels,
+        effort: sendCtx.selectedPromptEffort,
+        text: buildFollowupPrompt(followup),
+      });
+      const nextThreadTitle = truncate(buildFollowupThreadTitle(followup));
+
+      setFollowupBusyId(followup.id);
+      sendInFlightRef.current = true;
+      beginLocalDispatch({ preparingWorktree: false });
+      const finish = () => {
+        sendInFlightRef.current = false;
+        resetLocalDispatch();
+        setFollowupBusyId(null);
+      };
+
+      await api.orchestration
+        .dispatchCommand({
+          type: "thread.create",
+          commandId: newCommandId(),
+          threadId: nextThreadId,
+          projectId: activeProject.id,
+          title: nextThreadTitle,
+          modelSelection: sendCtx.selectedModelSelection,
+          runtimeMode,
+          interactionMode: "default",
+          branch: activeThreadBranch,
+          worktreePath: sourceThread.worktreePath,
+          createdAt,
+        })
+        .then(() =>
+          api.orchestration.dispatchCommand({
+            type: "thread.turn.start",
+            commandId: newCommandId(),
+            threadId: nextThreadId,
+            message: {
+              messageId: newMessageId(),
+              role: "user",
+              text: outgoingText,
+              attachments: [],
+            },
+            modelSelection: sendCtx.selectedModelSelection,
+            titleSeed: nextThreadTitle,
+            runtimeMode,
+            interactionMode: "default",
+            createdAt,
+          }),
+        )
+        .then(() =>
+          upsertFollowupStatus(followup, {
+            status: "spunOff",
+            implementationThreadId: nextThreadId,
+          }),
+        )
+        .then(() =>
+          waitForStartedServerThread(scopeThreadRef(sourceThread.environmentId, nextThreadId)),
+        )
+        .then(() =>
+          navigate({
+            to: "/$environmentId/$threadId",
+            params: { environmentId: sourceThread.environmentId, threadId: nextThreadId },
+          }),
+        )
+        .catch(async (err: unknown) => {
+          await api.orchestration
+            .dispatchCommand({
+              type: "thread.delete",
+              commandId: newCommandId(),
+              threadId: nextThreadId,
+            })
+            .catch(() => undefined);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not start follow-up thread",
+              description:
+                err instanceof Error
+                  ? err.message
+                  : "An error occurred while creating the new thread.",
+            }),
+          );
+        })
+        .then(finish, finish);
+    },
+    [
+      activeProject,
+      activeThreadBranch,
+      activeThread,
+      beginLocalDispatch,
+      activeEnvironmentUnavailable,
+      composerRef,
+      environmentId,
+      isConnecting,
+      isSendBusy,
+      isServerThread,
+      navigate,
+      resetLocalDispatch,
+      runtimeMode,
+      upsertFollowupStatus,
+    ],
+  );
+
   const getModelDisabledReason = useCallback(
     (instanceId: ProviderInstanceId, model: string): string | null => {
       if (!activeThread) {
@@ -4760,7 +5009,7 @@ function ChatViewContent(props: ChatViewProps) {
   ) : null;
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
+    <div className="app-chat-surface relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
       {isElectron && activeThreadRef ? (
         <PreviewAutomationOwner threadRef={activeThreadRef} visible={previewPanelOpen} />
       ) : null}
@@ -4776,7 +5025,6 @@ function ChatViewContent(props: ChatViewProps) {
         <header
           data-chat-header
           className={cn(
-            "border-b border-border",
             isElectron
               ? cn(
                   "workspace-topbar drag-region relative px-3 sm:px-5",
@@ -4810,6 +5058,9 @@ function ChatViewContent(props: ChatViewProps) {
           />
         </header>
 
+        {/* Working surface: bordered + rounded on the top-left only, so the
+            chat area reads as a panel under the borderless header above it. */}
+        <div className="app-chat-panel flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
         {/* Error banner */}
         <ProviderStatusBanner status={activeProviderStatus} />
         <ThreadErrorBanner
@@ -4872,6 +5123,16 @@ function ChatViewContent(props: ChatViewProps) {
               )}
             >
               <div className="relative isolate">
+                {isServerThread && pendingFollowups.length > 0 ? (
+                  <FollowupChips
+                    className="mb-2"
+                    followups={pendingFollowups}
+                    busyId={followupBusyId}
+                    onDoNow={(followup) => void onDoFollowupNow(followup)}
+                    onSpinOff={(followup) => void onSpinOffFollowup(followup)}
+                    onDismiss={onDismissFollowup}
+                  />
+                ) : null}
                 <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
                 <div className="relative z-10">
                   <ChatComposer
@@ -5008,6 +5269,7 @@ function ChatViewContent(props: ChatViewProps) {
             onAddTerminalContext={addTerminalContextToDraft}
           />
         ) : null}
+        </div>
       </div>
 
       {!shouldUsePlanSidebarSheet && rightPanelOpen && activeThreadRef ? (

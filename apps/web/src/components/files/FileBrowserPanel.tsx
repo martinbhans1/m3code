@@ -1,7 +1,7 @@
 import type { EnvironmentId, ProjectEntry } from "@t3tools/contracts";
 import { FileTree, useFileTree } from "@pierre/trees/react";
 import { RefreshCw, Search } from "lucide-react";
-import { useEffect, useMemo, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "react";
 
 import { useTheme } from "~/hooks/useTheme";
 import { cn } from "~/lib/utils";
@@ -14,6 +14,15 @@ interface FileBrowserPanelProps {
   cwd: string;
   projectName: string;
   onOpenFile: (relativePath: string) => void;
+}
+
+export interface FileBrowserPanelHandle {
+  /**
+   * Expand the ancestors of `relativePath` and scroll it into view in the tree.
+   * Works for both directories and files; an empty path is a no-op. Used to make
+   * the preview breadcrumbs navigate back into a parent folder.
+   */
+  revealPath: (relativePath: string) => void;
 }
 
 const TREE_UNSAFE_CSS = `
@@ -32,97 +41,118 @@ function treePath(entry: ProjectEntry): string {
   return entry.kind === "directory" ? `${entry.path}/` : entry.path;
 }
 
-export default function FileBrowserPanel({
-  environmentId,
-  cwd,
-  projectName,
-  onOpenFile,
-}: FileBrowserPanelProps) {
-  const { resolvedTheme } = useTheme();
-  const entriesQuery = useProjectEntriesQuery(environmentId, cwd);
-  const entries = entriesQuery.data?.entries ?? [];
-  const entryKinds = useMemo(
-    () => new Map(entries.map((entry) => [entry.path, entry.kind] as const)),
-    [entries],
-  );
-  const entryKindsRef = useRef<ReadonlyMap<string, ProjectEntry["kind"]>>(entryKinds);
-  const treePaths = useMemo(() => entries.map(treePath), [entries]);
-  const previousTreePathsRef = useRef<readonly string[]>([]);
+const FileBrowserPanel = forwardRef<FileBrowserPanelHandle, FileBrowserPanelProps>(
+  function FileBrowserPanel({ environmentId, cwd, projectName, onOpenFile }, ref) {
+    const { resolvedTheme } = useTheme();
+    const entriesQuery = useProjectEntriesQuery(environmentId, cwd);
+    const entries = entriesQuery.data?.entries ?? [];
+    const entryKinds = useMemo(
+      () => new Map(entries.map((entry) => [entry.path, entry.kind] as const)),
+      [entries],
+    );
+    const entryKindsRef = useRef<ReadonlyMap<string, ProjectEntry["kind"]>>(entryKinds);
+    const treePaths = useMemo(() => entries.map(treePath), [entries]);
+    const previousTreePathsRef = useRef<readonly string[]>([]);
 
-  const { model } = useFileTree({
-    density: "compact",
-    fileTreeSearchMode: "hide-non-matches",
-    flattenEmptyDirectories: true,
-    initialExpansion: 1,
-    icons: T3_PIERRE_ICONS,
-    onSelectionChange: (selectedPaths) => {
-      const selectedPath = selectedPaths.at(-1)?.replace(/\/$/, "");
-      if (selectedPath && entryKindsRef.current.get(selectedPath) === "file") {
-        onOpenFile(selectedPath);
-      }
-    },
-    paths: [],
-    search: true,
-    unsafeCSS: TREE_UNSAFE_CSS,
-  });
+    const { model } = useFileTree({
+      density: "compact",
+      fileTreeSearchMode: "hide-non-matches",
+      flattenEmptyDirectories: true,
+      initialExpansion: 1,
+      icons: T3_PIERRE_ICONS,
+      onSelectionChange: (selectedPaths) => {
+        const selectedPath = selectedPaths.at(-1)?.replace(/\/$/, "");
+        if (selectedPath && entryKindsRef.current.get(selectedPath) === "file") {
+          onOpenFile(selectedPath);
+        }
+      },
+      paths: [],
+      search: true,
+      unsafeCSS: TREE_UNSAFE_CSS,
+    });
 
-  useEffect(() => {
-    if (previousTreePathsRef.current === treePaths) return;
-    entryKindsRef.current = entryKinds;
-    previousTreePathsRef.current = treePaths;
-    model.resetPaths(treePaths);
-  }, [entryKinds, model, treePaths]);
+    useEffect(() => {
+      if (previousTreePathsRef.current === treePaths) return;
+      entryKindsRef.current = entryKinds;
+      previousTreePathsRef.current = treePaths;
+      model.resetPaths(treePaths);
+    }, [entryKinds, model, treePaths]);
 
-  const fileCount = useMemo(
-    () => entries.reduce((count, entry) => count + (entry.kind === "file" ? 1 : 0), 0),
-    [entries],
-  );
+    useImperativeHandle(
+      ref,
+      () => ({
+        revealPath: (relativePath) => {
+          const normalized = relativePath.replace(/\/+$/, "");
+          const segments = normalized.split("/").filter(Boolean);
+          // `scrollToPath` won't reveal a row whose ancestors are collapsed, so
+          // expand each ancestor directory (and the target itself) first.
+          for (let depth = 1; depth <= segments.length; depth += 1) {
+            const item = model.getItem(segments.slice(0, depth).join("/"));
+            if (item && "expand" in item) {
+              item.expand();
+            }
+          }
+          if (normalized) {
+            model.scrollToPath(normalized, { focus: true, offset: "nearest" });
+          }
+        },
+      }),
+      [model],
+    );
 
-  return (
-    <div
-      className="flex min-h-0 flex-1 flex-col bg-background"
-      data-file-browser-panel={`${environmentId}:${cwd}`}
-    >
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border/60 px-3">
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-xs font-medium text-foreground">{projectName}</div>
-          <div className="truncate text-[10px] leading-none text-muted-foreground">
-            {entriesQuery.isPending && entriesQuery.data === null
-              ? "Indexing…"
-              : `${fileCount.toLocaleString()} files`}
-            {entriesQuery.data?.truncated ? " · partial" : ""}
+    const fileCount = useMemo(
+      () => entries.reduce((count, entry) => count + (entry.kind === "file" ? 1 : 0), 0),
+      [entries],
+    );
+
+    return (
+      <div
+        className="flex min-h-0 flex-1 flex-col bg-background"
+        data-file-browser-panel={`${environmentId}:${cwd}`}
+      >
+        <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border/60 px-3">
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-xs font-medium text-foreground">{projectName}</div>
+            <div className="truncate text-[10px] leading-none text-muted-foreground">
+              {entriesQuery.isPending && entriesQuery.data === null
+                ? "Indexing…"
+                : `${fileCount.toLocaleString()} files`}
+              {entriesQuery.data?.truncated ? " · partial" : ""}
+            </div>
           </div>
+          <button
+            type="button"
+            className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+            aria-label="Search workspace files"
+            onClick={() => model.openSearch()}
+          >
+            <Search className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+            aria-label="Refresh workspace files"
+            onClick={entriesQuery.refresh}
+          >
+            <RefreshCw className={cn("size-3.5", entriesQuery.isPending && "animate-spin")} />
+          </button>
         </div>
-        <button
-          type="button"
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-          aria-label="Search workspace files"
-          onClick={() => model.openSearch()}
-        >
-          <Search className="size-3.5" />
-        </button>
-        <button
-          type="button"
-          className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-          aria-label="Refresh workspace files"
-          onClick={entriesQuery.refresh}
-        >
-          <RefreshCw className={cn("size-3.5", entriesQuery.isPending && "animate-spin")} />
-        </button>
+        {entriesQuery.error && entriesQuery.data === null ? (
+          <div className="p-4 text-xs leading-relaxed text-destructive">{entriesQuery.error}</div>
+        ) : (
+          <FileTree
+            model={model}
+            aria-label={`${projectName} files`}
+            className="min-h-0 flex-1 overflow-hidden"
+            style={{
+              colorScheme: resolvedTheme,
+              ["--trees-fg-override" as string]: "var(--foreground)",
+            }}
+          />
+        )}
       </div>
-      {entriesQuery.error && entriesQuery.data === null ? (
-        <div className="p-4 text-xs leading-relaxed text-destructive">{entriesQuery.error}</div>
-      ) : (
-        <FileTree
-          model={model}
-          aria-label={`${projectName} files`}
-          className="min-h-0 flex-1 overflow-hidden"
-          style={{
-            colorScheme: resolvedTheme,
-            ["--trees-fg-override" as string]: "var(--foreground)",
-          }}
-        />
-      )}
-    </div>
-  );
-}
+    );
+  },
+);
+
+export default FileBrowserPanel;

@@ -64,6 +64,7 @@ import {
   type TerminalContextDraft,
 } from "~/lib/terminalContext";
 import { cn } from "~/lib/utils";
+import { useSmoothCaret } from "~/hooks/useTheme";
 import { basenameOfPath } from "~/pierre-icons";
 import {
   COMPOSER_INLINE_CHIP_ICON_CLASS_NAME,
@@ -1383,6 +1384,150 @@ function ComposerSurroundSelectionPlugin(props: {
   return null;
 }
 
+/** Line height (px) to fall back to when a collapsed range has no measurable box. */
+function composerCaretFallbackHeight(root: HTMLElement): number {
+  const style = getComputedStyle(root);
+  const lineHeight = parseFloat(style.lineHeight);
+  if (Number.isFinite(lineHeight) && lineHeight > 0) return lineHeight;
+  const fontSize = parseFloat(style.fontSize);
+  return Number.isFinite(fontSize) && fontSize > 0 ? fontSize * 1.5 : 18;
+}
+
+/**
+ * Custom smooth caret. Native contenteditable carets can't be animated, so when
+ * the preference is on we hide the native caret (via CSS keyed on
+ * `data-smooth-caret`) and paint an absolutely-positioned overlay that glides to
+ * the collapsed selection's client rect. Renders nothing when disabled, leaving
+ * the native caret untouched.
+ */
+function ComposerSmoothCaretPlugin() {
+  const [editor] = useLexicalComposerContext();
+  const { smoothCaret } = useSmoothCaret();
+  const caretRef = useRef<HTMLDivElement>(null);
+  const rafRef = useRef<number | null>(null);
+  const moveTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!smoothCaret) return;
+    const caret = caretRef.current;
+    if (!caret) return;
+
+    const hide = () => {
+      caret.dataset.visible = "false";
+    };
+
+    const positionCaret = () => {
+      const root = editor.getRootElement();
+      if (!root || document.activeElement !== root) return hide();
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) return hide();
+      const range = selection.getRangeAt(0);
+      if (!root.contains(range.startContainer)) return hide();
+
+      const offsetParent = (caret.offsetParent as HTMLElement | null) ?? root;
+      const parentRect = offsetParent.getBoundingClientRect();
+      const rootRect = root.getBoundingClientRect();
+
+      let left: number;
+      let top: number;
+      let height: number;
+
+      const bounding = range.getBoundingClientRect();
+      const rects = range.getClientRects();
+      const rect =
+        bounding.height > 0 ? bounding : rects.length > 0 ? rects[rects.length - 1] : null;
+
+      if (rect && rect.height > 0) {
+        left = rect.left - parentRect.left;
+        top = rect.top - parentRect.top;
+        height = rect.height;
+      } else {
+        // Empty line / boundary — anchor to the editor's text start.
+        const style = getComputedStyle(root);
+        left = rootRect.left - parentRect.left + (parseFloat(style.paddingLeft) || 0);
+        top = rootRect.top - parentRect.top + (parseFloat(style.paddingTop) || 0);
+        height = composerCaretFallbackHeight(root);
+      }
+
+      // Clip to the editor's (scrollable) viewport so the caret doesn't float
+      // past the top/bottom when the textarea has scrolled.
+      const caretTopViewport = parentRect.top + top;
+      if (caretTopViewport + height < rootRect.top - 1 || caretTopViewport > rootRect.bottom + 1) {
+        return hide();
+      }
+
+      const moved = caret.dataset.left !== String(left) || caret.dataset.top !== String(top);
+      // Don't glide in from the corner the first time it appears — snap into place.
+      const wasHidden = caret.dataset.visible !== "true";
+      if (wasHidden) {
+        caret.style.transition = "none";
+      }
+      caret.dataset.left = String(left);
+      caret.dataset.top = String(top);
+      caret.style.height = `${Math.max(1, Math.round(height))}px`;
+      caret.style.transform = `translate(${left}px, ${top}px)`;
+      caret.dataset.visible = "true";
+      if (wasHidden) {
+        // Force a reflow so the snapped position sticks, then re-enable gliding.
+        void caret.offsetHeight;
+        caret.style.transition = "";
+      }
+
+      if (moved) {
+        caret.dataset.moving = "true";
+        if (moveTimeoutRef.current !== null) window.clearTimeout(moveTimeoutRef.current);
+        moveTimeoutRef.current = window.setTimeout(() => {
+          delete caret.dataset.moving;
+        }, 130);
+      }
+    };
+
+    const schedule = () => {
+      if (rafRef.current !== null) return;
+      rafRef.current = window.requestAnimationFrame(() => {
+        rafRef.current = null;
+        positionCaret();
+      });
+    };
+
+    const onFocus = () => schedule();
+    const onBlur = () => hide();
+    const onScroll = () => schedule();
+
+    const unregisterUpdate = editor.registerUpdateListener(schedule);
+    document.addEventListener("selectionchange", schedule);
+    window.addEventListener("resize", schedule);
+
+    let activeRoot: HTMLElement | null = null;
+    const unregisterRoot = editor.registerRootListener((rootElement, prevRootElement) => {
+      prevRootElement?.removeEventListener("focus", onFocus);
+      prevRootElement?.removeEventListener("blur", onBlur);
+      prevRootElement?.removeEventListener("scroll", onScroll);
+      rootElement?.addEventListener("focus", onFocus);
+      rootElement?.addEventListener("blur", onBlur);
+      rootElement?.addEventListener("scroll", onScroll);
+      activeRoot = rootElement;
+    });
+
+    schedule();
+
+    return () => {
+      unregisterUpdate();
+      unregisterRoot();
+      document.removeEventListener("selectionchange", schedule);
+      window.removeEventListener("resize", schedule);
+      activeRoot?.removeEventListener("focus", onFocus);
+      activeRoot?.removeEventListener("blur", onBlur);
+      activeRoot?.removeEventListener("scroll", onScroll);
+      if (rafRef.current !== null) window.cancelAnimationFrame(rafRef.current);
+      if (moveTimeoutRef.current !== null) window.clearTimeout(moveTimeoutRef.current);
+    };
+  }, [editor, smoothCaret]);
+
+  if (!smoothCaret) return null;
+  return <div ref={caretRef} className="composer-smooth-caret" aria-hidden="true" />;
+}
+
 function ComposerPromptEditorInner({
   value,
   cursor,
@@ -1605,7 +1750,7 @@ function ComposerPromptEditorInner({
 
   return (
     <ComposerTerminalContextActionsContext value={terminalContextActions}>
-      <div className="relative">
+      <div className="relative composer-smooth-caret-host">
         <PlainTextPlugin
           contentEditable={
             <ContentEditable
@@ -1634,6 +1779,7 @@ function ComposerPromptEditorInner({
         <ComposerInlineTokenArrowPlugin />
         <ComposerInlineTokenSelectionNormalizePlugin />
         <ComposerInlineTokenBackspacePlugin />
+        <ComposerSmoothCaretPlugin />
         <HistoryPlugin />
       </div>
     </ComposerTerminalContextActionsContext>

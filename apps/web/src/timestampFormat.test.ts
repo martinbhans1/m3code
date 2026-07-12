@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import {
   formatElapsedDurationLabel,
   formatExpiresInLabel,
+  formatRelativeTimeLabel,
   formatRelativeTimeUntilLabel,
   getTimestampFormatOptions,
 } from "./timestampFormat";
@@ -31,6 +32,47 @@ describe("getTimestampFormatOptions", () => {
       minute: "2-digit",
       hour12: false,
     });
+  });
+});
+
+describe("formatRelativeTimeLabel", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-06T12:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("formats recent past instants relative to now", () => {
+    expect(formatRelativeTimeLabel("2026-07-06T11:59:30.000Z")).toBe("just now");
+    expect(formatRelativeTimeLabel("2026-07-06T11:45:00.000Z")).toBe("15m ago");
+    expect(formatRelativeTimeLabel("2026-07-06T06:00:00.000Z")).toBe("6h ago");
+    expect(formatRelativeTimeLabel("2026-07-02T12:00:00.000Z")).toBe("4d ago");
+  });
+
+  it("treats minor future clock skew as just now", () => {
+    expect(formatRelativeTimeLabel("2026-07-06T12:00:30.000Z")).toBe("just now");
+  });
+
+  it("shows the absolute date for timestamps meaningfully in the future", () => {
+    // A "last message" seeded/skewed into the future must not read as "just now".
+    // Assert against the locale's own formatting so this holds under any locale.
+    const sameYear = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+    const withYear = new Intl.DateTimeFormat(undefined, {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+    expect(formatRelativeTimeLabel("2026-07-08T19:57:00.000Z")).toBe(
+      sameYear.format(new Date("2026-07-08T19:57:00.000Z")),
+    );
+    expect(formatRelativeTimeLabel("2027-01-02T10:00:00.000Z")).toBe(
+      withYear.format(new Date("2027-01-02T10:00:00.000Z")),
+    );
+    // Sanity: the future value is no longer collapsed to "just now".
+    expect(formatRelativeTimeLabel("2026-07-08T19:57:00.000Z")).not.toBe("just now");
   });
 });
 

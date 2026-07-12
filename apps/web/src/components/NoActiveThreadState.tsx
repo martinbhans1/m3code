@@ -5,11 +5,11 @@ import { cn } from "~/lib/utils";
 
 export function NoActiveThreadState() {
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden bg-background">
+    <SidebarInset className="app-chat-surface h-dvh min-h-0 overflow-hidden overscroll-y-none bg-transparent text-foreground">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden">
         <header
           className={cn(
-            "border-b border-border px-3 sm:px-5",
+            "px-3 sm:px-5",
             isElectron ? "workspace-topbar drag-region" : "workspace-topbar",
           )}
         >
@@ -27,16 +27,20 @@ export function NoActiveThreadState() {
           )}
         </header>
 
-        <Empty className="flex-1">
-          <div className="w-full max-w-lg px-8 py-12">
-            <EmptyHeader className="max-w-none">
-              <EmptyTitle className="text-foreground text-xl">Pick a thread to continue</EmptyTitle>
-              <EmptyDescription className="mt-2 text-sm text-muted-foreground/78">
-                Select an existing thread or create a new one to get started.
-              </EmptyDescription>
-            </EmptyHeader>
-          </div>
-        </Empty>
+        <div className="app-chat-panel flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
+          <Empty className="flex-1">
+            <div className="w-full max-w-lg px-8 py-12">
+              <EmptyHeader className="max-w-none">
+                <EmptyTitle className="text-foreground text-xl">
+                  Pick a thread to continue
+                </EmptyTitle>
+                <EmptyDescription className="mt-2 text-sm text-muted-foreground/78">
+                  Select an existing thread or create a new one to get started.
+                </EmptyDescription>
+              </EmptyHeader>
+            </div>
+          </Empty>
+        </div>
       </div>
     </SidebarInset>
   );

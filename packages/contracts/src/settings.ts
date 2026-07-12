@@ -39,6 +39,21 @@ export const SidebarThreadPreviewCount = Schema.Int.check(
 export type SidebarThreadPreviewCount = typeof SidebarThreadPreviewCount.Type;
 export const DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT: SidebarThreadPreviewCount = 6;
 
+// How many additional threads each "Show more" click reveals within a project
+// group. The reveal is incremental: the list grows by this many rows per click
+// until every thread is shown, at which point "Show less" collapses back to the
+// preview count above.
+export const MIN_SIDEBAR_THREAD_SHOW_MORE_INCREMENT = 1;
+export const MAX_SIDEBAR_THREAD_SHOW_MORE_INCREMENT = 50;
+export const SidebarThreadShowMoreIncrement = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_SIDEBAR_THREAD_SHOW_MORE_INCREMENT,
+    maximum: MAX_SIDEBAR_THREAD_SHOW_MORE_INCREMENT,
+  }),
+);
+export type SidebarThreadShowMoreIncrement = typeof SidebarThreadShowMoreIncrement.Type;
+export const DEFAULT_SIDEBAR_THREAD_SHOW_MORE_INCREMENT: SidebarThreadShowMoreIncrement = 5;
+
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -88,6 +103,9 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   sidebarThreadPreviewCount: SidebarThreadPreviewCount.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT)),
+  ),
+  sidebarThreadShowMoreIncrement: SidebarThreadShowMoreIncrement.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_THREAD_SHOW_MORE_INCREMENT)),
   ),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
@@ -540,6 +558,7 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarProjectSortOrder: Schema.optionalKey(SidebarProjectSortOrder),
   sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
+  sidebarThreadShowMoreIncrement: Schema.optionalKey(SidebarThreadShowMoreIncrement),
   timestampFormat: Schema.optionalKey(TimestampFormat),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

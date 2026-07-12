@@ -61,6 +61,23 @@ describe("attachmentStore", () => {
     }
   });
 
+  it("resolves attachment path by id for non-image file extensions", () => {
+    const attachmentsDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-attachment-store-"));
+    try {
+      const attachmentId = "thread-1-document";
+      const pdfPath = path.join(attachmentsDir, `${attachmentId}.pdf`);
+      fs.writeFileSync(pdfPath, Buffer.from("%PDF-1.7"));
+
+      const resolved = resolveAttachmentPathById({
+        attachmentsDir,
+        attachmentId,
+      });
+      expect(resolved).toBe(pdfPath);
+    } finally {
+      fs.rmSync(attachmentsDir, { recursive: true, force: true });
+    }
+  });
+
   it("returns null when no attachment file exists for the id", () => {
     const attachmentsDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-attachment-store-"));
     try {

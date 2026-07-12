@@ -713,6 +713,120 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("delivers PDF attachments as native Claude document blocks", () => {
+    const baseDir = mkdtempSync(path.join(os.tmpdir(), "claude-attachments-pdf-"));
+    const harness = makeHarness({
+      cwd: "/tmp/project-claude-attachments-pdf",
+      baseDir,
+    });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => rmSync(baseDir, { recursive: true, force: true })),
+      );
+
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+
+      const attachment = {
+        type: "file" as const,
+        id: "thread-claude-attachment-22345678-1234-1234-1234-123456789abc",
+        name: "report.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 4,
+      };
+      const attachmentPath = path.join(attachmentsDir, attachmentRelativePath(attachment));
+      mkdirSync(path.dirname(attachmentPath), { recursive: true });
+      writeFileSync(attachmentPath, Uint8Array.from([1, 2, 3, 4]));
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Summarize this PDF.",
+        attachments: [attachment],
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      const promptMessage = yield* Effect.promise(() => readFirstPromptMessage(createInput));
+      assert.deepEqual(promptMessage?.message.content, [
+        { type: "text", text: "Summarize this PDF." },
+        {
+          type: "document",
+          title: "report.pdf",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: "AQIDBA==",
+          },
+        },
+      ]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("points the agent at generic file attachments by path", () => {
+    const baseDir = mkdtempSync(path.join(os.tmpdir(), "claude-attachments-file-"));
+    const harness = makeHarness({
+      cwd: "/tmp/project-claude-attachments-file",
+      baseDir,
+    });
+    return Effect.gen(function* () {
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => rmSync(baseDir, { recursive: true, force: true })),
+      );
+
+      const adapter = yield* ClaudeAdapter;
+      const { attachmentsDir } = yield* ServerConfig;
+
+      const attachment = {
+        type: "file" as const,
+        id: "thread-claude-attachment-32345678-1234-1234-1234-123456789abc",
+        name: "data.json",
+        mimeType: "application/json",
+        sizeBytes: 4,
+      };
+      const attachmentPath = path.join(attachmentsDir, attachmentRelativePath(attachment));
+      mkdirSync(path.dirname(attachmentPath), { recursive: true });
+      writeFileSync(attachmentPath, Uint8Array.from([1, 2, 3, 4]));
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "Read this file.",
+        attachments: [attachment],
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      const promptMessage = yield* Effect.promise(() => readFirstPromptMessage(createInput));
+      const content = promptMessage?.message.content as unknown as Array<Record<string, unknown>>;
+      assert.equal(content?.[0]?.text, "Read this file.");
+      // The generic file is NOT inlined — it's left on disk with a path note.
+      const note = content?.[1] as { type: string; text: string } | undefined;
+      assert.equal(note?.type, "text");
+      assert.include(note?.text ?? "", "data.json");
+      assert.include(note?.text ?? "", "parse them with your tools");
+      // And the attachments dir is granted to the agent so it can read the path.
+      const createOptions = harness.getLastCreateQueryInput()?.options as
+        | { additionalDirectories?: ReadonlyArray<string> }
+        | undefined;
+      assert.include(createOptions?.additionalDirectories ?? [], attachmentsDir);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("maps Claude stream/runtime messages to canonical provider runtime events", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -3308,6 +3422,83 @@ describe("ClaudeAdapterLive", () => {
       assert.deepEqual(proposedEvent.value.providerRefs, {
         providerItemId: ProviderItemId.make("tool-exit-2"),
       });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("captures suggest_followup from the assistant stream in full-access mode", () => {
+    // Regression: in full-access (bypassPermissions) mode the SDK never invokes
+    // canUseTool, so the follow-up chip — which used to be captured only there —
+    // never surfaced. It must now be captured from the assistant message stream.
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "do the thing",
+        attachments: [],
+      });
+      yield* Stream.take(adapter.streamEvents, 1).pipe(Stream.runDrain);
+
+      const followupEventFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.followup.suggested",
+      ).pipe(Stream.runHead, Effect.forkChild);
+
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-followup",
+        uuid: "assistant-followup",
+        parent_tool_use_id: null,
+        message: {
+          model: "claude-opus-4-6",
+          id: "msg-followup",
+          type: "message",
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-followup-1",
+              name: "mcp__t3-code__suggest_followup",
+              input: {
+                title: "Extend chips to ACP providers",
+                detail: "Codex/Cursor go through ACP and never hit canUseTool.",
+                rationale: "Make the feature provider-agnostic.",
+              },
+            },
+          ],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: {},
+        },
+      } as unknown as SDKMessage);
+
+      const followupEvent = yield* Fiber.join(followupEventFiber);
+      assert.equal(followupEvent._tag, "Some");
+      if (followupEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(followupEvent.value.type, "turn.followup.suggested");
+      if (followupEvent.value.type !== "turn.followup.suggested") {
+        return;
+      }
+      assert.equal(followupEvent.value.payload.followupId, "tool-followup-1");
+      assert.equal(followupEvent.value.payload.title, "Extend chips to ACP providers");
+      assert.equal(
+        followupEvent.value.payload.detail,
+        "Codex/Cursor go through ACP and never hit canUseTool.",
+      );
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

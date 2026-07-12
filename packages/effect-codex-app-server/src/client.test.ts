@@ -69,6 +69,7 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
           },
         });
         assert.equal(initialized.userAgent, "mock-codex-app-server");
+        assert.equal(initialized.codexHome, undefined);
 
         yield* client.notify("initialized", undefined);
 

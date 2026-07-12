@@ -16,6 +16,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   applyOrchestrationEvent,
   applyOrchestrationEvents,
+  applyShellEvent,
   removeEnvironmentState,
   selectEnvironmentState,
   selectProjectsAcrossEnvironments,
@@ -23,6 +24,7 @@ import {
   selectThreadExistsByRef,
   setThreadBranch,
   selectThreadsAcrossEnvironments,
+  syncServerShellSnapshot,
   type AppState,
   type EnvironmentState,
 } from "./store";
@@ -489,23 +491,12 @@ describe("incremental orchestration updates", () => {
   it("reuses an existing project row when project.created arrives with a new id for the same cwd", () => {
     const originalProjectId = ProjectId.make("project-1");
     const recreatedProjectId = ProjectId.make("project-2");
-    const state: AppState = makeEmptyState({
-      projectIds: [originalProjectId],
-      projectById: {
-        [originalProjectId]: {
-          id: originalProjectId,
-          environmentId: localEnvironmentId,
-          name: "Project",
-          cwd: "/tmp/project",
-          defaultModelSelection: {
-            instanceId: ProviderInstanceId.make("codex"),
-            model: DEFAULT_MODEL,
-          },
-          createdAt: "2026-02-27T00:00:00.000Z",
-          updatedAt: "2026-02-27T00:00:00.000Z",
-          scripts: [],
-        },
-      },
+    const threadId = ThreadId.make("thread-1");
+    const state = makeState({
+      ...makeThread({
+        id: threadId,
+        projectId: originalProjectId,
+      }),
     });
 
     const next = applyOrchestrationEvent(
@@ -534,6 +525,158 @@ describe("incremental orchestration updates", () => {
     expect(localEnvironmentStateOf(next).projectById[recreatedProjectId]?.id).toBe(
       recreatedProjectId,
     );
+    expect(threadsOf(next)).toHaveLength(1);
+    expect(threadsOf(next)[0]?.projectId).toBe(recreatedProjectId);
+    expect(localEnvironmentStateOf(next).threadShellById[threadId]?.projectId).toBe(
+      recreatedProjectId,
+    );
+    expect(localEnvironmentStateOf(next).threadIdsByProjectId[originalProjectId]).toBeUndefined();
+    expect(localEnvironmentStateOf(next).threadIdsByProjectId[recreatedProjectId]).toEqual([
+      threadId,
+    ]);
+  });
+
+  it("remaps existing threads when project-upserted replaces a project with the same cwd", () => {
+    const originalProjectId = ProjectId.make("project-1");
+    const recreatedProjectId = ProjectId.make("project-2");
+    const threadId = ThreadId.make("thread-1");
+    const state = makeState(
+      makeThread({
+        id: threadId,
+        projectId: originalProjectId,
+      }),
+    );
+
+    const next = applyShellEvent(
+      state,
+      {
+        kind: "project-upserted",
+        sequence: 2,
+        project: {
+          id: recreatedProjectId,
+          title: "Project Recreated",
+          workspaceRoot: "/tmp/project",
+          defaultModelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: DEFAULT_MODEL,
+          },
+          scripts: [],
+          createdAt: "2026-02-27T00:00:01.000Z",
+          updatedAt: "2026-02-27T00:00:01.000Z",
+        },
+      },
+      localEnvironmentId,
+    );
+
+    expect(projectsOf(next)).toHaveLength(1);
+    expect(projectsOf(next)[0]?.id).toBe(recreatedProjectId);
+    expect(threadsOf(next)).toHaveLength(1);
+    expect(threadsOf(next)[0]?.projectId).toBe(recreatedProjectId);
+    expect(localEnvironmentStateOf(next).threadIdsByProjectId[originalProjectId]).toBeUndefined();
+    expect(localEnvironmentStateOf(next).threadIdsByProjectId[recreatedProjectId]).toEqual([
+      threadId,
+    ]);
+  });
+
+  it("dedupes projects and remaps threads when hydrating a shell snapshot", () => {
+    const originalProjectId = ProjectId.make("project-1");
+    const recreatedProjectId = ProjectId.make("project-2");
+    const originalThreadId = ThreadId.make("thread-1");
+    const recreatedThreadId = ThreadId.make("thread-2");
+    const now = "2026-02-27T00:00:01.000Z";
+
+    const next = syncServerShellSnapshot(
+      makeEmptyState(),
+      {
+        snapshotSequence: 2,
+        updatedAt: now,
+        projects: [
+          {
+            id: originalProjectId,
+            title: "Project",
+            workspaceRoot: "/tmp/project",
+            defaultModelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: DEFAULT_MODEL,
+            },
+            scripts: [],
+            createdAt: "2026-02-27T00:00:00.000Z",
+            updatedAt: "2026-02-27T00:00:00.000Z",
+          },
+          {
+            id: recreatedProjectId,
+            title: "Project Recreated",
+            workspaceRoot: "/tmp/project",
+            defaultModelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: DEFAULT_MODEL,
+            },
+            scripts: [],
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        threads: [
+          {
+            id: originalThreadId,
+            projectId: originalProjectId,
+            title: "Original thread",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: DEFAULT_MODEL,
+            },
+            runtimeMode: DEFAULT_RUNTIME_MODE,
+            interactionMode: DEFAULT_INTERACTION_MODE,
+            branch: null,
+            worktreePath: null,
+            latestTurn: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            session: null,
+            latestUserMessageAt: null,
+            hasPendingApprovals: false,
+            hasPendingUserInput: false,
+            hasActionableProposedPlan: false,
+          },
+          {
+            id: recreatedThreadId,
+            projectId: recreatedProjectId,
+            title: "Recreated thread",
+            modelSelection: {
+              instanceId: ProviderInstanceId.make("codex"),
+              model: DEFAULT_MODEL,
+            },
+            runtimeMode: DEFAULT_RUNTIME_MODE,
+            interactionMode: DEFAULT_INTERACTION_MODE,
+            branch: null,
+            worktreePath: null,
+            latestTurn: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            session: null,
+            latestUserMessageAt: null,
+            hasPendingApprovals: false,
+            hasPendingUserInput: false,
+            hasActionableProposedPlan: false,
+          },
+        ],
+      },
+      localEnvironmentId,
+    );
+
+    expect(projectsOf(next)).toHaveLength(1);
+    expect(projectsOf(next)[0]?.id).toBe(recreatedProjectId);
+    expect(threadsOf(next).map((thread) => thread.projectId)).toEqual([
+      recreatedProjectId,
+      recreatedProjectId,
+    ]);
+    expect(localEnvironmentStateOf(next).threadIdsByProjectId[originalProjectId]).toBeUndefined();
+    expect(localEnvironmentStateOf(next).threadIdsByProjectId[recreatedProjectId]).toEqual([
+      originalThreadId,
+      recreatedThreadId,
+    ]);
   });
 
   it("removes stale project index entries when thread.created recreates a thread under a new project", () => {

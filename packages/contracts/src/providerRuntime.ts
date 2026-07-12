@@ -163,6 +163,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "turn.completed",
   "turn.aborted",
   "turn.plan.updated",
+  "turn.followup.suggested",
   "turn.proposed.delta",
   "turn.proposed.completed",
   "turn.diff.updated",
@@ -213,6 +214,7 @@ const TurnStartedType = Schema.Literal("turn.started");
 const TurnCompletedType = Schema.Literal("turn.completed");
 const TurnAbortedType = Schema.Literal("turn.aborted");
 const TurnPlanUpdatedType = Schema.Literal("turn.plan.updated");
+const TurnFollowupSuggestedType = Schema.Literal("turn.followup.suggested");
 const TurnProposedDeltaType = Schema.Literal("turn.proposed.delta");
 const TurnProposedCompletedType = Schema.Literal("turn.proposed.completed");
 const TurnDiffUpdatedType = Schema.Literal("turn.diff.updated");
@@ -385,6 +387,14 @@ const TurnPlanUpdatedPayload = Schema.Struct({
   plan: Schema.Array(RuntimePlanStep),
 });
 export type TurnPlanUpdatedPayload = typeof TurnPlanUpdatedPayload.Type;
+
+const TurnFollowupSuggestedPayload = Schema.Struct({
+  followupId: TrimmedNonEmptyStringSchema,
+  title: TrimmedNonEmptyStringSchema,
+  detail: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
+  rationale: Schema.optional(Schema.NullOr(TrimmedNonEmptyStringSchema)),
+});
+export type TurnFollowupSuggestedPayload = typeof TurnFollowupSuggestedPayload.Type;
 
 const TurnProposedDeltaPayload = Schema.Struct({
   delta: Schema.String,
@@ -740,6 +750,14 @@ const ProviderRuntimeTurnPlanUpdatedEvent = Schema.Struct({
 });
 export type ProviderRuntimeTurnPlanUpdatedEvent = typeof ProviderRuntimeTurnPlanUpdatedEvent.Type;
 
+const ProviderRuntimeTurnFollowupSuggestedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: TurnFollowupSuggestedType,
+  payload: TurnFollowupSuggestedPayload,
+});
+export type ProviderRuntimeTurnFollowupSuggestedEvent =
+  typeof ProviderRuntimeTurnFollowupSuggestedEvent.Type;
+
 const ProviderRuntimeTurnProposedDeltaEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: TurnProposedDeltaType,
@@ -982,6 +1000,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeTurnCompletedEvent,
   ProviderRuntimeTurnAbortedEvent,
   ProviderRuntimeTurnPlanUpdatedEvent,
+  ProviderRuntimeTurnFollowupSuggestedEvent,
   ProviderRuntimeTurnProposedDeltaEvent,
   ProviderRuntimeTurnProposedCompletedEvent,
   ProviderRuntimeTurnDiffUpdatedEvent,

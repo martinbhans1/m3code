@@ -1,4 +1,5 @@
 import {
+  buildFollowupActivity,
   EventId,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -12,6 +13,7 @@ import type * as PlatformError from "effect/PlatformError";
 import { OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
   listThreadsByProjectId,
+  requireActiveProjectWorkspaceRootAbsent,
   requireProject,
   requireProjectAbsent,
   requireThread,
@@ -110,6 +112,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         readModel,
         command,
         projectId: command.projectId,
+      });
+      yield* requireActiveProjectWorkspaceRootAbsent({
+        readModel,
+        command,
+        projectId: command.projectId,
+        workspaceRoot: command.workspaceRoot,
       });
 
       return {
@@ -671,6 +679,35 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           proposedPlan: command.proposedPlan,
+        },
+      };
+    }
+
+    case "thread.followup.upsert": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      // Follow-ups ride the activity log: each create/update appends a new
+      // activity carrying the full follow-up, and the latest per id wins.
+      const crypto = yield* Crypto.Crypto;
+      const activityId = EventId.make(yield* crypto.randomUUIDv4);
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.activity-appended",
+        payload: {
+          threadId: command.threadId,
+          activity: buildFollowupActivity({
+            id: activityId,
+            followup: command.followup,
+            createdAt: command.createdAt,
+          }),
         },
       };
     }

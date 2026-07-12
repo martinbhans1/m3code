@@ -26,6 +26,7 @@ import { BranchToolbarBranchSelector } from "./BranchToolbarBranchSelector";
 import { BranchToolbarEnvironmentSelector } from "./BranchToolbarEnvironmentSelector";
 import { BranchToolbarEnvModeSelector } from "./BranchToolbarEnvModeSelector";
 import { Button } from "./ui/button";
+import { SidebarTrigger } from "./ui/sidebar";
 import {
   Menu,
   MenuGroup,
@@ -242,6 +243,10 @@ export const BranchToolbar = memo(function BranchToolbar({
 
   return (
     <div className="mx-auto flex w-full max-w-208 items-center gap-2 px-2.5 pb-3 pt-1 sm:px-3">
+      <SidebarTrigger
+        className="size-8 shrink-0 text-muted-foreground md:hidden"
+        aria-label="Open chat history"
+      />
       {isMobile ? (
         <MobileRunContextSelector
           envLocked={envLocked}

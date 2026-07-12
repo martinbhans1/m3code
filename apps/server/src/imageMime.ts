@@ -57,6 +57,26 @@ export function parseBase64DataUrl(
   return { mimeType, base64 };
 }
 
+/**
+ * Pick a safe, path-traversal-free file extension for a generic (non-image)
+ * attachment. Prefers the original filename's extension (so the agent sees a
+ * real `.docx`/`.pdf`/`.json` and its tools behave), then the MIME type, and
+ * finally `.bin`. The `[a-z0-9]{1,12}` shape guarantees the result can never
+ * contain a slash or `..`.
+ */
+export function inferAttachmentFileExtension(input: { mimeType: string; fileName?: string }): string {
+  const fileName = input.fileName?.trim() ?? "";
+  const fileNameMatch = /\.([a-z0-9]{1,12})$/i.exec(fileName);
+  if (fileNameMatch) {
+    return `.${fileNameMatch[1]!.toLowerCase()}`;
+  }
+  const fromMime = Mime.getExtension(input.mimeType);
+  if (fromMime && /^\.[a-z0-9]{1,12}$/i.test(fromMime)) {
+    return fromMime.toLowerCase();
+  }
+  return ".bin";
+}
+
 export function inferImageExtension(input: { mimeType: string; fileName?: string }): string {
   const key = input.mimeType.toLowerCase();
   const fromMime = Object.hasOwn(IMAGE_EXTENSION_BY_MIME_TYPE, key)

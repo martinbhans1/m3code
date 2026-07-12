@@ -134,6 +134,13 @@ interface ClaudeTurnState {
   readonly assistantTextBlocks: Map<number, AssistantTextBlockState>;
   readonly assistantTextBlockOrder: Array<AssistantTextBlockState>;
   readonly capturedProposedPlanKeys: Set<string>;
+  /**
+   * Follow-up tool_use ids already surfaced as `turn.followup.suggested`.
+   * `suggest_followup` is captured from BOTH the permission callback and the
+   * assistant message stream (the former is skipped in bypassPermissions /
+   * full-access mode), so we dedupe by tool_use id to avoid a double emit.
+   */
+  readonly capturedFollowupKeys: Set<string>;
   nextSyntheticAssistantBlockIndex: number;
 }
 
@@ -692,6 +699,38 @@ function isTodoTool(toolName: string): boolean {
   return toolName.toLowerCase().includes("todowrite");
 }
 
+// The agent surfaces follow-up to-dos via the in-process t3-code MCP tool
+// `suggest_followup`. The SDK prefixes MCP tool names with `mcp__<server>__`.
+function isSuggestFollowupTool(toolName: string): boolean {
+  return toolName === "mcp__t3-code__suggest_followup" || toolName === "suggest_followup";
+}
+
+function extractFollowupSuggestion(
+  input: unknown,
+): { title: string; detail?: string; rationale?: string } | null {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+  const record = input as Record<string, unknown>;
+  const title = typeof record.title === "string" ? record.title.trim() : "";
+  if (title.length === 0) {
+    return null;
+  }
+  const detail =
+    typeof record.detail === "string" && record.detail.trim().length > 0
+      ? record.detail.trim()
+      : undefined;
+  const rationale =
+    typeof record.rationale === "string" && record.rationale.trim().length > 0
+      ? record.rationale.trim()
+      : undefined;
+  return {
+    title,
+    ...(detail ? { detail } : {}),
+    ...(rationale ? { rationale } : {}),
+  };
+}
+
 type PlanStep = {
   step: string;
   status: "pending" | "inProgress" | "completed";
@@ -958,6 +997,23 @@ function buildClaudeImageContentBlock(input: {
   };
 }
 
+// PDFs are delivered as native `document` blocks: Claude reads them with both
+// text extraction and page vision (so scanned/image-only PDFs still work).
+function buildClaudePdfContentBlock(input: {
+  readonly bytes: Uint8Array;
+  readonly title: string;
+}): Record<string, unknown> {
+  return {
+    type: "document",
+    title: input.title,
+    source: {
+      type: "base64",
+      media_type: "application/pdf",
+      data: Buffer.from(input.bytes).toString("base64"),
+    },
+  };
+}
+
 const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
   input: ProviderSendTurnInput,
   dependencies: {
@@ -973,19 +1029,12 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
     sdkContent.push({ type: "text", text });
   }
 
+  // Generic (non-image, non-PDF) files are left on disk for the agent to parse
+  // with its own tools (`unzip` for docx/xlsx, `pdftotext`, `pandoc`, python …).
+  // We collect their paths here and append one note pointing the agent at them.
+  const attachedFilePaths: Array<{ readonly name: string; readonly path: string }> = [];
+
   for (const attachment of input.attachments ?? []) {
-    if (attachment.type !== "image") {
-      continue;
-    }
-
-    if (!SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)) {
-      return yield* new ProviderAdapterRequestError({
-        provider: PROVIDER,
-        method: "turn/start",
-        detail: `Unsupported Claude image attachment type '${attachment.mimeType}'.`,
-      });
-    }
-
     const attachmentPath = resolveAttachmentPath({
       attachmentsDir: dependencies.attachmentsDir,
       attachment,
@@ -998,28 +1047,56 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
       });
     }
 
-    const bytes = yield* dependencies.fileSystem.readFile(attachmentPath).pipe(
-      Effect.mapError(
-        (cause) =>
-          new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: "turn/start",
-            detail: toMessage(cause, "Failed to read attachment file."),
-            cause,
-          }),
-      ),
-    );
+    if (attachment.type === "image") {
+      if (!SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)) {
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "turn/start",
+          detail: `Unsupported Claude image attachment type '${attachment.mimeType}'.`,
+        });
+      }
 
-    sdkContent.push(
-      buildClaudeImageContentBlock({
-        mimeType: attachment.mimeType,
-        bytes,
-      }),
-    );
+      const bytes = yield* readAttachmentBytes(dependencies.fileSystem, attachmentPath);
+      sdkContent.push(buildClaudeImageContentBlock({ mimeType: attachment.mimeType, bytes }));
+      continue;
+    }
+
+    if (attachment.mimeType === "application/pdf") {
+      const bytes = yield* readAttachmentBytes(dependencies.fileSystem, attachmentPath);
+      sdkContent.push(buildClaudePdfContentBlock({ bytes, title: attachment.name }));
+      continue;
+    }
+
+    attachedFilePaths.push({ name: attachment.name, path: attachmentPath });
+  }
+
+  if (attachedFilePaths.length > 0) {
+    const lines = attachedFilePaths.map((file) => `- "${file.name}" → ${file.path}`).join("\n");
+    sdkContent.push({
+      type: "text",
+      text:
+        "The user attached the following file(s) to this message. They are saved on " +
+        "disk at the paths below — read or parse them with your tools when relevant " +
+        "(e.g. unzip for .docx/.xlsx, pdftotext/pandoc, or your file-read tools):\n" +
+        lines,
+    });
   }
 
   return buildUserMessage({ sdkContent });
 });
+
+const readAttachmentBytes = (fileSystem: FileSystem.FileSystem, attachmentPath: string) =>
+  fileSystem.readFile(attachmentPath).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "turn/start",
+          detail: toMessage(cause, "Failed to read attachment file."),
+          cause,
+        }),
+    ),
+  );
 
 function turnStatusFromResult(result: SDKResultMessage): ProviderRuntimeTurnStatus {
   if (result.subtype === "success") {
@@ -1863,6 +1940,73 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     });
   });
 
+  const emitFollowupSuggested = Effect.fn("emitFollowupSuggested")(function* (
+    context: ClaudeSessionContext,
+    input: {
+      readonly followupId: string;
+      readonly title: string;
+      readonly detail?: string | undefined;
+      readonly rationale?: string | undefined;
+      readonly toolUseId?: string | undefined;
+      readonly rawSource?: "claude.sdk.message" | "claude.sdk.permission" | undefined;
+      readonly rawMethod?: string | undefined;
+      readonly rawPayload: unknown;
+    },
+  ) {
+    const title = input.title.trim();
+    const followupId = input.followupId.trim();
+    if (title.length === 0 || followupId.length === 0) {
+      yield* Effect.logInfo("claude.followup.skipped", {
+        reason: title.length === 0 ? "empty-title" : "empty-id",
+        followupId,
+      });
+      return;
+    }
+
+    // Dedupe across the permission-callback and message-stream capture paths.
+    const turnState = context.turnState;
+    if (turnState) {
+      if (turnState.capturedFollowupKeys.has(followupId)) {
+        yield* Effect.logInfo("claude.followup.duplicate", { followupId });
+        return;
+      }
+      turnState.capturedFollowupKeys.add(followupId);
+    }
+
+    yield* Effect.logInfo("claude.followup.emit", {
+      followupId,
+      title,
+      source: input.rawSource ?? "claude.sdk.permission",
+      threadId: context.session.threadId,
+    });
+
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "turn.followup.suggested",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+      payload: {
+        followupId,
+        title,
+        ...(input.detail && input.detail.trim().length > 0 ? { detail: input.detail.trim() } : {}),
+        ...(input.rationale && input.rationale.trim().length > 0
+          ? { rationale: input.rationale.trim() }
+          : {}),
+      },
+      providerRefs: nativeProviderRefs(context, {
+        providerItemId: input.toolUseId,
+      }),
+      raw: {
+        source: input.rawSource ?? "claude.sdk.permission",
+        method: input.rawMethod ?? "canUseTool/suggest_followup",
+        payload: input.rawPayload,
+      },
+    });
+  });
+
   const emitClaudeTaskPlanUpdated = Effect.fn("emitClaudeTaskPlanUpdated")(function* (
     context: ClaudeSessionContext,
     input: {
@@ -2499,6 +2643,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         assistantTextBlocks: new Map(),
         assistantTextBlockOrder: [],
         capturedProposedPlanKeys: new Set(),
+        capturedFollowupKeys: new Set(),
         nextSyntheticAssistantBlockIndex: -1,
       };
       context.session = {
@@ -2540,20 +2685,52 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           name?: unknown;
           input?: unknown;
         };
-        if (toolUse.type !== "tool_use" || toolUse.name !== "ExitPlanMode") {
+        if (toolUse.type !== "tool_use" || typeof toolUse.name !== "string") {
           continue;
         }
-        const planMarkdown = extractExitPlanModePlan(toolUse.input);
-        if (!planMarkdown) {
+        const toolUseId = typeof toolUse.id === "string" ? toolUse.id : undefined;
+
+        if (toolUse.name === "ExitPlanMode") {
+          const planMarkdown = extractExitPlanModePlan(toolUse.input);
+          if (!planMarkdown) {
+            continue;
+          }
+          yield* emitProposedPlanCompleted(context, {
+            planMarkdown,
+            toolUseId,
+            rawSource: "claude.sdk.message",
+            rawMethod: "claude/assistant",
+            rawPayload: message,
+          });
           continue;
         }
-        yield* emitProposedPlanCompleted(context, {
-          planMarkdown,
-          toolUseId: typeof toolUse.id === "string" ? toolUse.id : undefined,
-          rawSource: "claude.sdk.message",
-          rawMethod: "claude/assistant",
-          rawPayload: message,
-        });
+
+        // Capture follow-up suggestions from the message stream. The permission
+        // callback (canUseTool) also captures these, but it is NOT invoked in
+        // bypassPermissions / full-access mode — the stream path is the only one
+        // that fires there. Deduped by tool_use id in emitFollowupSuggested.
+        if (isSuggestFollowupTool(toolUse.name)) {
+          yield* Effect.logInfo("claude.followup.stream-seen", {
+            toolName: toolUse.name,
+            toolUseId,
+          });
+          const suggestion = extractFollowupSuggestion(toolUse.input);
+          if (!suggestion) {
+            yield* Effect.logInfo("claude.followup.stream-noparse", { toolUseId });
+            continue;
+          }
+          yield* emitFollowupSuggested(context, {
+            followupId: toolUseId ?? (yield* randomUUIDv4),
+            title: suggestion.title,
+            detail: suggestion.detail,
+            rationale: suggestion.rationale,
+            toolUseId,
+            rawSource: "claude.sdk.message",
+            rawMethod: "claude/assistant",
+            rawPayload: message,
+          });
+          continue;
+        }
       }
     }
 
@@ -3296,6 +3473,31 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           } satisfies PermissionResult;
         }
 
+        // suggest_followup records a user-facing follow-up chip. Capture it as a
+        // runtime event and allow the call through without an approval prompt
+        // (regardless of runtime mode) — suggesting a follow-up is harmless and
+        // interrupting the agent to confirm it would defeat the purpose.
+        if (isSuggestFollowupTool(toolName)) {
+          const suggestion = extractFollowupSuggestion(toolInput);
+          if (suggestion) {
+            yield* emitFollowupSuggested(context, {
+              followupId: callbackOptions.toolUseID ?? (yield* randomUUIDv4),
+              title: suggestion.title,
+              detail: suggestion.detail,
+              rationale: suggestion.rationale,
+              toolUseId: callbackOptions.toolUseID,
+              rawPayload: {
+                toolName,
+                input: toolInput,
+              },
+            });
+          }
+          return {
+            behavior: "allow",
+            updatedInput: toolInput,
+          } satisfies PermissionResult;
+        }
+
         const runtimeMode = input.runtimeMode ?? "full-access";
         if (runtimeMode === "full-access") {
           return {
@@ -3470,7 +3672,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         includePartialMessages: true,
         canUseTool,
         env: claudeEnvironment,
-        ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
+        // Always grant read access to the attachments dir so the agent can open
+        // generic file attachments (docx/xlsx/json/…) referenced by path in the
+        // turn message — including on follow-up turns of a resumed session.
+        additionalDirectories: [
+          serverConfig.attachmentsDir,
+          ...(input.cwd ? [input.cwd] : []),
+        ],
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
         mcpServers: {
           // Chrome DevTools MCP — lets Claude drive a real Chrome: navigate,
@@ -3715,6 +3923,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         assistantTextBlocks: new Map(),
         assistantTextBlockOrder: [],
         capturedProposedPlanKeys: new Set(),
+        capturedFollowupKeys: new Set(),
         nextSyntheticAssistantBlockIndex: -1,
       };
 

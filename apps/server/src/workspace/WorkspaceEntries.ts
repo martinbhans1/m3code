@@ -1,6 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import type { Dirent } from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -12,6 +14,7 @@ import * as Schema from "effect/Schema";
 import type {
   FilesystemBrowseInput,
   FilesystemBrowseResult,
+  ProjectEntry,
   ProjectListEntriesInput,
   ProjectListEntriesResult,
   ProjectSearchEntriesInput,
@@ -100,6 +103,106 @@ const resolveBrowseTarget = (
 
     return path.resolve(expandHomePath(input.cwd, path), input.partialPath);
   });
+
+// The workspace search index honors `.gitignore`, so `.env` files (which are
+// almost always ignored) never make it into the file tree. We supplement the
+// indexed entries with a targeted walk that surfaces `.env`-style files so they
+// can be browsed and edited in-app, while keeping the universally-huge ignored
+// directories out of the tree.
+const ENV_SCAN_MAX_FILES = 100;
+const ENV_SCAN_MAX_DIRECTORIES = 10_000;
+const ENV_SCAN_PRUNED_DIRECTORIES = new Set([
+  ".git",
+  ".hg",
+  ".svn",
+  "node_modules",
+  ".venv",
+  "venv",
+  "__pycache__",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".terraform",
+  ".gradle",
+  ".cache",
+]);
+
+function isEnvFileName(name: string): boolean {
+  return name === ".env" || name.startsWith(".env.");
+}
+
+function parentPosixPath(input: string): string | undefined {
+  const separatorIndex = input.lastIndexOf("/");
+  return separatorIndex === -1 ? undefined : input.slice(0, separatorIndex);
+}
+
+// Best-effort walk: never throws, swallows per-directory errors, and is bounded
+// by file/directory caps so a pathological tree can't hang a list() call.
+async function collectEnvRelativePaths(root: string): Promise<string[]> {
+  const found: string[] = [];
+  const stack: Array<{ readonly absolute: string; readonly relative: string }> = [
+    { absolute: root, relative: "" },
+  ];
+  let visitedDirectories = 0;
+
+  while (
+    stack.length > 0 &&
+    found.length < ENV_SCAN_MAX_FILES &&
+    visitedDirectories < ENV_SCAN_MAX_DIRECTORIES
+  ) {
+    const current = stack.pop();
+    if (!current) break;
+    visitedDirectories += 1;
+
+    let dirents: Array<Dirent>;
+    try {
+      dirents = await NodeFSP.readdir(current.absolute, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const dirent of dirents) {
+      // `withFileTypes` does not follow symlinks, so symlinked directories report
+      // `isDirectory() === false` and are naturally skipped — avoiding cycles.
+      if (dirent.isDirectory()) {
+        if (ENV_SCAN_PRUNED_DIRECTORIES.has(dirent.name)) continue;
+        stack.push({
+          absolute: NodePath.join(current.absolute, dirent.name),
+          relative: current.relative ? `${current.relative}/${dirent.name}` : dirent.name,
+        });
+      } else if (dirent.isFile() && isEnvFileName(dirent.name)) {
+        found.push(current.relative ? `${current.relative}/${dirent.name}` : dirent.name);
+        if (found.length >= ENV_SCAN_MAX_FILES) break;
+      }
+    }
+  }
+
+  return found;
+}
+
+function mergeFloatedEnvEntries(
+  base: ProjectListEntriesResult,
+  envPaths: ReadonlyArray<string>,
+): ProjectListEntriesResult {
+  if (envPaths.length === 0) return base;
+
+  const entriesByPath = new Map<string, ProjectEntry>(
+    base.entries.map((entry) => [entry.path, entry]),
+  );
+  for (const envPath of envPaths) {
+    if (entriesByPath.has(envPath)) continue;
+    entriesByPath.set(envPath, { path: envPath, kind: "file" });
+    let parentPath = parentPosixPath(envPath);
+    while (parentPath && !entriesByPath.has(parentPath)) {
+      entriesByPath.set(parentPath, { path: parentPath, kind: "directory" });
+      parentPath = parentPosixPath(parentPath);
+    }
+  }
+
+  const entries = [...entriesByPath.values()].toSorted((left, right) =>
+    left.path.localeCompare(right.path),
+  );
+  return { entries, truncated: base.truncated };
+}
 
 const make = Effect.gen(function* () {
   const path = yield* Path.Path;
@@ -226,7 +329,7 @@ const make = Effect.gen(function* () {
   const list: WorkspaceEntries["Service"]["list"] = Effect.fn("WorkspaceEntries.list")(
     function* (input) {
       const normalizedCwd = yield* normalizeWorkspaceRoot(input.cwd);
-      return yield* Effect.gen(function* () {
+      const baseResult = yield* Effect.gen(function* () {
         const searchIndex = yield* WorkspaceSearchIndex.WorkspaceSearchIndex;
         return yield* searchIndex.list();
       }).pipe(
@@ -241,6 +344,10 @@ const make = Effect.gen(function* () {
             }),
         ),
       );
+
+      // Surface `.env`-style files the gitignore-aware index leaves out.
+      const envPaths = yield* Effect.promise(() => collectEnvRelativePaths(normalizedCwd));
+      return mergeFloatedEnvEntries(baseResult, envPaths);
     },
   );
 

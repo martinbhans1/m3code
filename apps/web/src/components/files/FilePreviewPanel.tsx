@@ -7,7 +7,16 @@ import type {
 import { VirtualizedFile, type SelectedLineRange } from "@pierre/diffs";
 import { Editor } from "@pierre/diffs/editor";
 import { EditorProvider, File, type FileOptions, Virtualizer } from "@pierre/diffs/react";
-import { ChevronRight, Code2, Eye, FolderTree, Globe2, LoaderCircle } from "lucide-react";
+import {
+  Check,
+  ChevronRight,
+  Code2,
+  Copy,
+  Eye,
+  FolderTree,
+  Globe2,
+  LoaderCircle,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
@@ -15,6 +24,7 @@ import ChatMarkdown from "~/components/ChatMarkdown";
 import { OpenInPicker } from "~/components/chat/OpenInPicker";
 import { ensureEnvironmentApi } from "~/environmentApi";
 import { usePrimaryEnvironmentId } from "~/environments/primary/context";
+import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useTheme } from "~/hooks/useTheme";
 import { resolveDiffThemeName } from "~/lib/diffRendering";
 import { cn } from "~/lib/utils";
@@ -27,7 +37,7 @@ import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { type DraftId, useComposerDraftStore } from "~/composerDraftStore";
 import { buildFileReviewComment } from "~/reviewCommentContext";
 
-import FileBrowserPanel from "./FileBrowserPanel";
+import FileBrowserPanel, { type FileBrowserPanelHandle } from "./FileBrowserPanel";
 import {
   type FileCommentAnnotationEntry,
   type FileCommentAnnotationGroup,
@@ -605,12 +615,24 @@ export default function FilePreviewPanel({
   const { resolvedTheme } = useTheme();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const file = useProjectFileQuery(environmentId, cwd, relativePath);
+  const { copyToClipboard: copyFileContents, isCopied: fileCopied } = useCopyToClipboard({
+    onError: (error) =>
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Unable to copy file",
+          description: error.message,
+        }),
+      ),
+  });
   const [explorerOpen, setExplorerOpen] = useState(initialExplorerOpen);
   const [markdownView, setMarkdownView] = useState<{
     path: string | null;
     revealRequestId: number | null;
   }>({ path: null, revealRequestId: null });
   const breadcrumbRef = useRef<HTMLDivElement>(null);
+  const fileBrowserRef = useRef<FileBrowserPanelHandle>(null);
+  const pendingRevealRef = useRef<string | null>(null);
   const isMarkdown = relativePath ? isMarkdownPreviewFile(relativePath) : false;
   const renderMarkdown =
     isMarkdown &&
@@ -632,15 +654,42 @@ export default function FilePreviewPanel({
     currentCrumb?.scrollIntoView({ block: "nearest", inline: "end" });
   }, [relativePath]);
 
+  const persistExplorerOpen = (next: boolean) => {
+    try {
+      window.localStorage.setItem(FILE_EXPLORER_STORAGE_KEY, String(next));
+    } catch {}
+  };
+
   const toggleExplorer = () => {
     setExplorerOpen((current) => {
       const next = !current;
-      try {
-        window.localStorage.setItem(FILE_EXPLORER_STORAGE_KEY, String(next));
-      } catch {}
+      persistExplorerOpen(next);
       return next;
     });
   };
+
+  // Activating a breadcrumb reveals that folder (or the open file) in the tree.
+  // If the explorer is hidden we open it first and defer the reveal until the
+  // panel — and therefore its imperative handle — has mounted.
+  const handleCrumbActivate = (crumbPath: string) => {
+    if (explorerOpen) {
+      fileBrowserRef.current?.revealPath(crumbPath);
+      return;
+    }
+    pendingRevealRef.current = crumbPath;
+    persistExplorerOpen(true);
+    setExplorerOpen(true);
+  };
+
+  useEffect(() => {
+    if (!explorerOpen || pendingRevealRef.current === null) return;
+    const targetPath = pendingRevealRef.current;
+    pendingRevealRef.current = null;
+    const frame = requestAnimationFrame(() => {
+      fileBrowserRef.current?.revealPath(targetPath);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [explorerOpen]);
 
   const handleOpenInBrowser = () => {
     if (!absolutePath) return;
@@ -676,21 +725,42 @@ export default function FilePreviewPanel({
                   {index > 0 ? (
                     <ChevronRight className="mx-1 size-3.5 shrink-0 text-muted-foreground/60" />
                   ) : null}
-                  <span
+                  <button
+                    type="button"
+                    onClick={() => handleCrumbActivate(crumb.path)}
                     className={cn(
-                      "max-w-40 truncate",
+                      "max-w-40 truncate rounded px-1 py-0.5 hover:bg-accent hover:text-foreground",
                       crumb.kind === "file"
                         ? "font-medium text-foreground"
                         : "text-muted-foreground",
                     )}
-                    title={crumb.path || projectName}
+                    title={`Reveal ${crumb.path || projectName} in the file explorer`}
                   >
                     {crumb.label}
-                  </span>
+                  </button>
                 </div>
               ))}
             </div>
           </ScrollArea>
+          {file.data ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Toggle
+                    className="shrink-0"
+                    pressed={fileCopied}
+                    onPressedChange={() => copyFileContents(file.data?.contents ?? "")}
+                    aria-label={fileCopied ? "Copied file contents" : "Copy file contents"}
+                    variant="ghost"
+                    size="sm"
+                  >
+                    {fileCopied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+                  </Toggle>
+                }
+              />
+              <TooltipPopup>{fileCopied ? "Copied!" : "Copy file contents"}</TooltipPopup>
+            </Tooltip>
+          ) : null}
           {absolutePath && environmentId === primaryEnvironmentId ? (
             <OpenInPicker
               keybindings={keybindings}
@@ -849,6 +919,7 @@ export default function FilePreviewPanel({
           >
             <FileBrowserPanel
               key={`${environmentId}:${cwd}`}
+              ref={fileBrowserRef}
               environmentId={environmentId}
               cwd={cwd}
               projectName={projectName}

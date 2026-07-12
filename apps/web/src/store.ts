@@ -444,6 +444,10 @@ function removeId<T extends string>(ids: readonly T[], id: T): T[] {
   return ids.filter((value) => value !== id);
 }
 
+function uniqueIds<T extends string>(ids: readonly T[]): T[] {
+  return [...new Set(ids)];
+}
+
 function buildMessageSlice(thread: Thread): {
   ids: MessageId[];
   byId: Record<MessageId, ChatMessage>;
@@ -828,6 +832,40 @@ function removeThreadState(state: EnvironmentState, threadId: ThreadId): Environ
   };
 }
 
+function remapProjectThreads(
+  state: EnvironmentState,
+  fromProjectId: ProjectId,
+  toProjectId: ProjectId,
+): Pick<EnvironmentState, "threadIdsByProjectId" | "threadShellById"> {
+  const fromThreadIds = state.threadIdsByProjectId[fromProjectId] ?? EMPTY_THREAD_IDS;
+  const toThreadIds = state.threadIdsByProjectId[toProjectId] ?? EMPTY_THREAD_IDS;
+  const nextProjectThreadIds = uniqueIds([...toThreadIds, ...fromThreadIds]);
+  const { [fromProjectId]: _removedThreadIds, ...restThreadIdsByProjectId } =
+    state.threadIdsByProjectId;
+  const threadIdsByProjectId =
+    nextProjectThreadIds.length === 0
+      ? restThreadIdsByProjectId
+      : {
+          ...restThreadIdsByProjectId,
+          [toProjectId]: nextProjectThreadIds,
+        };
+  let threadShellById = state.threadShellById;
+  for (const threadId of fromThreadIds) {
+    const shell = threadShellById[threadId];
+    if (shell?.projectId !== fromProjectId) {
+      continue;
+    }
+    if (threadShellById === state.threadShellById) {
+      threadShellById = { ...state.threadShellById };
+    }
+    threadShellById[threadId] = { ...shell, projectId: toProjectId };
+  }
+  return {
+    threadIdsByProjectId,
+    threadShellById,
+  };
+}
+
 function checkpointStatusToLatestTurnState(status: "ready" | "missing" | "error") {
   if (status === "error") {
     return "error" as const;
@@ -1053,15 +1091,59 @@ function updateThreadState(
   return writeThreadState(state, nextThread, currentThread);
 }
 
-function buildProjectState(
-  projects: ReadonlyArray<Project>,
-): Pick<EnvironmentState, "projectIds" | "projectById"> {
+function buildDedupedProjectState(projects: ReadonlyArray<Project>): {
+  readonly projectState: Pick<EnvironmentState, "projectIds" | "projectById">;
+  readonly projectIdRemap: ReadonlyMap<ProjectId, ProjectId>;
+} {
+  let projectIds: ProjectId[] = [];
+  let projectById: Record<ProjectId, Project> = {};
+  const projectIdRemap = new Map<ProjectId, ProjectId>();
+
+  for (const project of projects) {
+    const existingProjectId =
+      projectIds.find(
+        (projectId) => projectId === project.id || projectById[projectId]?.cwd === project.cwd,
+      ) ?? null;
+
+    if (existingProjectId !== null && existingProjectId !== project.id) {
+      const { [existingProjectId]: _removedProject, ...restProjectById } = projectById;
+      projectById = {
+        ...restProjectById,
+        [project.id]: project,
+      };
+      projectIds = projectIds.map((projectId) =>
+        projectId === existingProjectId ? project.id : projectId,
+      );
+      projectIdRemap.set(existingProjectId, project.id);
+      for (const [fromProjectId, toProjectId] of projectIdRemap) {
+        if (toProjectId === existingProjectId) {
+          projectIdRemap.set(fromProjectId, project.id);
+        }
+      }
+    } else {
+      projectById = {
+        ...projectById,
+        [project.id]: project,
+      };
+      projectIds =
+        existingProjectId === null && !projectIds.includes(project.id)
+          ? [...projectIds, project.id]
+          : projectIds;
+    }
+  }
+
   return {
-    projectIds: projects.map((project) => project.id),
-    projectById: Object.fromEntries(
-      projects.map((project) => [project.id, project] as const),
-    ) as Record<ProjectId, Project>,
+    projectState: { projectIds, projectById },
+    projectIdRemap,
   };
+}
+
+function remapSnapshotThreadProjectId(
+  thread: OrchestrationThreadShell,
+  projectIdRemap: ReadonlyMap<ProjectId, ProjectId>,
+): OrchestrationThreadShell {
+  const projectId = projectIdRemap.get(thread.projectId);
+  return projectId ? { ...thread, projectId } : thread;
 }
 
 function getStoredEnvironmentState(
@@ -1101,10 +1183,11 @@ function syncEnvironmentShellSnapshot(
   environmentId: EnvironmentId,
 ): EnvironmentState {
   const nextProjects = snapshot.projects.map((project) => mapProject(project, environmentId));
+  const { projectState, projectIdRemap } = buildDedupedProjectState(nextProjects);
   const nextThreadIds = new Set(snapshot.threads.map((thread) => thread.id));
   let nextState: EnvironmentState = {
     ...state,
-    ...buildProjectState(nextProjects),
+    ...projectState,
     threadIds: [],
     threadIdsByProjectId: {},
     threadShellById: {},
@@ -1129,7 +1212,10 @@ function syncEnvironmentShellSnapshot(
   };
 
   for (const thread of snapshot.threads) {
-    nextState = writeThreadShellState(nextState, mapThreadShell(thread, environmentId));
+    nextState = writeThreadShellState(
+      nextState,
+      mapThreadShell(remapSnapshotThreadProjectId(thread, projectIdRemap), environmentId),
+    );
   }
 
   return nextState;
@@ -1200,8 +1286,11 @@ function applyEnvironmentOrchestrationEvent(
         ) ?? null;
       let projectById = state.projectById;
       let projectIds = state.projectIds;
+      let threadIdsByProjectId = state.threadIdsByProjectId;
+      let threadShellById = state.threadShellById;
 
       if (existingProjectId !== null && existingProjectId !== nextProject.id) {
+        const remappedThreads = remapProjectThreads(state, existingProjectId, nextProject.id);
         const { [existingProjectId]: _removedProject, ...restProjectById } = state.projectById;
         projectById = {
           ...restProjectById,
@@ -1210,6 +1299,8 @@ function applyEnvironmentOrchestrationEvent(
         projectIds = state.projectIds.map((projectId) =>
           projectId === existingProjectId ? nextProject.id : projectId,
         );
+        threadIdsByProjectId = remappedThreads.threadIdsByProjectId;
+        threadShellById = remappedThreads.threadShellById;
       } else {
         projectById = {
           ...state.projectById,
@@ -1225,6 +1316,8 @@ function applyEnvironmentOrchestrationEvent(
         ...state,
         projectById,
         projectIds,
+        threadIdsByProjectId,
+        threadShellById,
       };
     }
 
@@ -1714,8 +1807,11 @@ function applyEnvironmentShellEvent(
         ) ?? null;
       let projectById = state.projectById;
       let projectIds = state.projectIds;
+      let threadIdsByProjectId = state.threadIdsByProjectId;
+      let threadShellById = state.threadShellById;
 
       if (existingProjectId !== null && existingProjectId !== nextProject.id) {
+        const remappedThreads = remapProjectThreads(state, existingProjectId, nextProject.id);
         const { [existingProjectId]: _removedProject, ...restProjectById } = state.projectById;
         projectById = {
           ...restProjectById,
@@ -1724,6 +1820,8 @@ function applyEnvironmentShellEvent(
         projectIds = state.projectIds.map((projectId) =>
           projectId === existingProjectId ? nextProject.id : projectId,
         );
+        threadIdsByProjectId = remappedThreads.threadIdsByProjectId;
+        threadShellById = remappedThreads.threadShellById;
       } else {
         projectById = {
           ...state.projectById,
@@ -1739,6 +1837,8 @@ function applyEnvironmentShellEvent(
         ...state,
         projectById,
         projectIds,
+        threadIdsByProjectId,
+        threadShellById,
       };
     }
     case "project-removed": {

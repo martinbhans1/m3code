@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it } from "@effect/vitest";
 import {
   MessageId,
   CommandId,
@@ -14,6 +14,7 @@ import * as Effect from "effect/Effect";
 import {
   findThreadById,
   listThreadsByProjectId,
+  requireActiveProjectWorkspaceRootAbsent,
   requireNonNegativeInteger,
   requireThread,
   requireThreadAbsent,
@@ -126,30 +127,29 @@ describe("commandInvariants", () => {
     ).toEqual([ThreadId.make("thread-2")]);
   });
 
-  it("requires existing thread", async () => {
-    const thread = await Effect.runPromise(
-      requireThread({
+  it.effect("requires existing thread", () =>
+    Effect.gen(function* () {
+      const thread = yield* requireThread({
         readModel,
         command: messageSendCommand,
         threadId: ThreadId.make("thread-1"),
-      }),
-    );
-    expect(thread.id).toBe(ThreadId.make("thread-1"));
+      });
+      expect(thread.id).toBe(ThreadId.make("thread-1"));
 
-    await expect(
-      Effect.runPromise(
+      const error = yield* Effect.flip(
         requireThread({
           readModel,
           command: messageSendCommand,
           threadId: ThreadId.make("missing"),
         }),
-      ),
-    ).rejects.toThrow("does not exist");
-  });
+      );
+      expect(error.message).toContain("does not exist");
+    }),
+  );
 
-  it("requires missing thread for create flows", async () => {
-    await Effect.runPromise(
-      requireThreadAbsent({
+  it.effect("requires missing thread for create flows", () =>
+    Effect.gen(function* () {
+      yield* requireThreadAbsent({
         readModel,
         command: {
           type: "thread.create",
@@ -168,11 +168,9 @@ describe("commandInvariants", () => {
           createdAt: now,
         },
         threadId: ThreadId.make("thread-3"),
-      }),
-    );
+      });
 
-    await expect(
-      Effect.runPromise(
+      const error = yield* Effect.flip(
         requireThreadAbsent({
           readModel,
           command: {
@@ -193,27 +191,65 @@ describe("commandInvariants", () => {
           },
           threadId: ThreadId.make("thread-1"),
         }),
-      ),
-    ).rejects.toThrow("already exists");
-  });
+      );
+      expect(error.message).toContain("already exists");
+    }),
+  );
 
-  it("requires non-negative integers", async () => {
-    await Effect.runPromise(
-      requireNonNegativeInteger({
+  it.effect("rejects creating another active project for the same workspace root", () =>
+    Effect.gen(function* () {
+      const command: OrchestrationCommand = {
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-create"),
+        projectId: ProjectId.make("project-c"),
+        title: "Project C",
+        workspaceRoot: "/tmp/project-a",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt: now,
+      };
+
+      const error = yield* Effect.flip(
+        requireActiveProjectWorkspaceRootAbsent({
+          readModel,
+          command,
+          projectId: command.projectId,
+          workspaceRoot: command.workspaceRoot,
+        }),
+      );
+      expect(error.message).toContain("already uses workspace root");
+
+      yield* requireActiveProjectWorkspaceRootAbsent({
+        readModel,
+        command: {
+          ...command,
+          projectId: ProjectId.make("project-d"),
+          workspaceRoot: "/tmp/project-d",
+        },
+        projectId: ProjectId.make("project-d"),
+        workspaceRoot: "/tmp/project-d",
+      });
+    }),
+  );
+
+  it.effect("requires non-negative integers", () =>
+    Effect.gen(function* () {
+      yield* requireNonNegativeInteger({
         commandType: "thread.checkpoint.revert",
         field: "turnCount",
         value: 0,
-      }),
-    );
+      });
 
-    await expect(
-      Effect.runPromise(
+      const error = yield* Effect.flip(
         requireNonNegativeInteger({
           commandType: "thread.checkpoint.revert",
           field: "turnCount",
           value: -1,
         }),
-      ),
-    ).rejects.toThrow("greater than or equal to 0");
-  });
+      );
+      expect(error.message).toContain("greater than or equal to 0");
+    }),
+  );
 });

@@ -9,6 +9,7 @@
   --workspace-controls-top: 0px;
   --workspace-controls-right: calc(env(safe-area-inset-right) + 0.75rem);
   --workspace-native-controls-inset: 0px;
+  --workspace-surface-radius: 18px;
 }
 
 .wco {
@@ -54,6 +55,17 @@
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
+  /* Sidebar / chrome surface tokens. Values live in themes.css (defaulting to
+     the app tokens, so the stock look is unchanged) and are overridden per
+     palette. Mapped here because @theme must be processed by Tailwind. */
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-ring: var(--sidebar-ring);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -90,6 +102,120 @@
 }
 
 @layer components {
+  .app-ambient-shell {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    background: var(--environment-background, var(--app-chrome-background));
+  }
+
+  .app-ambient-shell::before,
+  .app-ambient-shell::after {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    content: "";
+    pointer-events: none;
+  }
+
+  .app-ambient-shell::before {
+    background: var(--environment-gradient, transparent);
+    background-size: 180% 180%;
+    opacity: var(--environment-gradient-opacity, 1);
+    animation: ambient-drift 48s ease-in-out infinite alternate;
+  }
+
+  /* Starfield. Each dot is its OWN full-size, non-repeating radial-gradient at
+     an irregular position — no tiling, so there's no grid of "perfect squares".
+     The layer is slightly oversized (inset) so the slow drift never exposes a
+     bare edge. Brightness varies per dot for depth; --environment-stars-opacity
+     scales the whole field (0 in plain themes, low in spacey ones). */
+  .app-ambient-shell::after {
+    inset: -3%;
+    background-repeat: no-repeat;
+    background-image:
+      radial-gradient(circle at 3% 91%, rgb(255 255 255 / 0.9) 0 1.4px, transparent 2px),
+      radial-gradient(circle at 11% 47%, rgb(255 255 255 / 0.5) 0 1px, transparent 1.6px),
+      radial-gradient(circle at 7% 73%, rgb(255 255 255 / 0.7) 0 1.2px, transparent 1.8px),
+      radial-gradient(circle at 17% 12%, rgb(255 255 255 / 0.55) 0 1px, transparent 1.6px),
+      radial-gradient(circle at 23% 88%, rgb(255 255 255 / 0.8) 0 1.3px, transparent 1.9px),
+      radial-gradient(circle at 29% 34%, rgb(255 255 255 / 0.45) 0 0.9px, transparent 1.5px),
+      radial-gradient(circle at 14% 61%, rgb(255 255 255 / 0.65) 0 1.1px, transparent 1.7px),
+      radial-gradient(circle at 34% 7%, rgb(255 255 255 / 0.6) 0 1.1px, transparent 1.7px),
+      radial-gradient(circle at 41% 52%, rgb(255 255 255 / 0.85) 0 1.3px, transparent 1.9px),
+      radial-gradient(circle at 38% 81%, rgb(255 255 255 / 0.5) 0 1px, transparent 1.6px),
+      radial-gradient(circle at 47% 23%, rgb(255 255 255 / 0.7) 0 1.2px, transparent 1.8px),
+      radial-gradient(circle at 53% 67%, rgb(255 255 255 / 0.55) 0 1px, transparent 1.6px),
+      radial-gradient(circle at 44% 94%, rgb(255 255 255 / 0.75) 0 1.2px, transparent 1.8px),
+      radial-gradient(circle at 59% 9%, rgb(255 255 255 / 0.5) 0 1px, transparent 1.6px),
+      radial-gradient(circle at 63% 44%, rgb(255 255 255 / 0.9) 0 1.4px, transparent 2px),
+      radial-gradient(circle at 57% 79%, rgb(255 255 255 / 0.6) 0 1.1px, transparent 1.7px),
+      radial-gradient(circle at 68% 28%, rgb(255 255 255 / 0.5) 0 1px, transparent 1.6px),
+      radial-gradient(circle at 73% 61%, rgb(255 255 255 / 0.8) 0 1.3px, transparent 1.9px),
+      radial-gradient(circle at 79% 14%, rgb(255 255 255 / 0.55) 0 1px, transparent 1.6px),
+      radial-gradient(circle at 71% 88%, rgb(255 255 255 / 0.7) 0 1.2px, transparent 1.8px),
+      radial-gradient(circle at 83% 47%, rgb(255 255 255 / 0.6) 0 1.1px, transparent 1.7px),
+      radial-gradient(circle at 88% 73%, rgb(255 255 255 / 0.85) 0 1.3px, transparent 1.9px),
+      radial-gradient(circle at 92% 22%, rgb(255 255 255 / 0.5) 0 1px, transparent 1.6px),
+      radial-gradient(circle at 96% 58%, rgb(255 255 255 / 0.75) 0 1.2px, transparent 1.8px),
+      radial-gradient(circle at 86% 91%, rgb(255 255 255 / 0.55) 0 1px, transparent 1.6px),
+      radial-gradient(circle at 27% 71%, rgb(255 255 255 / 0.6) 0 1.1px, transparent 1.7px),
+      radial-gradient(circle at 49% 38%, rgb(255 255 255 / 0.45) 0 0.9px, transparent 1.5px),
+      radial-gradient(circle at 66% 17%, rgb(255 255 255 / 0.8) 0 1.3px, transparent 1.9px),
+      radial-gradient(circle at 9% 28%, rgb(255 255 255 / 0.65) 0 1.1px, transparent 1.7px),
+      radial-gradient(circle at 81% 36%, rgb(255 255 255 / 0.7) 0 1.2px, transparent 1.8px);
+    opacity: var(--environment-stars-opacity, 0);
+    animation:
+      ambient-stars 60s ease-in-out infinite alternate,
+      ambient-twinkle 7s ease-in-out infinite;
+    will-change: transform, filter;
+  }
+
+  .app-ambient-shell > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .app-ambient-sidebar {
+    border-width: 0;
+    border-color: transparent;
+  }
+
+  /* The sidebar must be see-through so the full-window ambient background (and
+     its gradient) shows behind it — same surface as the borderless header. The
+     inner shell carries Tailwind's `bg-sidebar` utility, which lives in the
+     `utilities` cascade layer; this rule lives in `components`, and layer order
+     beats selector specificity, so a plain override here loses. `!important`
+     (utilities aren't !important) is what actually wins and forces transparent
+     across every theme, including ones like nebula that set an opaque
+     --sidebar. */
+  .app-ambient-sidebar [data-slot="sidebar-inner"] {
+    background: transparent !important;
+  }
+
+  /* On mobile the sidebar is an opaque sheet overlay, not a panel floating over
+     the ambient field, so it must NOT be see-through — content behind it would
+     bleed through and make it unreadable. The `bg-transparent` utility from
+     .app-ambient-sidebar (passed through to the mobile SheetPopup) would win
+     over its `bg-sidebar`, so force the solid --sidebar surface back here. */
+  .app-ambient-sidebar[data-mobile="true"] {
+    background: var(--sidebar) !important;
+  }
+
+  /* The working surface (everything BELOW the chat header). Only the top and
+     left edges are bordered, and only the top-left corner is rounded, so the
+     chat area reads as a panel laid over the ambient field while the header
+     above it stays borderless and merges into the sidebar. No right/bottom
+     border — the right edge meets the window edge (or the right panel, which
+     draws its own left border). */
+  .app-chat-panel {
+    border-top: 1px solid var(--border);
+    border-left: 1px solid var(--border);
+    border-top-left-radius: var(--workspace-surface-radius);
+    box-shadow: var(--workspace-surface-shadow, none);
+    backdrop-filter: blur(var(--workspace-surface-backdrop-blur, 0));
+  }
+
   .workspace-topbar {
     display: flex;
     height: var(--workspace-topbar-height);
@@ -110,6 +236,56 @@
 
   .surface-subheader {
     @apply flex h-10 min-h-10 shrink-0 items-center border-b border-border/60 bg-background;
+  }
+
+  @media (max-width: 47.999rem) {
+    .app-chat-panel {
+      border-top-left-radius: 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .app-ambient-shell::before,
+    .app-ambient-shell::after {
+      animation: none;
+    }
+  }
+
+  @keyframes ambient-drift {
+    from {
+      background-position: 0% 50%;
+      transform: scale(1);
+    }
+    to {
+      background-position: 100% 44%;
+      transform: scale(1.04);
+    }
+  }
+
+  /* Slow parallax drift — perceptible if you watch the field for a few seconds,
+     but calm enough to ignore while working. */
+  @keyframes ambient-stars {
+    0% {
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+    50% {
+      transform: translate3d(-2.4%, 1.8%, 0) scale(1.03);
+    }
+    100% {
+      transform: translate3d(1.6%, -1.4%, 0) scale(1.01);
+    }
+  }
+
+  /* Gentle field-wide brightness pulse so the stars read as alive (a stand-in
+     for per-star twinkle, which a single gradient layer can't do). */
+  @keyframes ambient-twinkle {
+    0%,
+    100% {
+      filter: brightness(0.78);
+    }
+    50% {
+      filter: brightness(1.22);
+    }
   }
 }
 
@@ -758,6 +934,59 @@ label:has(> select#reasoning-effort) select {
   background-clip: text;
   -webkit-background-clip: text;
   animation: ultrathink-rainbow 10s linear infinite;
+}
+
+/* ── Smooth caret ──────────────────────────────────────────────────────────
+   When enabled, the composer hides its native caret and paints a custom one
+   that transitions between positions. The overlay is positioned in JS (see
+   ComposerSmoothCaretPlugin); these rules own its look + the glide/blink. */
+[data-smooth-caret="on"] .composer-smooth-caret-host [data-testid="composer-editor"] {
+  caret-color: transparent;
+}
+
+.composer-smooth-caret {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  border-radius: 1px;
+  background-color: currentColor;
+  color: var(--foreground);
+  pointer-events: none;
+  opacity: 0;
+  will-change: transform, height;
+  transform: translate(0, 0);
+  transition:
+    transform 95ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 95ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.composer-smooth-caret[data-visible="true"] {
+  opacity: 1;
+  animation: composer-smooth-caret-blink 1.1s steps(1, end) infinite;
+}
+
+/* Re-triggered on every move so the caret is solid while gliding, then blinks. */
+.composer-smooth-caret[data-moving="true"] {
+  animation: none;
+  opacity: 1;
+}
+
+@keyframes composer-smooth-caret-blink {
+  0%,
+  55% {
+    opacity: 1;
+  }
+  56%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-smooth-caret {
+    transition: none;
+  }
 }
 
 /* Thin scrollbar for model picker */

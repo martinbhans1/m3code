@@ -1,0 +1,469 @@
+/*
+ * Named color palettes.
+ *
+ * This file is intentionally kept SEPARATE from index.css so it stays out of
+ * the way of upstream (pingdotgg/t3code) merges — index.css is a file upstream
+ * actively edits, this one it never touches. It is imported from main.tsx
+ * immediately after index.css.
+ *
+ * How theming works:
+ *   - index.css defines the base token set on :root (light) and inside its
+ *     `@variant dark` block (dark), and maps those tokens into Tailwind
+ *     utilities via `@theme inline`.
+ *   - useTheme.ts sets `documentElement.dataset.theme` to the resolved theme id
+ *     and toggles the `.dark` class from the theme's base mode (so every
+ *     existing `dark:` utility keeps resolving).
+ *   - Each palette below overrides the same token vocabulary. Selectors are
+ *     written to out-specify the base:
+ *       light-base  ->  :root[data-theme="x"]        (beats plain :root)
+ *       dark-base   ->  :root.dark[data-theme="x"]   (beats the dark variant)
+ *
+ * To add a palette: add a block here AND an entry to THEME_DEFINITIONS in
+ * apps/web/src/hooks/useTheme.ts. Nothing else is required — no component edits.
+ */
+
+/* ---------------------------------------------------------------------------
+ * Sidebar / chrome surface tokens.
+ *
+ * The sidebar component already ships `bg-sidebar` / `text-sidebar-foreground`
+ * / `bg-sidebar-accent` / `bg-sidebar-border` utilities, but the tokens behind
+ * them were never defined, so those classes were dead and the sidebar simply
+ * inherited the page background. We default them to the existing app tokens
+ * here (so the stock light/dark look is unchanged) and let palettes override
+ * them for a distinct chrome.
+ * ------------------------------------------------------------------------- */
+:root {
+  --sidebar-foreground: var(--foreground);
+  --sidebar-border: var(--border);
+  --sidebar-accent: var(--accent);
+  --sidebar-accent-foreground: var(--accent-foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-ring: var(--ring);
+  /* Chrome (sidebar + header backdrop) is a touch darker than the content
+     background so the two surfaces read as distinct — the chat panel sits as a
+     lighter card over the chrome, instead of everything being one flat color.
+     index.css defaults --app-chrome-background to --background (no contrast);
+     named palettes set their own, so we only fill the stock light/dark here. */
+  --app-chrome-background: color-mix(in srgb, var(--background) 91%, #000);
+  --sidebar: var(--app-chrome-background);
+  --environment-background: var(--app-chrome-background);
+  /* Colors the ambient gradient glows draw from. Default to the palette accent
+     tokens; a custom chrome tint (below) overrides them with the chosen hue. */
+  --ambient-glow-primary: var(--primary);
+  --ambient-glow-secondary: var(--info);
+  /* Ambient effects (gradient + starfield) are owned by the orthogonal
+     environment axis — see the [data-environment] blocks below. These are the
+     plain defaults so the very first paint (before JS sets the attribute) shows
+     no effects, regardless of which color palette is active. */
+  --environment-gradient: none;
+  --environment-gradient-opacity: 1;
+  --environment-stars-opacity: 0;
+  --workspace-surface-backdrop-blur: 0;
+  /* The chat panel draws its own top + left border; no full-perimeter ring,
+     so nothing renders down the right edge or "all the way up" the left. */
+  --workspace-surface-shadow: none;
+}
+
+:root.dark {
+  /* Same idea in dark: a deeper chrome under the sidebar + header, with the
+     chat panel a step lighter on top. The stock dark --background is already
+     near-black, so a small black mix is invisible — go ~45% to get a real step
+     (~#161616 background vs ~#0c0c0c chrome). */
+  --app-chrome-background: color-mix(in srgb, var(--background) 55%, #000);
+  --sidebar: var(--app-chrome-background);
+  --environment-background: var(--app-chrome-background);
+  /* Gradient + stars come from the environment axis below, not the palette. */
+  --workspace-surface-backdrop-blur: 0;
+  --workspace-surface-shadow: none;
+}
+
+/* ===========================================================================
+ * AMBIENT ENVIRONMENT AXIS
+ *
+ * Orthogonal to the color palette: data-theme picks the colors, data-environment
+ * picks how lively the background is. Any palette can pair with any environment
+ * (nord colors + cosmos field, nebula colors flat, etc.). Driven by useTheme.ts,
+ * which writes documentElement.dataset.environment.
+ *
+ * The gradient is built from palette TOKENS (--primary / --info), so it adopts
+ * whatever colors the active palette uses instead of hardcoding hues.
+ * ======================================================================== */
+:root[data-environment="aurora"],
+:root[data-environment="cosmos"] {
+  --environment-gradient:
+    radial-gradient(circle at 14% 4%, color-mix(in oklab, var(--ambient-glow-primary) 50%, transparent), transparent 40%),
+    radial-gradient(circle at 2% 64%, color-mix(in oklab, var(--ambient-glow-secondary) 42%, transparent), transparent 48%),
+    radial-gradient(circle at 64% 10%, color-mix(in oklab, var(--ambient-glow-primary) 30%, transparent), transparent 38%),
+    radial-gradient(circle at 90% 80%, color-mix(in oklab, var(--ambient-glow-secondary) 22%, transparent), transparent 44%),
+    linear-gradient(150deg, var(--app-chrome-background), var(--background));
+}
+
+:root[data-environment="cosmos"] {
+  --environment-stars-opacity: 0.55;
+}
+
+:root[data-environment="plain"] {
+  --environment-gradient: none;
+  --environment-stars-opacity: 0;
+}
+
+/* ===========================================================================
+ * DARK-BASE PALETTES
+ * ======================================================================== */
+
+/* Midnight — deep indigo black with a blue-violet accent and softer corners. */
+:root.dark[data-theme="midnight"] {
+  color-scheme: dark;
+  --radius: 0.85rem;
+  --background: oklch(0.21 0.028 274);
+  --app-chrome-background: oklch(0.18 0.028 274);
+  --foreground: oklch(0.93 0.018 270);
+  --card: oklch(0.245 0.03 274);
+  --card-foreground: oklch(0.93 0.018 270);
+  --popover: oklch(0.245 0.03 274);
+  --popover-foreground: oklch(0.93 0.018 270);
+  --primary: oklch(0.64 0.19 278);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.3 0.03 274);
+  --secondary-foreground: oklch(0.93 0.018 270);
+  --muted: oklch(0.3 0.03 274);
+  --muted-foreground: oklch(0.72 0.03 274);
+  --accent: oklch(0.33 0.05 280);
+  --accent-foreground: oklch(0.95 0.018 270);
+  --destructive: oklch(0.62 0.2 24);
+  --destructive-foreground: oklch(0.84 0.13 24);
+  --border: oklch(0.92 0.02 270 / 11%);
+  --input: oklch(0.92 0.02 270 / 14%);
+  --ring: oklch(0.64 0.19 278);
+  --info: oklch(0.66 0.15 248);
+  --info-foreground: oklch(0.82 0.12 248);
+  --success: oklch(0.72 0.15 162);
+  --success-foreground: oklch(0.83 0.14 162);
+  --warning: oklch(0.8 0.13 82);
+  --warning-foreground: oklch(0.86 0.12 82);
+  --sidebar: oklch(0.17 0.027 274);
+  --sidebar-foreground: oklch(0.9 0.018 270);
+  --sidebar-border: oklch(0.92 0.02 270 / 9%);
+  --sidebar-accent: oklch(0.31 0.05 280);
+  --sidebar-accent-foreground: oklch(0.95 0.018 270);
+  --sidebar-primary: oklch(0.64 0.19 278);
+  --sidebar-primary-foreground: oklch(0.99 0 0);
+  --sidebar-ring: oklch(0.64 0.19 278);
+}
+
+/* Nebula - a deeper space theme with slow, barely visible motion. */
+:root.dark[data-theme="nebula"] {
+  color-scheme: dark;
+  --radius: 0.8rem;
+  --background: oklch(0.155 0.018 262);
+  --app-chrome-background: oklch(0.12 0.022 262);
+  --foreground: oklch(0.94 0.016 255);
+  --card: oklch(0.19 0.022 262);
+  --card-foreground: oklch(0.94 0.016 255);
+  --popover: oklch(0.19 0.022 262);
+  --popover-foreground: oklch(0.94 0.016 255);
+  --primary: oklch(0.69 0.17 205);
+  --primary-foreground: oklch(0.12 0.022 262);
+  --secondary: oklch(0.235 0.025 262);
+  --secondary-foreground: oklch(0.92 0.016 255);
+  --muted: oklch(0.235 0.025 262);
+  --muted-foreground: oklch(0.7 0.025 250);
+  --accent: oklch(0.27 0.045 250);
+  --accent-foreground: oklch(0.96 0.016 255);
+  --destructive: oklch(0.62 0.2 24);
+  --destructive-foreground: oklch(0.84 0.13 24);
+  --border: oklch(0.92 0.02 255 / 10%);
+  --input: oklch(0.92 0.02 255 / 13%);
+  --ring: oklch(0.69 0.17 205);
+  --info: oklch(0.69 0.17 205);
+  --info-foreground: oklch(0.8 0.13 205);
+  --success: oklch(0.72 0.15 162);
+  --success-foreground: oklch(0.83 0.14 162);
+  --warning: oklch(0.8 0.13 82);
+  --warning-foreground: oklch(0.86 0.12 82);
+  --sidebar: oklch(0.12 0.022 262);
+  --sidebar-foreground: oklch(0.9 0.018 255);
+  --sidebar-border: oklch(0.92 0.02 255 / 8%);
+  --sidebar-accent: oklch(0.27 0.045 250 / 0.76);
+  --sidebar-accent-foreground: oklch(0.96 0.016 255);
+  --sidebar-primary: oklch(0.69 0.17 205);
+  --sidebar-primary-foreground: oklch(0.12 0.022 262);
+  --sidebar-ring: oklch(0.69 0.17 205);
+  --environment-background: oklch(0.105 0.024 262);
+}
+
+/* Glass - translucent work surface over the same ambient field. */
+:root.dark[data-theme="glass"] {
+  color-scheme: dark;
+  --radius: 1rem;
+  --background: oklch(0.16 0.018 252 / 86%);
+  --app-chrome-background: oklch(0.11 0.02 252);
+  --foreground: oklch(0.95 0.012 245);
+  --card: oklch(0.21 0.022 252 / 78%);
+  --card-foreground: oklch(0.95 0.012 245);
+  --popover: oklch(0.2 0.022 252 / 92%);
+  --popover-foreground: oklch(0.95 0.012 245);
+  --primary: oklch(0.72 0.14 224);
+  --primary-foreground: oklch(0.11 0.02 252);
+  --secondary: oklch(0.95 0.012 245 / 8%);
+  --secondary-foreground: oklch(0.95 0.012 245);
+  --muted: oklch(0.95 0.012 245 / 8%);
+  --muted-foreground: oklch(0.76 0.02 245);
+  --accent: oklch(0.95 0.012 245 / 10%);
+  --accent-foreground: oklch(0.98 0.008 245);
+  --destructive: oklch(0.62 0.2 24);
+  --destructive-foreground: oklch(0.84 0.13 24);
+  --border: oklch(0.95 0.012 245 / 13%);
+  --input: oklch(0.95 0.012 245 / 16%);
+  --ring: oklch(0.72 0.14 224);
+  --info: oklch(0.68 0.14 224);
+  --info-foreground: oklch(0.82 0.12 224);
+  --success: oklch(0.72 0.15 162);
+  --success-foreground: oklch(0.83 0.14 162);
+  --warning: oklch(0.8 0.13 82);
+  --warning-foreground: oklch(0.86 0.12 82);
+  --sidebar: transparent;
+  --sidebar-foreground: oklch(0.91 0.014 245);
+  --sidebar-border: transparent;
+  --sidebar-accent: oklch(0.95 0.012 245 / 10%);
+  --sidebar-accent-foreground: oklch(0.98 0.008 245);
+  --sidebar-primary: oklch(0.72 0.14 224);
+  --sidebar-primary-foreground: oklch(0.11 0.02 252);
+  --sidebar-ring: oklch(0.72 0.14 224);
+  --environment-background: oklch(0.105 0.022 252);
+  --workspace-surface-backdrop-blur: 22px;
+  --workspace-surface-shadow: 0 0 0 1px oklch(0.95 0.012 245 / 15%), 0 18px 80px oklch(0 0 0 / 24%);
+}
+
+/* Nord — the canonical arctic palette: polar-night slate, frost-cyan accent. */
+:root.dark[data-theme="nord"] {
+  color-scheme: dark;
+  --radius: 0.5rem;
+  --background: #2e3440;
+  --app-chrome-background: #2b303b;
+  --foreground: #e5e9f0;
+  --card: #343b49;
+  --card-foreground: #e5e9f0;
+  --popover: #343b49;
+  --popover-foreground: #e5e9f0;
+  --primary: #88c0d0;
+  --primary-foreground: #2e3440;
+  --secondary: #3b4252;
+  --secondary-foreground: #e5e9f0;
+  --muted: #3b4252;
+  --muted-foreground: #9aa5b9;
+  --accent: #434c5e;
+  --accent-foreground: #eceff4;
+  --destructive: #bf616a;
+  --destructive-foreground: #f0c7cc;
+  --border: #ffffff14;
+  --input: #ffffff1f;
+  --ring: #88c0d0;
+  --info: #81a1c1;
+  --info-foreground: #b8c9de;
+  --success: #a3be8c;
+  --success-foreground: #c7d8b6;
+  --warning: #ebcb8b;
+  --warning-foreground: #f2dcae;
+  --sidebar: #292e39;
+  --sidebar-foreground: #d8dee9;
+  --sidebar-border: #ffffff12;
+  --sidebar-accent: #3b4252;
+  --sidebar-accent-foreground: #eceff4;
+  --sidebar-primary: #88c0d0;
+  --sidebar-primary-foreground: #2e3440;
+  --sidebar-ring: #88c0d0;
+}
+
+/* Forest — deep green-black with an emerald accent. */
+:root.dark[data-theme="forest"] {
+  color-scheme: dark;
+  --radius: 0.625rem;
+  --background: oklch(0.2 0.024 165);
+  --app-chrome-background: oklch(0.17 0.024 165);
+  --foreground: oklch(0.92 0.02 150);
+  --card: oklch(0.235 0.026 165);
+  --card-foreground: oklch(0.92 0.02 150);
+  --popover: oklch(0.235 0.026 165);
+  --popover-foreground: oklch(0.92 0.02 150);
+  --primary: oklch(0.7 0.16 158);
+  --primary-foreground: oklch(0.16 0.03 165);
+  --secondary: oklch(0.29 0.028 165);
+  --secondary-foreground: oklch(0.92 0.02 150);
+  --muted: oklch(0.29 0.028 165);
+  --muted-foreground: oklch(0.72 0.03 158);
+  --accent: oklch(0.33 0.04 160);
+  --accent-foreground: oklch(0.95 0.02 150);
+  --destructive: oklch(0.62 0.2 24);
+  --destructive-foreground: oklch(0.84 0.13 24);
+  --border: oklch(0.9 0.03 150 / 11%);
+  --input: oklch(0.9 0.03 150 / 14%);
+  --ring: oklch(0.7 0.16 158);
+  --info: oklch(0.66 0.13 220);
+  --info-foreground: oklch(0.82 0.11 220);
+  --success: oklch(0.74 0.16 150);
+  --success-foreground: oklch(0.85 0.15 150);
+  --warning: oklch(0.8 0.13 82);
+  --warning-foreground: oklch(0.86 0.12 82);
+  --sidebar: oklch(0.16 0.022 165);
+  --sidebar-foreground: oklch(0.9 0.02 150);
+  --sidebar-border: oklch(0.9 0.03 150 / 9%);
+  --sidebar-accent: oklch(0.31 0.04 160);
+  --sidebar-accent-foreground: oklch(0.95 0.02 150);
+  --sidebar-primary: oklch(0.7 0.16 158);
+  --sidebar-primary-foreground: oklch(0.16 0.03 165);
+  --sidebar-ring: oklch(0.7 0.16 158);
+}
+
+/* ===========================================================================
+ * LIGHT-BASE PALETTES
+ * ======================================================================== */
+
+/* Solarized — Ethan Schoonover's classic light: cream base, cyan/blue accent. */
+:root[data-theme="solarized"] {
+  color-scheme: light;
+  --radius: 0.5rem;
+  --background: #fdf6e3;
+  --app-chrome-background: #f4ecd4;
+  --foreground: #4f5b62;
+  --card: #fbf3df;
+  --card-foreground: #4f5b62;
+  --popover: #fbf3df;
+  --popover-foreground: #4f5b62;
+  --primary: #268bd2;
+  --primary-foreground: #fdf6e3;
+  --secondary: #efe7cf;
+  --secondary-foreground: #586e75;
+  --muted: #efe7cf;
+  --muted-foreground: #93a1a1;
+  --accent: #eee3c4;
+  --accent-foreground: #586e75;
+  --destructive: #dc322f;
+  --destructive-foreground: #a8201d;
+  --border: #586e7522;
+  --input: #586e752e;
+  --ring: #268bd2;
+  --info: #268bd2;
+  --info-foreground: #1f6fa8;
+  --success: #859900;
+  --success-foreground: #6b7c00;
+  --warning: #b58900;
+  --warning-foreground: #916d00;
+  --sidebar: #f4ecd4;
+  --sidebar-foreground: #586e75;
+  --sidebar-border: #586e751f;
+  --sidebar-accent: #eae0c2;
+  --sidebar-accent-foreground: #586e75;
+  --sidebar-primary: #268bd2;
+  --sidebar-primary-foreground: #fdf6e3;
+  --sidebar-ring: #268bd2;
+}
+
+/* Rosé — warm off-white with a muted rose accent and rounder corners. */
+:root[data-theme="rose"] {
+  color-scheme: light;
+  --radius: 1rem;
+  --background: oklch(0.985 0.008 20);
+  --app-chrome-background: oklch(0.96 0.012 20);
+  --foreground: oklch(0.34 0.04 18);
+  --card: oklch(0.995 0.006 20);
+  --card-foreground: oklch(0.34 0.04 18);
+  --popover: oklch(0.995 0.006 20);
+  --popover-foreground: oklch(0.34 0.04 18);
+  --primary: oklch(0.6 0.16 12);
+  --primary-foreground: oklch(0.99 0.004 20);
+  --secondary: oklch(0.94 0.015 20);
+  --secondary-foreground: oklch(0.38 0.04 18);
+  --muted: oklch(0.94 0.015 20);
+  --muted-foreground: oklch(0.52 0.04 16);
+  --accent: oklch(0.93 0.025 14);
+  --accent-foreground: oklch(0.38 0.05 14);
+  --destructive: oklch(0.58 0.21 26);
+  --destructive-foreground: oklch(0.48 0.2 26);
+  --border: oklch(0.5 0.06 16 / 16%);
+  --input: oklch(0.5 0.06 16 / 22%);
+  --ring: oklch(0.6 0.16 12);
+  --info: oklch(0.58 0.13 250);
+  --info-foreground: oklch(0.5 0.13 250);
+  --success: oklch(0.6 0.13 160);
+  --success-foreground: oklch(0.5 0.13 160);
+  --warning: oklch(0.7 0.13 70);
+  --warning-foreground: oklch(0.56 0.12 60);
+  --sidebar: oklch(0.96 0.018 18);
+  --sidebar-foreground: oklch(0.4 0.04 16);
+  --sidebar-border: oklch(0.5 0.06 16 / 14%);
+  --sidebar-accent: oklch(0.92 0.03 12);
+  --sidebar-accent-foreground: oklch(0.38 0.05 14);
+  --sidebar-primary: oklch(0.6 0.16 12);
+  --sidebar-primary-foreground: oklch(0.99 0.004 20);
+  --sidebar-ring: oklch(0.6 0.16 12);
+}
+
+/* Sand — warm neutral paper with an amber accent. */
+:root[data-theme="sand"] {
+  color-scheme: light;
+  --radius: 0.625rem;
+  --background: oklch(0.97 0.012 80);
+  --app-chrome-background: oklch(0.94 0.018 80);
+  --foreground: oklch(0.32 0.02 70);
+  --card: oklch(0.985 0.01 80);
+  --card-foreground: oklch(0.32 0.02 70);
+  --popover: oklch(0.985 0.01 80);
+  --popover-foreground: oklch(0.32 0.02 70);
+  --primary: oklch(0.64 0.13 64);
+  --primary-foreground: oklch(0.99 0.005 80);
+  --secondary: oklch(0.93 0.018 80);
+  --secondary-foreground: oklch(0.36 0.02 70);
+  --muted: oklch(0.93 0.018 80);
+  --muted-foreground: oklch(0.52 0.025 70);
+  --accent: oklch(0.91 0.03 74);
+  --accent-foreground: oklch(0.36 0.03 68);
+  --destructive: oklch(0.58 0.2 28);
+  --destructive-foreground: oklch(0.48 0.19 28);
+  --border: oklch(0.45 0.04 70 / 16%);
+  --input: oklch(0.45 0.04 70 / 22%);
+  --ring: oklch(0.64 0.13 64);
+  --info: oklch(0.58 0.12 240);
+  --info-foreground: oklch(0.5 0.12 240);
+  --success: oklch(0.6 0.13 150);
+  --success-foreground: oklch(0.5 0.13 150);
+  --warning: oklch(0.7 0.13 74);
+  --warning-foreground: oklch(0.56 0.12 64);
+  --sidebar: oklch(0.94 0.022 78);
+  --sidebar-foreground: oklch(0.38 0.02 70);
+  --sidebar-border: oklch(0.45 0.04 70 / 14%);
+  --sidebar-accent: oklch(0.9 0.035 72);
+  --sidebar-accent-foreground: oklch(0.36 0.03 68);
+  --sidebar-primary: oklch(0.64 0.13 64);
+  --sidebar-primary-foreground: oklch(0.99 0.005 80);
+  --sidebar-ring: oklch(0.64 0.13 64);
+}
+
+/* ===========================================================================
+ * CUSTOM CHROME TINT
+ *
+ * Orthogonal to palette AND environment: an optional user-picked hue for the
+ * sidebar + header surface and the ambient glow. useTheme.ts writes the chosen
+ * color to --chrome-tint and flags data-chrome-tint="on". Placed last so it
+ * wins the cascade over any palette's --app-chrome-background.
+ *
+ * The surface stays a dark/light tinted neutral (readable); the gradient glow
+ * takes the chosen hue at full vividness. Works with any palette + environment.
+ * ======================================================================== */
+:root[data-chrome-tint="on"] {
+  --app-chrome-background: color-mix(in oklab, var(--chrome-tint) 14%, #ececec);
+  --sidebar: var(--app-chrome-background);
+  --environment-background: var(--app-chrome-background);
+  --ambient-glow-primary: var(--chrome-tint);
+  --ambient-glow-secondary: var(--chrome-tint);
+}
+
+:root.dark[data-chrome-tint="on"] {
+  /* 0,3,0 so it beats dark palettes that set their own --environment-background
+     / --sidebar (nebula, glass, …) — those tie the light tint rule's 0,2,0 and
+     would otherwise win. Re-asserting all three here keeps the tint authoritative. */
+  --app-chrome-background: color-mix(in oklab, var(--chrome-tint) 22%, #0a0a0c);
+  --sidebar: var(--app-chrome-background);
+  --environment-background: var(--app-chrome-background);
+}

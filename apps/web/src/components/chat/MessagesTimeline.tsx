@@ -45,6 +45,7 @@ import {
   ChevronUpIcon,
   CircleAlertIcon,
   EyeIcon,
+  FileTextIcon,
   GlobeIcon,
   HammerIcon,
   MessageCircleIcon,
@@ -696,7 +697,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   }
   const elementContextState = extractTrailingElementContexts(visibleText);
   const previewImages = userImages.filter((image) => image.name.startsWith("preview-annotation-"));
-  const regularImages = userImages.filter((image) => !image.name.startsWith("preview-annotation-"));
+  const regularAttachments = userImages.filter(
+    (image) => !image.name.startsWith("preview-annotation-"),
+  );
+  const regularImages = regularAttachments.filter((attachment) => attachment.type !== "file");
+  const regularFiles = regularAttachments.filter((attachment) => attachment.type === "file");
   const canRevertAgentWork = typeof row.revertTurnCount === "number";
 
   return (
@@ -731,6 +736,22 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                     {image.name}
                   </div>
                 )}
+              </div>
+            ))}
+          </div>
+        )}
+        {regularFiles.length > 0 && (
+          <div className="mb-2 flex max-w-[420px] flex-wrap gap-2">
+            {regularFiles.map((file: NonNullable<TimelineMessage["attachments"]>[number]) => (
+              <div
+                key={file.id}
+                className="flex max-w-[220px] items-center gap-2 rounded-lg border border-border/80 bg-background/70 px-2.5 py-2"
+                title={file.name}
+              >
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                  <FileTextIcon className="size-4" />
+                </span>
+                <span className="truncate text-xs font-medium text-foreground">{file.name}</span>
               </div>
             ))}
           </div>

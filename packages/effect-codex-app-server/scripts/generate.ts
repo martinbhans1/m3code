@@ -281,6 +281,29 @@ function stripNullDefaults(value: Schema.Json): Schema.Json {
   ) as Schema.Json;
 }
 
+function applyCompatibilityOverrides(name: string, value: Schema.Json): Schema.Json {
+  if (
+    name !== "V1InitializeResponse" ||
+    Array.isArray(value) ||
+    value === null ||
+    typeof value !== "object"
+  ) {
+    return value;
+  }
+
+  const objectValue = value as Record<string, Schema.Json>;
+  const required = objectValue.required;
+  if (!Array.isArray(required)) {
+    return value;
+  }
+
+  // Codex versions before codexHome was added omit it from initialize responses.
+  return {
+    ...objectValue,
+    required: required.filter((field) => field !== "codexHome"),
+  };
+}
+
 function toPascalCaseMethod(method: string) {
   return method
     .split("/")
@@ -595,7 +618,7 @@ const generateFiles = Effect.fn("generateFiles")(function* () {
   for (const [name, schema] of Object.entries(aggregateSchemas).toSorted(([left], [right]) =>
     left.localeCompare(right),
   )) {
-    generator.addSchema(name, schema as never);
+    generator.addSchema(name, applyCompatibilityOverrides(name, schema) as never);
   }
 
   const generatedEntries = new Map<string, string>();

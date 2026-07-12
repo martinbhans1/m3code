@@ -273,6 +273,10 @@ export class WsTransport {
     this.nextSessionId = sessionId;
     this.activeSessionId = sessionId;
     const lifecycleHandlers = this.lifecycleHandlers;
+    // Number of times the underlying socket has opened for *this* session, and a
+    // latch so we only rebuild once per session. See `onOpen` below.
+    let sessionOpenCount = 0;
+    let sessionRebuildScheduled = false;
     const protocolLayer = protocolFactory(this.url, {
       ...lifecycleHandlers,
       isActive: () =>
@@ -283,6 +287,29 @@ export class WsTransport {
         this.disposed ||
         this.intentionalCloseDepth > 0 ||
         lifecycleHandlers?.isCloseIntentional?.() === true,
+      onOpen: () => {
+        sessionOpenCount += 1;
+        lifecycleHandlers?.onOpen?.();
+        // The first open is the initial connection and needs no action. A
+        // *subsequent* open on the same session means the underlying socket was
+        // silently reconnected by Effect's transport-level retry (most often
+        // after a ping timeout on mobile networks). When that happens the server
+        // has already discarded this connection's live subscriptions and the RPC
+        // client does not replay them, so the socket looks healthy while no
+        // pushes ever arrive again — the "connected but frozen UI" symptom that
+        // only a reload clears. Rebuild the whole session so the subscribe loop
+        // re-establishes every stream against the fresh connection.
+        if (
+          sessionOpenCount > 1 &&
+          !sessionRebuildScheduled &&
+          !this.disposed &&
+          this.activeSessionId === sessionId &&
+          this.intentionalCloseDepth === 0
+        ) {
+          sessionRebuildScheduled = true;
+          void this.reconnect().catch(() => undefined);
+        }
+      },
       onHeartbeatPong: () => {
         this.lastHeartbeatPongAt = performance.now();
         lifecycleHandlers?.onHeartbeatPong?.();

@@ -10,6 +10,8 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
+  deriveFollowups,
+  derivePendingFollowups,
   derivePendingApprovals,
   derivePendingUserInputs,
   deriveTimelineEntries,
@@ -1682,5 +1684,83 @@ describe("deriveActiveWorkStartedAt", () => {
         "2026-02-27T21:11:00.000Z",
       ),
     ).toBe("2026-02-27T21:11:00.000Z");
+  });
+});
+
+describe("deriveFollowups", () => {
+  function followupActivity(input: {
+    id: string;
+    createdAt: string;
+    sequence: number;
+    followup: Record<string, unknown>;
+  }): OrchestrationThreadActivity {
+    return makeActivity({
+      id: input.id,
+      createdAt: input.createdAt,
+      kind: "turn.followup.suggested",
+      summary: String(input.followup.title ?? "Follow-up"),
+      tone: "info",
+      payload: { followup: input.followup },
+      sequence: input.sequence,
+    });
+  }
+
+  it("collapses repeated activities for one follow-up to the latest (status wins)", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      followupActivity({
+        id: "a1",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        sequence: 1,
+        followup: {
+          id: "f1",
+          title: "Add retry to upload",
+          detail: "The upload handler has no retry.",
+          status: "pending",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          updatedAt: "2026-02-23T00:00:01.000Z",
+        },
+      }),
+      followupActivity({
+        id: "a2",
+        createdAt: "2026-02-23T00:00:05.000Z",
+        sequence: 2,
+        followup: {
+          id: "f1",
+          title: "Add retry to upload",
+          detail: "The upload handler has no retry.",
+          status: "dismissed",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          updatedAt: "2026-02-23T00:00:05.000Z",
+        },
+      }),
+    ];
+
+    const all = deriveFollowups(activities);
+    expect(all).toHaveLength(1);
+    expect(all[0]?.status).toBe("dismissed");
+    expect(derivePendingFollowups(activities)).toHaveLength(0);
+  });
+
+  it("keeps pending follow-ups and ignores non-follow-up activities", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({ id: "tool", kind: "tool.started", summary: "Tool" }),
+      followupActivity({
+        id: "a1",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        sequence: 1,
+        followup: {
+          id: "f1",
+          title: "Extract shared helper",
+          status: "pending",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          updatedAt: "2026-02-23T00:00:01.000Z",
+        },
+      }),
+    ];
+
+    const pending = derivePendingFollowups(activities);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.title).toBe("Extract shared helper");
+    expect(pending[0]?.detail).toBeNull();
   });
 });

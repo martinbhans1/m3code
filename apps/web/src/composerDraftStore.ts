@@ -78,6 +78,9 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
 }
 
 export const PersistedComposerImageAttachment = Schema.Struct({
+  // Optional for back-compat: drafts persisted before generic file support had
+  // no `type` field and were always images.
+  type: Schema.optional(Schema.Literals(["image", "file"])),
   id: Schema.String,
   name: Schema.String,
   mimeType: Schema.String,
@@ -1053,7 +1056,9 @@ function normalizePersistedAttachment(value: unknown): PersistedComposerImageAtt
   ) {
     return null;
   }
+  const type = candidate.type === "file" ? "file" : "image";
   return {
+    type,
     id,
     name,
     mimeType,
@@ -2071,14 +2076,17 @@ function hydrateImagesFromPersisted(
     const file = hydratePersistedComposerImageAttachment(attachment);
     if (!file) return [];
 
+    const isImage = (attachment.type ?? "image") === "image";
     return [
       {
-        type: "image" as const,
+        type: isImage ? ("image" as const) : ("file" as const),
         id: attachment.id,
         name: attachment.name,
         mimeType: attachment.mimeType,
         sizeBytes: attachment.sizeBytes,
-        previewUrl: attachment.dataUrl,
+        // Files have no inline image preview; the data URL would not render as
+        // an <img>, so leave it blank and let the chip fallback take over.
+        previewUrl: isImage ? attachment.dataUrl : "",
         file,
       } satisfies ComposerImageAttachment,
     ];

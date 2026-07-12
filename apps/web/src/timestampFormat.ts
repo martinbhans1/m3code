@@ -82,16 +82,48 @@ export function formatShortTimestamp(isoDate: string, timestampFormat: Timestamp
   return getTimestampFormatter(timestampFormat, false).format(new Date(isoDate));
 }
 
+const shortDateFormatter = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short" });
+const shortDateWithYearFormatter = new Intl.DateTimeFormat(undefined, {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+});
+
+// Small offsets in either direction read as "just now" — this also absorbs
+// minor client/server clock skew on a freshly-sent message.
+const RELATIVE_NOW_WINDOW_MS = 60_000;
+
 /**
- * Format a relative time string from an ISO date.
+ * Compact absolute date for an instant that a relative "… ago" label can't
+ * sensibly describe — e.g. a "last message" timestamp that lands in the future
+ * because of seeded data or a badly skewed clock. Drops the year when it
+ * matches the reference "now" so the common case stays short (`2 Jul`).
+ */
+function formatAbsoluteShortDate(timeMs: number, nowMs: number): string {
+  const date = new Date(timeMs);
+  const sameYear = date.getFullYear() === new Date(nowMs).getFullYear();
+  return (sameYear ? shortDateFormatter : shortDateWithYearFormatter).format(date);
+}
+
+/**
+ * Format a relative time string from an ISO date. Intended for instants in the
+ * past (use {@link formatRelativeTimeUntil} for future countdowns).
  * Returns `{ value: "20s", suffix: "ago" }` or `{ value: "just now", suffix: null }`
- * so callers can style the numeric portion independently.
+ * so callers can style the numeric portion independently. A timestamp
+ * meaningfully in the future falls back to its absolute date rather than
+ * misreporting "just now".
  */
 export function formatRelativeTime(isoDate: string): { value: string; suffix: string | null } {
-  const diffMs = Date.now() - new Date(isoDate).getTime();
-  if (diffMs < 0) return { value: "just now", suffix: null };
+  const targetMs = new Date(isoDate).getTime();
+  if (Number.isNaN(targetMs)) return { value: "just now", suffix: null };
+  const nowMs = Date.now();
+  const diffMs = nowMs - targetMs;
+  if (diffMs < RELATIVE_NOW_WINDOW_MS) {
+    return diffMs <= -RELATIVE_NOW_WINDOW_MS
+      ? { value: formatAbsoluteShortDate(targetMs, nowMs), suffix: null }
+      : { value: "just now", suffix: null };
+  }
   const seconds = Math.floor(diffMs / 1000);
-  if (seconds < 60) return { value: "just now", suffix: null };
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return { value: `${minutes}m`, suffix: "ago" };
   const hours = Math.floor(minutes / 60);

@@ -52,7 +52,7 @@ function ChatThreadRouteView() {
   if (!threadRef || !bootstrapComplete || !routeThreadExists) return null;
 
   return (
-    <SidebarInset className="h-svh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground md:h-dvh">
+    <SidebarInset className="app-chat-surface h-svh min-h-0 overflow-hidden overscroll-y-none bg-transparent text-foreground md:h-dvh">
       <ChatView
         environmentId={threadRef.environmentId}
         threadId={threadRef.threadId}
