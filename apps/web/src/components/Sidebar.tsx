@@ -997,6 +997,7 @@ interface SidebarProjectItemProps {
   handleNewThread: ReturnType<typeof useNewThreadHandler>["handleNewThread"];
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
+  setThreadPinned: ReturnType<typeof useThreadActions>["setThreadPinned"];
   threadJumpLabelByKey: ReadonlyMap<string, string>;
   attachThreadListAutoAnimateRef: (node: HTMLElement | null) => void;
   expandThreadListForProject: (projectKey: string, totalThreadCount: number) => void;
@@ -1018,6 +1019,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     handleNewThread,
     archiveThread,
     deleteThread,
+    setThreadPinned,
     threadJumpLabelByKey,
     attachThreadListAutoAnimateRef,
     expandThreadListForProject,
@@ -1037,8 +1039,6 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const appSettingsConfirmThreadArchive = useSettings<boolean>(
     (settings) => settings.confirmThreadArchive,
   );
-  const pinnedThreadKeys = useUiStateStore((store) => store.pinnedThreadKeys);
-  const setThreadPinned = useUiStateStore((store) => store.setThreadPinned);
   const defaultThreadEnvMode = useSettings<ThreadEnvMode>(
     (settings) => settings.defaultThreadEnvMode,
   );
@@ -2032,7 +2032,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       const threadKey = scopedThreadKey(threadRef);
       const thread = sidebarThreadByKeyRef.current.get(threadKey) ?? null;
       if (!thread) return;
-      const isPinned = pinnedThreadKeys.includes(threadKey);
+      const isPinned = pinnedThreadKeySet.has(threadKey);
       const threadProject = memberProjectByScopedKey.get(
         scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
       );
@@ -2055,7 +2055,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       }
 
       if (clicked === "pin" || clicked === "unpin") {
-        setThreadPinned(threadKey, clicked === "pin");
+        void setThreadPinned(threadRef, clicked === "pin");
         return;
       }
 
@@ -2102,7 +2102,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       deleteThread,
       markThreadUnread,
       memberProjectByScopedKey,
-      pinnedThreadKeys,
+      pinnedThreadKeySet,
       project.cwd,
       setThreadPinned,
       startThreadRename,
@@ -3124,6 +3124,7 @@ interface SidebarProjectsContentProps {
   handleNewThread: ReturnType<typeof useNewThreadHandler>["handleNewThread"];
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
+  setThreadPinned: ReturnType<typeof useThreadActions>["setThreadPinned"];
   pinnedThreadGroups: readonly SidebarPinnedThreadGroup[];
   pinnedThreadKeySet: ReadonlySet<string>;
   onPinnedThreadUnpin: (threadKey: string) => void;
@@ -3170,6 +3171,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     handleNewThread,
     archiveThread,
     deleteThread,
+    setThreadPinned,
     pinnedThreadGroups,
     pinnedThreadKeySet,
     onPinnedThreadUnpin,
@@ -3345,6 +3347,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                         handleNewThread={handleNewThread}
                         archiveThread={archiveThread}
                         deleteThread={deleteThread}
+                        setThreadPinned={setThreadPinned}
                         threadJumpLabelByKey={threadJumpLabelByKey}
                         attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
                         expandThreadListForProject={expandThreadListForProject}
@@ -3378,6 +3381,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 handleNewThread={handleNewThread}
                 archiveThread={archiveThread}
                 deleteThread={deleteThread}
+                setThreadPinned={setThreadPinned}
                 threadJumpLabelByKey={threadJumpLabelByKey}
                 attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
                 expandThreadListForProject={expandThreadListForProject}
@@ -3407,9 +3411,7 @@ export default function Sidebar() {
   const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
-  const pinnedThreadKeys = useUiStateStore((store) => store.pinnedThreadKeys);
   const reorderProjects = useUiStateStore((store) => store.reorderProjects);
-  const setThreadPinned = useUiStateStore((store) => store.setThreadPinned);
   const navigate = useNavigate();
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const isOnSettings = pathname.startsWith("/settings");
@@ -3421,7 +3423,7 @@ export default function Sidebar() {
   const sidebarThreadShowMoreIncrement = useSettings((s) => s.sidebarThreadShowMoreIncrement);
   const { updateSettings } = useUpdateSettings();
   const { handleNewThread } = useNewThreadHandler();
-  const { archiveThread, deleteThread } = useThreadActions();
+  const { archiveThread, deleteThread, setThreadPinned } = useThreadActions();
   const { isMobile, setOpenMobile } = useSidebar();
   const routeThreadRef = useParams({
     strict: false,
@@ -3505,6 +3507,18 @@ export default function Sidebar() {
             [scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)), thread] as const,
         ),
       ),
+    [sidebarThreads],
+  );
+  // Pins are server-side state (thread.pinnedAt), delivered on the sidebar
+  // thread summaries, so they sync across devices. Order by pinnedAt so the
+  // Pins section is stable and identical everywhere.
+  const pinnedThreadKeys = useMemo(
+    () =>
+      sidebarThreads
+        .filter((thread) => thread.pinnedAt !== null)
+        .slice()
+        .sort((a, b) => (a.pinnedAt ?? "").localeCompare(b.pinnedAt ?? ""))
+        .map((thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
     [sidebarThreads],
   );
   const pinnedThreadKeySet = useMemo(() => new Set(pinnedThreadKeys), [pinnedThreadKeys]);
@@ -3795,10 +3809,57 @@ export default function Sidebar() {
   ]);
   const handlePinnedThreadUnpin = useCallback(
     (threadKey: string) => {
-      setThreadPinned(threadKey, false);
+      const threadRef = parseScopedThreadKey(threadKey);
+      if (!threadRef) return;
+      void setThreadPinned(threadRef, false);
     },
     [setThreadPinned],
   );
+  // One-time migration: pins used to live per-browser in localStorage. Lift any
+  // still stored there up to the server so they sync across devices, then clear
+  // the local copy. Runs opportunistically as threads load (a pin whose thread
+  // isn't loaded yet is retried on a later render). The local key is dropped
+  // only once the pin is represented server-side — never on the same tick as a
+  // fire-and-forget dispatch — so a failed dispatch can't silently lose a pin.
+  const migratingLocalPinsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const localState = useUiStateStore.getState();
+    if (localState.pinnedThreadKeys.length === 0) {
+      return;
+    }
+    for (const threadKey of localState.pinnedThreadKeys) {
+      const thread = sidebarThreadByKey.get(threadKey);
+      if (!thread) {
+        // Thread not loaded into this environment yet — leave the local key in
+        // place and retry when sidebarThreadByKey changes.
+        continue;
+      }
+      if (thread.pinnedAt !== null) {
+        // Already represented server-side (this device migrated it, or another
+        // did) — safe to drop the local copy now.
+        localState.setThreadPinned(threadKey, false);
+        migratingLocalPinsRef.current.delete(threadKey);
+        continue;
+      }
+      if (migratingLocalPinsRef.current.has(threadKey)) {
+        // A pin dispatch for this key is already in flight; don't double-send.
+        continue;
+      }
+      migratingLocalPinsRef.current.add(threadKey);
+      void setThreadPinned(scopeThreadRef(thread.environmentId, thread.id), true).then(
+        () => {
+          // Server accepted the pin; drop the local key. (The shell stream will
+          // also flip pinnedAt non-null, so a later pass is a harmless no-op.)
+          useUiStateStore.getState().setThreadPinned(threadKey, false);
+          migratingLocalPinsRef.current.delete(threadKey);
+        },
+        () => {
+          // Dispatch failed — keep the local key so a later render retries.
+          migratingLocalPinsRef.current.delete(threadKey);
+        },
+      );
+    }
+  }, [sidebarThreadByKey, setThreadPinned]);
   const threadJumpCommandByKey = useMemo(() => {
     const mapping = new Map<string, NonNullable<ReturnType<typeof threadJumpCommandForIndex>>>();
     for (const [visibleThreadIndex, threadKey] of visibleSidebarThreadKeys.entries()) {
@@ -4132,6 +4193,7 @@ export default function Sidebar() {
             handleNewThread={handleNewThread}
             archiveThread={archiveThread}
             deleteThread={deleteThread}
+            setThreadPinned={setThreadPinned}
             pinnedThreadGroups={pinnedThreadGroups}
             pinnedThreadKeySet={pinnedThreadKeySet}
             onPinnedThreadUnpin={handlePinnedThreadUnpin}

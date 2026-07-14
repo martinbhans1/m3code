@@ -82,6 +82,13 @@ beforeAll(() => {
   vi.stubGlobal("document", {
     documentElement: {
       classList,
+      // useTheme writes dataset + style custom properties at module load.
+      dataset: {},
+      style: {
+        setProperty: () => {},
+        removeProperty: () => {},
+      },
+      setAttribute: () => {},
       offsetHeight: 0,
     },
   });

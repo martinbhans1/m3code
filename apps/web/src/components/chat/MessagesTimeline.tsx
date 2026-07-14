@@ -90,6 +90,7 @@ import {
   type ParsedPreviewAnnotation,
 } from "~/lib/previewAnnotation";
 import { cn } from "~/lib/utils";
+import { formatQuoteBlocksForDisplay } from "~/quoteSelection";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { formatChatTimestampTooltip, formatShortTimestamp } from "../../timestampFormat";
 
@@ -1278,6 +1279,9 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   markdownCwd: string | undefined;
 }) {
   const ctx = use(TimelineRowCtx);
+  // <quote> blocks are sent to the model verbatim but render as blockquotes —
+  // the sanitize pipeline would otherwise strip the tags without a trace.
+  const displayText = formatQuoteBlocksForDisplay(props.text);
   const renderInlineMarkdownSegment = (text: string, key: string) => {
     const leadingWhitespace = /^\s+/.exec(text)?.[0] ?? "";
     const textWithoutLeadingWhitespace = text.slice(leadingWhitespace.length);
@@ -1305,7 +1309,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
     );
   };
 
-  const reviewCommentSegments = parseReviewCommentMessageSegments(props.text);
+  const reviewCommentSegments = parseReviewCommentMessageSegments(displayText);
   if (reviewCommentSegments.some((segment) => segment.kind === "review-comment")) {
     return (
       <div className="space-y-3 text-sm leading-relaxed text-foreground">
@@ -1333,7 +1337,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
   if (props.terminalContexts.length > 0) {
     const hasEmbeddedInlineLabels = textContainsInlineTerminalContextLabels(
-      props.text,
+      displayText,
       props.terminalContexts,
     );
     const inlinePrefix = buildInlineTerminalContextText(props.terminalContexts);
@@ -1344,7 +1348,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
 
       for (const context of props.terminalContexts) {
         const label = formatInlineTerminalContextLabel(context.header);
-        const matchIndex = props.text.indexOf(label, cursor);
+        const matchIndex = displayText.indexOf(label, cursor);
         if (matchIndex === -1) {
           inlineNodes.length = 0;
           break;
@@ -1352,7 +1356,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         if (matchIndex > cursor) {
           inlineNodes.push(
             renderInlineMarkdownSegment(
-              props.text.slice(cursor, matchIndex),
+              displayText.slice(cursor, matchIndex),
               `user-terminal-context-inline-before:${context.header}:${cursor}`,
             ),
           );
@@ -1367,10 +1371,10 @@ const UserMessageBody = memo(function UserMessageBody(props: {
       }
 
       if (inlineNodes.length > 0) {
-        if (cursor < props.text.length) {
+        if (cursor < displayText.length) {
           inlineNodes.push(
             renderInlineMarkdownSegment(
-              props.text.slice(cursor),
+              displayText.slice(cursor),
               `user-message-terminal-context-inline-rest:${cursor}`,
             ),
           );
@@ -1398,11 +1402,11 @@ const UserMessageBody = memo(function UserMessageBody(props: {
       );
     }
 
-    if (props.text.length > 0) {
+    if (displayText.length > 0) {
       inlineNodes.push(
         <ChatMarkdown
           key="user-message-terminal-context-inline-text"
-          text={props.text}
+          text={displayText}
           cwd={props.markdownCwd}
           threadRef={ctx.threadRef ?? undefined}
           skills={props.skills}
@@ -1421,13 +1425,13 @@ const UserMessageBody = memo(function UserMessageBody(props: {
     );
   }
 
-  if (props.text.length === 0) {
+  if (displayText.length === 0) {
     return null;
   }
 
   return (
     <ChatMarkdown
-      text={props.text}
+      text={displayText}
       cwd={props.markdownCwd}
       threadRef={ctx.threadRef ?? undefined}
       skills={props.skills}

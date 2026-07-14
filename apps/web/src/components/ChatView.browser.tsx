@@ -440,6 +440,7 @@ function createSnapshotForTargetUser(options: {
         createdAt: NOW_ISO,
         updatedAt: NOW_ISO,
         archivedAt: null,
+        pinnedAt: null,
         deletedAt: null,
         messages,
         activities: [],
@@ -506,6 +507,7 @@ function addThreadToSnapshot(
         createdAt: NOW_ISO,
         updatedAt: NOW_ISO,
         archivedAt: null,
+        pinnedAt: null,
         deletedAt: null,
         messages: [],
         activities: [],
@@ -855,6 +857,7 @@ function createSnapshotWithSecondaryProject(options?: {
             updatedAt: isoAt(31),
           },
           archivedAt: null,
+          pinnedAt: null,
         },
       ]
     : [];
@@ -887,6 +890,7 @@ function createSnapshotWithSecondaryProject(options?: {
             updatedAt: isoAt(25),
           },
           archivedAt: isoAt(26),
+          pinnedAt: null,
         },
       ]
     : [];
@@ -4680,6 +4684,56 @@ describe("ChatView timeline estimator parity (full app)", () => {
       await selectAllComposerContent();
       await pressComposerKey("(");
       await waitForComposerText("(");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("quotes selected timeline text into the composer as a <quote> block", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-quote-selection" as MessageId,
+        targetText: "quote selection source",
+      }),
+    });
+
+    try {
+      // The timeline opens at the bottom, so the last assistant message is mounted.
+      const messageRow = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-message-id="msg-assistant-21"]'),
+        "Unable to find the last assistant message row.",
+      );
+      const textNode = await waitForElement(
+        () => {
+          const walker = document.createTreeWalker(messageRow, NodeFilter.SHOW_TEXT);
+          let node: Node | null = walker.nextNode();
+          while (node) {
+            if (node.textContent?.includes("assistant filler 21")) {
+              return node.parentElement;
+            }
+            node = walker.nextNode();
+          }
+          return null;
+        },
+        "Unable to find the assistant message text node.",
+      );
+
+      const range = document.createRange();
+      range.selectNodeContents(textNode.firstChild ?? textNode);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+
+      const quoteButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>("[data-quote-selection-button]"),
+        "Unable to find the quote selection button.",
+      );
+      quoteButton.click();
+
+      await waitForComposerText("<quote>\nassistant filler 21\n</quote>\n");
+      expect(window.getSelection()?.isCollapsed ?? true).toBe(true);
+      expect(document.querySelector("[data-quote-selection-button]")).toBeNull();
     } finally {
       await mounted.cleanup();
     }

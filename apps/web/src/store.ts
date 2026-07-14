@@ -296,6 +296,7 @@ function mapThreadShell(
     session,
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
+    pinnedAt: thread.pinnedAt,
     updatedAt: thread.updatedAt,
     latestTurn: thread.latestTurn,
     branch: thread.branch,
@@ -397,6 +398,7 @@ function sidebarThreadSummariesEqual(
     threadSessionsEqual(left.session, right.session) &&
     left.createdAt === right.createdAt &&
     left.archivedAt === right.archivedAt &&
+    left.pinnedAt === right.pinnedAt &&
     left.updatedAt === right.updatedAt &&
     latestTurnsEqual(left.latestTurn, right.latestTurn) &&
     left.branch === right.branch &&
@@ -1382,6 +1384,7 @@ function applyEnvironmentOrchestrationEvent(
           createdAt: event.payload.createdAt,
           updatedAt: event.payload.updatedAt,
           archivedAt: null,
+          pinnedAt: null,
           deletedAt: null,
           messages: [],
           proposedPlans: [],

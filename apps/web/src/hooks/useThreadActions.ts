@@ -98,6 +98,16 @@ export function useThreadActions() {
     refreshArchivedThreadsForEnvironment(target.environmentId);
   }, []);
 
+  const setThreadPinned = useCallback(async (target: ScopedThreadRef, pinned: boolean) => {
+    const api = readEnvironmentApi(target.environmentId);
+    if (!api) return;
+    await api.orchestration.dispatchCommand({
+      type: pinned ? "thread.pin" : "thread.unpin",
+      commandId: newCommandId(),
+      threadId: target.threadId,
+    });
+  }, []);
+
   const deleteThread = useCallback(
     async (target: ScopedThreadRef, opts: { deletedThreadKeys?: ReadonlySet<string> } = {}) => {
       const api = readEnvironmentApi(target.environmentId);
@@ -286,6 +296,7 @@ export function useThreadActions() {
   return {
     archiveThread,
     unarchiveThread,
+    setThreadPinned,
     deleteThread,
     confirmAndDeleteThread,
   };

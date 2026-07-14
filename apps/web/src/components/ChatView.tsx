@@ -62,7 +62,9 @@ import {
   isLatestTurnSettled,
 } from "../session-logic";
 import { FollowupChips } from "./chat/FollowupChip";
+import { QuoteSelectionOverlay } from "./chat/QuoteSelectionOverlay";
 import { buildFollowupPrompt, buildFollowupThreadTitle } from "../followup";
+import { buildQuoteInsertion } from "../quoteSelection";
 import { type LegendListRef } from "@legendapp/list/react";
 import {
   buildPendingUserInputAnswers,
@@ -1153,6 +1155,7 @@ function ChatViewContent(props: ChatViewProps) {
   const composerElementContextsRef = useRef<ElementContextDraft[]>([]);
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
+  const messagesWrapperRef = useRef<HTMLDivElement | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
@@ -4552,6 +4555,20 @@ function ChatViewContent(props: ChatViewProps) {
     [upsertFollowupStatus],
   );
 
+  // Select-to-quote: drop the highlighted message text into the composer as a
+  // <quote> block. insertTextAtEnd handles cursor placement and refocus.
+  const onQuoteSelection = useCallback(
+    (text: string) => {
+      const handle = composerRef.current;
+      if (!handle) return;
+      const insertion = buildQuoteInsertion(handle.readSnapshot().value, text);
+      if (insertion) {
+        handle.insertTextAtEnd(insertion);
+      }
+    },
+    [composerRef],
+  );
+
   const onDoFollowupNow = useCallback(
     async (followup: FollowupState) => {
       const api = readEnvironmentApi(environmentId);
@@ -5072,7 +5089,7 @@ function ChatViewContent(props: ChatViewProps) {
           {/* Chat column */}
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {/* Messages Wrapper */}
-            <div className="relative flex min-h-0 flex-1 flex-col">
+            <div ref={messagesWrapperRef} className="relative flex min-h-0 flex-1 flex-col">
               {/* Messages — LegendList handles virtualization and scrolling internally */}
               <MessagesTimeline
                 key={activeThread.id}
@@ -5111,6 +5128,9 @@ function ChatViewContent(props: ChatViewProps) {
                   </button>
                 </div>
               )}
+
+              {/* Select-to-quote pill — appears next to a text selection in the timeline */}
+              <QuoteSelectionOverlay containerRef={messagesWrapperRef} onQuote={onQuoteSelection} />
             </div>
 
             {/* Input bar */}
