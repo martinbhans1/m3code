@@ -1213,7 +1213,10 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
 }) {
   const [expanded, setExpanded] = useState(false);
   const hasVisibleBody = props.text.trim().length > 0 || props.terminalContexts.length > 0;
-  const canCollapse = hasVisibleBody && shouldCollapseUserMessage(props.text);
+  // Collapse decision must match what UserMessageBody actually renders —
+  // <quote> marker lines are transformed away for display.
+  const canCollapse =
+    hasVisibleBody && shouldCollapseUserMessage(formatQuoteBlocksForDisplay(props.text));
   const isCollapsed = canCollapse && !expanded;
 
   return (

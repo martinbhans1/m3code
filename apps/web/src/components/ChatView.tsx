@@ -4557,14 +4557,15 @@ function ChatViewContent(props: ChatViewProps) {
 
   // Select-to-quote: drop the highlighted message text into the composer as a
   // <quote> block. insertTextAtEnd handles cursor placement and refocus.
+  // Returns whether the insert landed so the overlay can keep the selection
+  // alive when the composer is busy (approval pending, disconnected, …).
   const onQuoteSelection = useCallback(
-    (text: string) => {
+    (text: string): boolean => {
       const handle = composerRef.current;
-      if (!handle) return;
+      if (!handle) return false;
       const insertion = buildQuoteInsertion(handle.readSnapshot().value, text);
-      if (insertion) {
-        handle.insertTextAtEnd(insertion);
-      }
+      if (!insertion) return false;
+      return handle.insertTextAtEnd(insertion);
     },
     [composerRef],
   );

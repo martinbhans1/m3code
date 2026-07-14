@@ -21,7 +21,8 @@ function closestElement(node: Node): Element | null {
  */
 export const QuoteSelectionOverlay = memo(function QuoteSelectionOverlay(props: {
   containerRef: React.RefObject<HTMLDivElement | null>;
-  onQuote: (text: string) => void;
+  /** Returns true when the quote landed in the composer. */
+  onQuote: (text: string) => boolean;
 }) {
   const { containerRef } = props;
   const [placement, setPlacement] = useState<QuoteButtonPlacement | null>(null);
@@ -109,7 +110,9 @@ export const QuoteSelectionOverlay = memo(function QuoteSelectionOverlay(props: 
         // it before click fires.
         onPointerDown={(event) => event.preventDefault()}
         onClick={() => {
-          props.onQuote(placement.text);
+          // Keep the selection (and the pill) when the composer rejects the
+          // insert — e.g. an approval prompt is up or we're disconnected.
+          if (!props.onQuote(placement.text)) return;
           window.getSelection()?.removeAllRanges();
           setPlacement(null);
         }}
