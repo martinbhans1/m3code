@@ -92,10 +92,26 @@
 :root[data-environment="aurora"],
 :root[data-environment="cosmos"] {
   --environment-gradient:
-    radial-gradient(circle at 14% 4%, color-mix(in oklab, var(--ambient-glow-primary) 50%, transparent), transparent 40%),
-    radial-gradient(circle at 2% 64%, color-mix(in oklab, var(--ambient-glow-secondary) 42%, transparent), transparent 48%),
-    radial-gradient(circle at 64% 10%, color-mix(in oklab, var(--ambient-glow-primary) 30%, transparent), transparent 38%),
-    radial-gradient(circle at 90% 80%, color-mix(in oklab, var(--ambient-glow-secondary) 22%, transparent), transparent 44%),
+    radial-gradient(
+      circle at 14% 4%,
+      color-mix(in oklab, var(--ambient-glow-primary) 50%, transparent),
+      transparent 40%
+    ),
+    radial-gradient(
+      circle at 2% 64%,
+      color-mix(in oklab, var(--ambient-glow-secondary) 42%, transparent),
+      transparent 48%
+    ),
+    radial-gradient(
+      circle at 64% 10%,
+      color-mix(in oklab, var(--ambient-glow-primary) 30%, transparent),
+      transparent 38%
+    ),
+    radial-gradient(
+      circle at 90% 80%,
+      color-mix(in oklab, var(--ambient-glow-secondary) 22%, transparent),
+      transparent 44%
+    ),
     linear-gradient(150deg, var(--app-chrome-background), var(--background));
 }
 

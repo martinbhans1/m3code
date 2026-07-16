@@ -79,8 +79,6 @@ describe("formatQuoteBlocksForDisplay", () => {
   });
 
   it("handles inline quote tags without their own lines", () => {
-    expect(formatQuoteBlocksForDisplay("<quote>compact</quote> after")).toBe(
-      "> compact\n\n after",
-    );
+    expect(formatQuoteBlocksForDisplay("<quote>compact</quote> after")).toBe("> compact\n\n after");
   });
 });

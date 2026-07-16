@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { describe, it } from "vite-plus/test";
-import { ThreadId } from "@t3tools/contracts";
+import { describe, expect, it } from "vite-plus/test";
+import { ThreadId, TurnId } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 
@@ -13,6 +13,7 @@ import {
 } from "../CodexDeveloperInstructions.ts";
 import {
   buildTurnStartParams,
+  buildTurnSteerParams,
   hasConfiguredMcpServer,
   isRecoverableThreadResumeError,
   openCodexThread,
@@ -43,6 +44,20 @@ function makeThreadOpenResponse(
 }
 
 describe("buildTurnStartParams", () => {
+  it("builds a steer request with an active-turn precondition", () => {
+    expect(
+      buildTurnSteerParams({
+        threadId: "provider-thread-1",
+        expectedTurnId: TurnId.make("turn-1"),
+        turnInput: [{ type: "text", text: "Use the new constraint" }],
+      }),
+    ).toEqual({
+      threadId: "provider-thread-1",
+      expectedTurnId: "turn-1",
+      input: [{ type: "text", text: "Use the new constraint" }],
+    });
+  });
+
   it("includes plan collaboration mode when requested", () => {
     const params = Effect.runSync(
       buildTurnStartParams({

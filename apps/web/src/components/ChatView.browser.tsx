@@ -4704,20 +4704,17 @@ describe("ChatView timeline estimator parity (full app)", () => {
         () => document.querySelector<HTMLElement>('[data-message-id="msg-assistant-21"]'),
         "Unable to find the last assistant message row.",
       );
-      const textNode = await waitForElement(
-        () => {
-          const walker = document.createTreeWalker(messageRow, NodeFilter.SHOW_TEXT);
-          let node: Node | null = walker.nextNode();
-          while (node) {
-            if (node.textContent?.includes("assistant filler 21")) {
-              return node.parentElement;
-            }
-            node = walker.nextNode();
+      const textNode = await waitForElement(() => {
+        const walker = document.createTreeWalker(messageRow, NodeFilter.SHOW_TEXT);
+        let node: Node | null = walker.nextNode();
+        while (node) {
+          if (node.textContent?.includes("assistant filler 21")) {
+            return node.parentElement;
           }
-          return null;
-        },
-        "Unable to find the assistant message text node.",
-      );
+          node = walker.nextNode();
+        }
+        return null;
+      }, "Unable to find the assistant message text node.");
 
       const range = document.createRange();
       range.selectNodeContents(textNode.firstChild ?? textNode);

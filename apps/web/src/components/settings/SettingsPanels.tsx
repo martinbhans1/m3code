@@ -506,11 +506,7 @@ export function useSettingsRestore(onRestored?: () => void) {
 
 export function GeneralSettingsPanel() {
   const { theme, setTheme } = useTheme();
-  const {
-    environment,
-    setEnvironment,
-    definitions: environmentDefinitions,
-  } = useEnvironment();
+  const { environment, setEnvironment, definitions: environmentDefinitions } = useEnvironment();
   const { chromeTint, setChromeTint } = useChromeTint();
   const { smoothCaret, setSmoothCaret } = useSmoothCaret();
   const settings = useSettings();

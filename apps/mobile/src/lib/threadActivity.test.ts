@@ -45,6 +45,7 @@ function makeThread(
     checkpoints: [],
     session: null,
     ...input,
+    pinnedAt: input.pinnedAt ?? null,
   };
 }
 

@@ -43,6 +43,7 @@ import {
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
+const decodeV2TurnSteerResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnSteerResponse);
 
 const PROVIDER = ProviderDriverKind.make("codex");
 
@@ -89,6 +90,18 @@ const decodeCodexTurnStartParamsWithCollaborationMode = Schema.decodeUnknownEffe
 
 export type CodexTurnStartParamsWithCollaborationMode =
   typeof CodexTurnStartParamsWithCollaborationMode.Type;
+
+export function buildTurnSteerParams(input: {
+  readonly threadId: string;
+  readonly expectedTurnId: TurnId;
+  readonly turnInput: EffectCodexSchema.V2TurnSteerParams["input"];
+}): EffectCodexSchema.V2TurnSteerParams {
+  return {
+    threadId: input.threadId,
+    expectedTurnId: input.expectedTurnId,
+    input: input.turnInput,
+  };
+}
 const formatSchemaIssue = SchemaIssue.makeFormatterDefault();
 
 export type CodexResumeCursor = typeof CodexResumeCursorSchema.Type;
@@ -1290,6 +1303,27 @@ export const makeCodexSessionRuntime = (
             ...(input.effort ? { effort: input.effort } : {}),
             ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
           });
+          const currentSession = yield* Ref.get(sessionRef);
+          if (currentSession.status === "running" && currentSession.activeTurnId) {
+            const rawResponse = yield* client.raw.request(
+              "turn/steer",
+              buildTurnSteerParams({
+                threadId: providerThreadId,
+                expectedTurnId: currentSession.activeTurnId,
+                turnInput: params.input,
+              }),
+            );
+            const response = yield* decodeV2TurnSteerResponse(rawResponse).pipe(
+              Effect.mapError((error) =>
+                toProtocolParseError("Invalid turn/steer response payload", error),
+              ),
+            );
+            return {
+              threadId: options.threadId,
+              turnId: TurnId.make(response.turnId),
+              resumeCursor: { threadId: providerThreadId },
+            } satisfies ProviderTurnStartResult;
+          }
           const rawResponse = yield* client.raw.request("turn/start", params);
           const response = yield* decodeV2TurnStartResponse(rawResponse).pipe(
             Effect.mapError((error) =>

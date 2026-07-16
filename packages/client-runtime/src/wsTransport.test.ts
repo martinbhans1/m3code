@@ -92,6 +92,7 @@ async function waitFor(assertion: () => void, timeoutMs = 1_000): Promise<void> 
       if (performance.now() - startedAt >= timeoutMs) {
         throw error;
       }
+      // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- polling helper bridges a plain async test API
       await Effect.runPromise(Effect.sleep(Duration.millis(10)));
     }
   }
@@ -416,6 +417,7 @@ describe("WsTransport", () => {
     getSocket().open();
 
     // Give any errant rebuild a chance to create a second socket.
+    // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- transport lifecycle is exposed as a Promise API
     await Effect.runPromise(Effect.sleep(Duration.millis(50)));
 
     expect(sockets).toHaveLength(1);
@@ -824,6 +826,7 @@ describe("WsTransport", () => {
     await waitFor(() => {
       expect(attempts).toBe(1);
     });
+    // oxlint-disable-next-line t3code/no-manual-effect-runtime-in-tests -- transport lifecycle is exposed as a Promise API
     await Effect.runPromise(Effect.sleep(Duration.millis(50)));
 
     expect(attempts).toBe(1);

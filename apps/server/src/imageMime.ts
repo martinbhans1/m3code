@@ -64,7 +64,10 @@ export function parseBase64DataUrl(
  * finally `.bin`. The `[a-z0-9]{1,12}` shape guarantees the result can never
  * contain a slash or `..`.
  */
-export function inferAttachmentFileExtension(input: { mimeType: string; fileName?: string }): string {
+export function inferAttachmentFileExtension(input: {
+  mimeType: string;
+  fileName?: string;
+}): string {
   const fileName = input.fileName?.trim() ?? "";
   const fileNameMatch = /\.([a-z0-9]{1,12})$/i.exec(fileName);
   if (fileNameMatch) {

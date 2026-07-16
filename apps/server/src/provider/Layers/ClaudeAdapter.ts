@@ -3675,10 +3675,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         // Always grant read access to the attachments dir so the agent can open
         // generic file attachments (docx/xlsx/json/…) referenced by path in the
         // turn message — including on follow-up turns of a resumed session.
-        additionalDirectories: [
-          serverConfig.attachmentsDir,
-          ...(input.cwd ? [input.cwd] : []),
-        ],
+        additionalDirectories: [serverConfig.attachmentsDir, ...(input.cwd ? [input.cwd] : [])],
         ...(Object.keys(extraArgs).length > 0 ? { extraArgs } : {}),
         mcpServers: {
           // Chrome DevTools MCP — lets Claude drive a real Chrome: navigate,

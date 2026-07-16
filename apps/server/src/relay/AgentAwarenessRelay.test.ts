@@ -421,7 +421,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           createdAt: now,
           updatedAt: now,
           archivedAt: null,
-      pinnedAt: null,
+          pinnedAt: null,
           session: {
             threadId,
             status: "running",
@@ -577,7 +577,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           createdAt: now,
           updatedAt: now,
           archivedAt: null,
-      pinnedAt: null,
+          pinnedAt: null,
           session: {
             threadId,
             status: "running",
