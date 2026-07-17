@@ -82,6 +82,12 @@ describe("formatProviderUsageStaleLabel", () => {
   it("returns null for an unparseable capture", () => {
     expect(formatProviderUsageStaleLabel("nope", NOW)).toBeNull();
   });
+
+  it("stays quiet when the server clock is ahead of the client", () => {
+    // Clock skew makes capturedAt look like the future. That must read as
+    // "fresh", never as a negative age.
+    expect(formatProviderUsageStaleLabel(isoAfter(NOW, 10 * 60_000), NOW)).toBeNull();
+  });
 });
 
 describe("getProviderUsageSummary", () => {
@@ -146,6 +152,36 @@ describe("getProviderUsageSummary", () => {
     expect(summary.headline).toBeNull();
     expect(summary.windows[0]?.percentLabel).toBeNull();
     expect(summary.windows[0]?.severity).toBe("normal");
+  });
+
+  it("picks the highest percent as headline even when a null-percent window sorts first", () => {
+    // Regression: a null percent must not be treated as 0 and must not
+    // shadow a real window when it appears earlier in the array.
+    const summary = getProviderUsageSummary(
+      providerWithUsage(
+        usage({
+          windows: [
+            { id: "unknown", label: "Unknown", percent: null, resetsAt: null },
+            { id: "five_hour", label: "5-hour", percent: 3, resetsAt: null },
+          ],
+        }),
+      ),
+      NOW,
+    );
+
+    expect(summary.kind).toBe("measured");
+    if (summary.kind !== "measured") return;
+    expect(summary.headline?.id).toBe("five_hour");
+  });
+
+  it("treats an available provider with no windows as measured but empty", () => {
+    const summary = getProviderUsageSummary(providerWithUsage(usage({ windows: [] })), NOW);
+
+    expect(summary.kind).toBe("measured");
+    if (summary.kind !== "measured") return;
+    expect(summary.windows).toEqual([]);
+    expect(summary.headline).toBeNull();
+    expect(summary.severity).toBe("normal");
   });
 
   it("prefers the provider's own severity over the inferred one", () => {

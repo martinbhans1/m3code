@@ -2118,6 +2118,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         onDragLeave={onComposerDragLeave}
         onDrop={onComposerDrop}
       >
+        {/* Rendered at the composer root, not in the footer: the bottom
+            toolbar unmounts when the composer collapses on mobile and swaps
+            out while an approval is pending, either of which would tear an
+            open `/usage` dialog off the screen. The dialog portals anyway, so
+            its position here costs no layout. */}
+        <ProviderUsageDialog
+          open={isComposerUsageDialogOpen}
+          onOpenChange={setIsComposerUsageDialogOpen}
+          instanceEntries={providerInstanceEntries}
+        />
         <div
           ref={composerSurfaceRef}
           data-chat-composer-mobile-collapsed={isComposerCollapsedMobile ? "true" : "false"}
@@ -2636,11 +2646,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   }}
                   getModelDisabledReason={getModelDisabledReason}
                   onInstanceModelChange={onProviderModelSelect}
-                />
-                <ProviderUsageDialog
-                  open={isComposerUsageDialogOpen}
-                  onOpenChange={setIsComposerUsageDialogOpen}
-                  instanceEntries={providerInstanceEntries}
                 />
 
                 {isComposerFooterCompact ? (

@@ -307,13 +307,14 @@ export function getProviderUsageSummary(
   const windows = usage.windows.map((window) => presentUsageWindow(window, now));
 
   let headline: ProviderUsageWindowPresentation | null = null;
+  let headlinePercent = -1;
   let severity: ServerProviderUsageSeverity = "normal";
   for (const window of windows) {
-    if (
-      window.percent !== null &&
-      (headline === null || window.percent > (headline.percent ?? 0))
-    ) {
+    // Windows with unknown utilization can never be the headline: the dial
+    // would read as "0% used", which is a claim we cannot make.
+    if (window.percent !== null && window.percent > headlinePercent) {
       headline = window;
+      headlinePercent = window.percent;
     }
     if (USAGE_SEVERITY_RANK[window.severity] > USAGE_SEVERITY_RANK[severity]) {
       severity = window.severity;
