@@ -5,6 +5,7 @@ import {
   ProviderDriverKind,
   type ServerProviderModel,
   type ServerProviderSlashCommand,
+  type ServerProviderUsage,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -38,6 +39,7 @@ import {
   spawnAndCollect,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
+import { normalizeClaudeUsage } from "../ClaudeUsage.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
@@ -459,6 +461,47 @@ type ClaudeCapabilitiesProbe = {
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
   readonly slashCommands: ReadonlyArray<ServerProviderSlashCommand>;
+  /**
+   * Plan rate-limit usage, when the SDK exposed it. Always optional — see
+   * `readClaudeUsage` for why this can be absent on a fully successful probe.
+   */
+  readonly usage?: ServerProviderUsage | undefined;
+};
+
+/**
+ * Name of the Agent SDK's plan-usage method.
+ *
+ * Extracted to a constant because the SDK's own docs promise the name will
+ * change when the API stabilizes: "EXPERIMENTAL: this API is unstable and may
+ * change or be removed in any release without notice… The method name will
+ * change when the API is stabilized."
+ */
+const CLAUDE_USAGE_METHOD = "usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET" as const;
+
+/**
+ * Read plan usage off a live SDK query, defensively.
+ *
+ * The auth probe's contract is to return account info and slash commands;
+ * usage is a bonus. This method is explicitly documented as unstable and
+ * renameable, so it is feature-detected and its failures are swallowed —
+ * a missing, renamed, or throwing usage API must never degrade the auth
+ * probe into "could not verify Claude authentication status".
+ *
+ * Returns `undefined` on any of: method absent, method throws, or payload
+ * unrecognized by the normalizer.
+ */
+const readClaudeUsage = async (
+  query: object,
+  capturedAt: string,
+): Promise<ServerProviderUsage | undefined> => {
+  const usageMethod = (query as Record<string, unknown>)[CLAUDE_USAGE_METHOD];
+  if (typeof usageMethod !== "function") return undefined;
+  try {
+    const response: unknown = await usageMethod.call(query);
+    return normalizeClaudeUsage({ raw: response, capturedAt });
+  } catch {
+    return undefined;
+  }
 };
 
 function parseClaudeInitializationCommands(
@@ -579,11 +622,16 @@ const probeClaudeCapabilities = (
             readonly tokenSource?: string;
           }
         | undefined;
+      // Reuses the session we already paid to spawn, so plan usage costs one
+      // extra local IPC round-trip rather than a second subprocess. Runs
+      // inside the shared CAPABILITIES_PROBE_TIMEOUT_MS budget below.
+      const usage = await readClaudeUsage(q, DateTime.formatIso(DateTime.nowUnsafe()));
       return {
         email: account?.email,
         subscriptionType: account?.subscriptionType,
         tokenSource: account?.tokenSource,
         slashCommands: parseClaudeInitializationCommands(init.commands),
+        ...(usage ? { usage } : {}),
       } satisfies ClaudeCapabilitiesProbe;
     });
   }).pipe(
@@ -763,6 +811,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     checkedAt,
     models,
     slashCommands: dedupedSlashCommands,
+    ...(capabilities.usage ? { usage: capabilities.usage } : {}),
     probe: {
       installed: true,
       version: parsedVersion,

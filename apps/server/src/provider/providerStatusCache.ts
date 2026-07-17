@@ -57,6 +57,12 @@ export const hydrateCachedProvider = (input: {
   }
 
   const { message: _fallbackMessage, ...fallbackWithoutMessage } = input.fallbackProvider;
+  // Deliberately does NOT hydrate `usage`: a rate-limit percentage read off
+  // disk is unbounded-stale (the window it describes has almost certainly
+  // reset), and rendering a confidently wrong "94% used" is worse than
+  // rendering nothing until the live probe lands. `writeProviderStatusCache`
+  // strips it on the way out for the same reason, so there is normally
+  // nothing here to hydrate anyway.
   const hydratedProvider: ServerProvider = {
     ...fallbackWithoutMessage,
     models: mergeProviderModels(input.fallbackProvider.models, input.cachedProvider.models),
@@ -141,11 +147,19 @@ export const readProviderStatusCache = (filePath: string) =>
     );
   });
 
+/**
+ * Persist a provider snapshot for fast cold-start hydration.
+ *
+ * `updateState` and `usage` are stripped: both describe live, in-process
+ * state that is meaningless (`updateState`) or actively misleading (`usage` —
+ * a stale rate-limit percentage for a window that has since reset) once
+ * reloaded from disk.
+ */
 export const writeProviderStatusCache = (input: {
   readonly filePath: string;
   readonly provider: ServerProvider;
 }) => {
-  const { updateState: _updateState, ...cacheableProvider } = input.provider;
+  const { updateState: _updateState, usage: _usage, ...cacheableProvider } = input.provider;
   return writeFileStringAtomically({
     filePath: input.filePath,
     contents: `${JSON.stringify(cacheableProvider, null, 2)}\n`,

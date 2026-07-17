@@ -34,6 +34,10 @@ import {
   probeClaudeCapabilities,
 } from "../Layers/ClaudeProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
+import {
+  ProviderUsageRegistry,
+  publishProviderSnapshotUsage,
+} from "../Layers/ProviderUsageRegistry.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
   defaultProviderContinuationIdentity,
@@ -83,6 +87,7 @@ export type ClaudeDriverEnv =
   | HttpClient.HttpClient
   | Path.Path
   | ProviderEventLoggers
+  | ProviderUsageRegistry
   | ServerConfig;
 
 const withInstanceIdentity =
@@ -115,6 +120,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const path = yield* Path.Path;
       const httpClient = yield* HttpClient.HttpClient;
       const eventLoggers = yield* ProviderEventLoggers;
+      // Captured as a value here rather than read inside `enrichSnapshot`,
+      // whose signature pins `R = never`.
+      const usageRegistry = yield* ProviderUsageRegistry;
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const fallbackContinuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
@@ -171,10 +179,34 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         initialSnapshot: (settings) =>
           makePendingClaudeProvider(settings).pipe(Effect.map(stampIdentity)),
         checkProvider,
-        enrichSnapshot: ({ snapshot, publishSnapshot }) =>
-          enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenanceCapabilities).pipe(
-            Effect.provideService(HttpClient.HttpClient, httpClient),
-            Effect.flatMap((enrichedSnapshot) => publishSnapshot(enrichedSnapshot)),
+        enrichSnapshot: ({ snapshot, getSnapshot, publishSnapshot }) =>
+          Effect.all(
+            [
+              enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenanceCapabilities).pipe(
+                Effect.provideService(HttpClient.HttpClient, httpClient),
+                // Rebase on the live snapshot instead of publishing the
+                // enriched copy directly: the usage subscription below runs
+                // concurrently and may have published while this advisory's
+                // registry lookup was in flight over the network.
+                Effect.flatMap((enrichedSnapshot) =>
+                  getSnapshot.pipe(
+                    Effect.flatMap((currentSnapshot) =>
+                      publishSnapshot({
+                        ...currentSnapshot,
+                        versionAdvisory: enrichedSnapshot.versionAdvisory,
+                      }),
+                    ),
+                  ),
+                ),
+              ),
+              publishProviderSnapshotUsage({
+                registry: usageRegistry,
+                instanceId,
+                getSnapshot,
+                publishSnapshot,
+              }),
+            ],
+            { concurrency: "unbounded", discard: true },
           ),
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
       }).pipe(

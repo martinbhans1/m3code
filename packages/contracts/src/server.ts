@@ -153,6 +153,68 @@ export const ServerProviderUpdateState = Schema.Struct({
 });
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
+/**
+ * Percentage of a rate-limit window consumed, `0`–`100`.
+ *
+ * Providers report this as an integer today, but the schema accepts any
+ * number in range: Claude's `utilization` and Codex's `usedPercent` are
+ * independent APIs and neither documents integrality as a guarantee.
+ * Normalizers clamp out-of-range values rather than dropping the window.
+ */
+export const ServerProviderUsagePercent = Schema.Number.check(
+  Schema.isBetween({ minimum: 0, maximum: 100 }),
+);
+export type ServerProviderUsagePercent = typeof ServerProviderUsagePercent.Type;
+
+export const ServerProviderUsageSeverity = Schema.Literals(["normal", "warning", "critical"]);
+export type ServerProviderUsageSeverity = typeof ServerProviderUsageSeverity.Type;
+
+/**
+ * One plan rate-limit window (e.g. Claude's rolling 5-hour window, Codex's
+ * `primary` window).
+ *
+ * `id` is the merge key for sparse provider updates: both Claude's
+ * `rate_limit_event` and Codex's `account/rateLimits/updated` push a *subset*
+ * of windows, and consumers merge by `id` rather than replacing the array.
+ * It is provider-scoped — `"five_hour"` from Claude and `"primary"` from
+ * Codex never collide because a snapshot only ever carries one provider's
+ * windows.
+ */
+export const ServerProviderUsageWindow = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  // `null` distinguishes "this window exists but the provider did not report
+  // utilization" from "this window does not exist" (absent from `windows`).
+  percent: Schema.NullOr(ServerProviderUsagePercent),
+  resetsAt: Schema.NullOr(IsoDateTime),
+  severity: Schema.optionalKey(ServerProviderUsageSeverity),
+});
+export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
+
+/**
+ * Subscription plan usage for a provider instance.
+ *
+ * Only populated for providers that expose plan rate limits (Claude via the
+ * Agent SDK usage API, Codex via `account/rateLimits/read`). `available:
+ * false` means plan limits do not apply to this session at all — API-key,
+ * Bedrock, and Vertex sessions bill per token and have no plan window — and
+ * is distinct from an absent `usage`, which means "not yet observed".
+ */
+export const ServerProviderUsage = Schema.Struct({
+  available: Schema.Boolean,
+  planLabel: Schema.NullOr(TrimmedNonEmptyString),
+  windows: Schema.Array(ServerProviderUsageWindow).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  // Staleness marker. Usage is never hydrated from the on-disk provider
+  // status cache, so this is always from the current process.
+  capturedAt: IsoDateTime,
+  source: Schema.Literals(["event", "probe"]),
+  // Why usage is unavailable, when `available` is false.
+  message: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type ServerProviderUsage = typeof ServerProviderUsage.Type;
+
 export const ServerProvider = Schema.Struct({
   // Routing key for the configured instance this snapshot represents. This
   // is the only stable identity consumers may use for provider routing.
@@ -189,6 +251,11 @@ export const ServerProvider = Schema.Struct({
   skills: Schema.Array(ServerProviderSkill).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   versionAdvisory: Schema.optionalKey(ServerProviderVersionAdvisory),
   updateState: Schema.optionalKey(ServerProviderUpdateState),
+  // `optionalKey` for back-compat: cached snapshots written before this
+  // field existed must still decode. Absent means "no plan-usage data
+  // observed yet", which is also the steady state for providers that never
+  // report it (cursor, grok, opencode).
+  usage: Schema.optionalKey(ServerProviderUsage),
 });
 export type ServerProvider = typeof ServerProvider.Type;
 

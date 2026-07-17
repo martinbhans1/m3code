@@ -7,6 +7,7 @@ import type {
   ServerProviderSlashCommand,
   ServerProviderModel,
   ServerProviderState,
+  ServerProviderUsage,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Data from "effect/Data";
@@ -200,6 +201,13 @@ export function buildServerProvider(input: {
   models: ReadonlyArray<ServerProviderModel>;
   slashCommands?: ReadonlyArray<ServerProviderSlashCommand>;
   skills?: ReadonlyArray<ServerProviderSkill>;
+  /**
+   * Plan rate-limit usage observed by this provider's cold-start probe, when
+   * it has one. Absent for providers with no plan-usage API, and for probes
+   * that failed or timed out — usage is strictly additive to the snapshot and
+   * never blocks it.
+   */
+  usage?: ServerProviderUsage;
   probe: ProviderProbeResult;
 }): ServerProviderDraft {
   const versionAdvisory = input.driver
@@ -229,6 +237,7 @@ export function buildServerProvider(input: {
     slashCommands: [...(input.slashCommands ?? [])],
     skills: [...(input.skills ?? [])],
     ...(versionAdvisory ? { versionAdvisory } : {}),
+    ...(input.usage ? { usage: input.usage } : {}),
   };
 }
 

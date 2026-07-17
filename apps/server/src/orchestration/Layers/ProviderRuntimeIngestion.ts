@@ -30,6 +30,9 @@ import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { ProviderUsageRegistry } from "../../provider/Layers/ProviderUsageRegistry.ts";
+import { normalizeClaudeUsage } from "../../provider/ClaudeUsage.ts";
+import { normalizeCodexUsage } from "../../provider/CodexUsage.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { isGitRepository } from "../../git/Utils.ts";
@@ -660,6 +663,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
+  const usageRegistry = yield* ProviderUsageRegistry;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
     crypto.randomUUIDv4.pipe(
       Effect.map((uuid) => CommandId.make(`provider:${event.eventId}:${tag}:${uuid}`)),
@@ -1229,8 +1233,48 @@ const make = Effect.gen(function* () {
     },
   );
 
+  /**
+   * Route `account.rate-limits.updated` into the provider snapshot.
+   *
+   * Both Claude and Codex push plan rate limits through this one event type
+   * with genuinely different payloads (hence `rateLimits: Schema.Unknown` in
+   * the contract), so the shape is resolved by driver here — the last point
+   * that still knows which driver produced the event — and normalized into
+   * the shared `ServerProviderUsage`.
+   *
+   * Handled ahead of `resolveThreadShell` because usage is account-scoped,
+   * not thread-scoped: the limits apply to the whole provider instance, and
+   * dropping the update just because its originating thread is unknown to the
+   * projection would silently stale the snapshot.
+   */
+  const processAccountRateLimitsUpdated = (
+    event: Extract<ProviderRuntimeEvent, { type: "account.rate-limits.updated" }>,
+  ) =>
+    Effect.gen(function* () {
+      const instanceId = event.providerInstanceId;
+      if (instanceId === undefined) return;
+
+      const capturedAt = event.createdAt;
+      const usage =
+        event.provider === "claudeAgent"
+          ? normalizeClaudeUsage({ raw: event.payload.rateLimits, capturedAt })
+          : event.provider === "codex"
+            ? normalizeCodexUsage({ raw: event.payload.rateLimits, capturedAt, source: "event" })
+            : undefined;
+
+      // Unrecognized driver, or a payload the normalizer couldn't read: leave
+      // the previously published usage alone rather than blanking it.
+      if (!usage) return;
+
+      yield* usageRegistry.publish({ instanceId, usage });
+    });
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
+      if (event.type === "account.rate-limits.updated") {
+        return yield* processAccountRateLimitsUpdated(event);
+      }
+
       const thread = yield* resolveThreadShell(event.threadId);
       if (!thread) return;
 

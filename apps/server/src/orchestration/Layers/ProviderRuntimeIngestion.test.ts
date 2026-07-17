@@ -39,6 +39,7 @@ import {
   ProviderService,
   type ProviderServiceShape,
 } from "../../provider/Services/ProviderService.ts";
+import { ProviderUsageRegistryLive } from "../../provider/Layers/ProviderUsageRegistry.ts";
 import { RepositoryIdentityResolverLive } from "../../project/Layers/RepositoryIdentityResolver.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
@@ -240,6 +241,9 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+      // The real registry, not the no-op: ingestion's `account.rate-limits.updated`
+      // handler writes through it, so tests exercise the actual merge path.
+      Layer.provideMerge(ProviderUsageRegistryLive),
       Layer.provideMerge(NodeServices.layer),
     );
     runtime = ManagedRuntime.make(layer);

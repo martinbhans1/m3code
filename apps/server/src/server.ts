@@ -22,6 +22,7 @@ import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionD
 import { ProviderSessionRuntimeRepositoryLive } from "./persistence/Layers/ProviderSessionRuntime.ts";
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry.ts";
 import { ProviderEventLoggersLive } from "./provider/Layers/ProviderEventLoggers.ts";
+import { ProviderUsageRegistryLive } from "./provider/Layers/ProviderUsageRegistry.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
 import { OpenCodeRuntimeLive } from "./provider/opencodeRuntime.ts";
@@ -305,7 +306,12 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // `ProviderService` (canonical stream, written after event normalization).
   // Provided once at the runtime level so every consumer sees the same
   // logger instances.
-  Layer.provideMerge(ProviderEventLoggersLive),
+  // `ProviderUsageRegistryLive` holds live plan rate-limit usage per provider
+  // instance: written by `ProviderRuntimeIngestion` (the one place that sees
+  // every provider's `account.rate-limits.updated`), read by the Claude/Codex
+  // drivers' `enrichSnapshot`. Merged with the loggers rather than piped as
+  // its own step because `.pipe()` tops out at 20 arguments.
+  Layer.provideMerge(Layer.mergeAll(ProviderEventLoggersLive, ProviderUsageRegistryLive)),
   // `OpenCodeDriver.create()` yields `OpenCodeRuntime`; previously the old
   // `ProviderRegistryLive` pulled `OpenCodeRuntimeLive` in for itself, but
   // the rewritten registry reads snapshots off the instance registry and

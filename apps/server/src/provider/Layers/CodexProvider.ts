@@ -20,6 +20,7 @@ import type {
   ProviderOptionDescriptor,
   ServerProviderModel,
   ServerProviderSkill,
+  ServerProviderUsage,
 } from "@t3tools/contracts";
 import { ServerSettingsError } from "@t3tools/contracts";
 
@@ -30,6 +31,8 @@ import {
   buildServerProvider,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
+import { codexPlanTypeLabel } from "../CodexPlan.ts";
+import { normalizeCodexUsage } from "../CodexUsage.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnError);
@@ -46,6 +49,15 @@ export interface CodexAppServerProviderSnapshot {
   readonly version: string | undefined;
   readonly models: ReadonlyArray<ServerProviderModel>;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
+  /**
+   * Baseline plan usage from `account/rateLimits/read`.
+   *
+   * This is the snapshot that sparse `account/rateLimits/updated` pushes
+   * merge into — the Codex schema requires clients to merge against the last
+   * read response rather than treat a push as a complete picture. Absent for
+   * API-key sessions (which have no plan limits) and whenever the read fails.
+   */
+  readonly usage?: ServerProviderUsage | undefined;
 }
 
 const REASONING_EFFORT_LABELS: Readonly<Record<string, string>> = {
@@ -69,33 +81,10 @@ function codexAccountAuthLabel(account: CodexSchema.V2GetAccountResponse["accoun
   if (account.type === "amazonBedrock") return "Amazon Bedrock";
   if (account.type !== "chatgpt") return undefined;
 
-  switch (account.planType) {
-    case "free":
-      return "ChatGPT Free Subscription";
-    case "go":
-      return "ChatGPT Go Subscription";
-    case "plus":
-      return "ChatGPT Plus Subscription";
-    case "pro":
-      return "ChatGPT Pro 20x Subscription";
-    case "prolite":
-      return "ChatGPT Pro 5x Subscription";
-    case "team":
-      return "ChatGPT Team Subscription";
-    case "self_serve_business_usage_based":
-    case "business":
-      return "ChatGPT Business Subscription";
-    case "enterprise_cbp_usage_based":
-    case "enterprise":
-      return "ChatGPT Enterprise Subscription";
-    case "edu":
-      return "ChatGPT Edu Subscription";
-    case "unknown":
-      return "ChatGPT Subscription";
-    default:
-      account.planType satisfies never;
-      return undefined;
-  }
+  // Shared with `CodexUsage.normalizeCodexUsage`'s `planLabel` so the auth
+  // badge and the plan-usage hover can never disagree on a tier's name.
+  const planLabel = codexPlanTypeLabel(account.planType);
+  return planLabel ? `${planLabel} Subscription` : undefined;
 }
 
 function codexAccountEmail(account: CodexSchema.V2GetAccountResponse["account"]) {
@@ -354,12 +343,19 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     } satisfies CodexAppServerProviderSnapshot;
   }
 
-  const [skillsResponse, models] = yield* Effect.all(
+  const capturedAt = DateTime.formatIso(yield* DateTime.now);
+  const [skillsResponse, models, rateLimits] = yield* Effect.all(
     [
       client.request("skills/list", {
         cwds: [input.cwd],
       }),
       requestAllCodexModels(client),
+      // Rate limits are a bonus on top of the auth/model probe: an API-key
+      // session has none, and older app-servers may not know the method at
+      // all. Never let that failure sink the whole snapshot.
+      client
+        .request("account/rateLimits/read", undefined)
+        .pipe(Effect.map(Option.some), Effect.orElseSucceed(Option.none)),
     ],
     { concurrency: "unbounded" },
   );
@@ -369,6 +365,9 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
     version,
     models: appendCustomCodexModels(models, input.customModels ?? []),
     skills: parseCodexSkillsListResponse(skillsResponse, input.cwd),
+    ...(Option.isSome(rateLimits)
+      ? { usage: normalizeCodexUsage({ raw: rateLimits.value, capturedAt, source: "probe" }) }
+      : {}),
   } satisfies CodexAppServerProviderSnapshot;
 });
 
@@ -556,6 +555,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
     checkedAt,
     models: snapshot.models,
     skills: snapshot.skills,
+    ...(snapshot.usage ? { usage: snapshot.usage } : {}),
     probe: {
       installed: true,
       version: snapshot.version ?? null,

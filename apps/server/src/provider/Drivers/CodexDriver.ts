@@ -38,6 +38,10 @@ import { ProviderDriverError } from "../Errors.ts";
 import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
 import { checkCodexProviderStatus, makePendingCodexProvider } from "../Layers/CodexProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
+import {
+  ProviderUsageRegistry,
+  publishProviderSnapshotUsage,
+} from "../Layers/ProviderUsageRegistry.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import type { ProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
@@ -75,6 +79,7 @@ export type CodexDriverEnv =
   | HttpClient.HttpClient
   | Path.Path
   | ProviderEventLoggers
+  | ProviderUsageRegistry
   | ServerConfig;
 
 /**
@@ -112,6 +117,9 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const httpClient = yield* HttpClient.HttpClient;
       const eventLoggers = yield* ProviderEventLoggers;
+      // Captured as a value here rather than read inside `enrichSnapshot`,
+      // whose signature pins `R = never`.
+      const usageRegistry = yield* ProviderUsageRegistry;
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const homeLayout = yield* resolveCodexHomeLayout(config);
       const continuationIdentity = codexContinuationIdentity(homeLayout);
@@ -171,10 +179,34 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         initialSnapshot: (settings) =>
           makePendingCodexProvider(settings).pipe(Effect.map(stampIdentity)),
         checkProvider,
-        enrichSnapshot: ({ snapshot, publishSnapshot }) =>
-          enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenanceCapabilities).pipe(
-            Effect.provideService(HttpClient.HttpClient, httpClient),
-            Effect.flatMap((enrichedSnapshot) => publishSnapshot(enrichedSnapshot)),
+        enrichSnapshot: ({ snapshot, getSnapshot, publishSnapshot }) =>
+          Effect.all(
+            [
+              enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenanceCapabilities).pipe(
+                Effect.provideService(HttpClient.HttpClient, httpClient),
+                // Rebase on the live snapshot instead of publishing the
+                // enriched copy directly: the usage subscription below runs
+                // concurrently and may have published while this advisory's
+                // registry lookup was in flight over the network.
+                Effect.flatMap((enrichedSnapshot) =>
+                  getSnapshot.pipe(
+                    Effect.flatMap((currentSnapshot) =>
+                      publishSnapshot({
+                        ...currentSnapshot,
+                        versionAdvisory: enrichedSnapshot.versionAdvisory,
+                      }),
+                    ),
+                  ),
+                ),
+              ),
+              publishProviderSnapshotUsage({
+                registry: usageRegistry,
+                instanceId,
+                getSnapshot,
+                publishSnapshot,
+              }),
+            ],
+            { concurrency: "unbounded", discard: true },
           ),
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
       }).pipe(
