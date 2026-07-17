@@ -3,17 +3,23 @@ import type { ServerProvider } from "@t3tools/contracts";
 
 import { cn } from "~/lib/utils";
 import { getProviderUsageSummary } from "../settings/providerStatus";
+import { useRelativeTimeTick } from "../settings/settingsLayout";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { ProviderUsageBody, USAGE_SEVERITY_COLOR } from "./ProviderUsagePanel";
 import { UsageRing } from "./UsageRing";
 
 /**
+ * How often the meter re-reads the clock. Every label it renders has
+ * minute granularity, so a slow tick is enough to keep countdowns and the
+ * staleness note honest.
+ */
+const USAGE_CLOCK_TICK_MS = 30_000;
+
+/**
  * Plan-usage dial for the composer's active provider, expanding on hover.
  *
  * Deliberately mirrors `ContextWindowMeter`: same ring, same trigger button,
- * same popup geometry. The two sit next to each other in the composer footer
- * and answer the same shape of question ("how much of a budget is left"), so
- * they are built from the same parts.
+ * same popup geometry, since both answer "how much of a budget is left".
  *
  * Renders nothing unless there are real windows to show. Absent usage is the
  * normal state for the first seconds after boot and forever for providers
@@ -27,21 +33,19 @@ export const ProviderUsageMeter = memo(function ProviderUsageMeter(props: {
   /** Instance display name, used to disambiguate the meter's aria-label. */
   displayName: string;
 }) {
-  // Read the clock at render rather than on a timer: plan windows move on the
-  // order of minutes, and the snapshot re-renders this component whenever the
-  // numbers actually change, so a ticking interval would burn frames to
-  // remove drift nobody can see.
-  const summary = getProviderUsageSummary(props.provider, Date.now());
+  // The clock must come from a ticking hook, not `Date.now()` at render.
+  // Usage arrives by push, so on an idle session nothing re-renders this
+  // component for minutes — and under React Compiler a render-time
+  // `Date.now()` is cached against `props.provider` anyway, which would
+  // freeze every countdown and make the staleness note unable to ever fire.
+  const now = useRelativeTimeTick(USAGE_CLOCK_TICK_MS);
+  const summary = getProviderUsageSummary(props.provider, now);
 
   if (summary.kind !== "measured" || summary.windows.length === 0) {
     return null;
   }
 
   const headline = summary.headline;
-  const ringColor =
-    headline === null
-      ? "color-mix(in oklab, var(--color-muted-foreground) 55%, transparent)"
-      : USAGE_SEVERITY_COLOR[summary.severity];
   const usageLabel = headline
     ? `${headline.percentLabel ?? "unknown"} of ${headline.label} used`
     : "utilization unknown";
@@ -62,7 +66,20 @@ export const ProviderUsageMeter = memo(function ProviderUsageMeter(props: {
             )}
             aria-label={`${props.displayName} plan usage: ${usageLabel}`}
           >
-            <UsageRing percent={headline?.percent ?? 0} color={ringColor} />
+            {/* A ring at 0% draws no arc, so an unknown utilization rendered
+                as a ring would be pixel-identical to "nothing used" — the same
+                lie the window rows refuse to tell with a 0%-wide bar. Show a
+                dash instead. */}
+            {headline === null ? (
+              <span aria-hidden="true" className="text-[11px] leading-none opacity-60">
+                –
+              </span>
+            ) : (
+              <UsageRing
+                percent={headline.percent ?? 0}
+                color={USAGE_SEVERITY_COLOR[headline.severity]}
+              />
+            )}
           </button>
         }
       />

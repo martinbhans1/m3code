@@ -12,9 +12,10 @@ import type {
 } from "../settings/providerStatus";
 
 /**
- * Arc/bar color per severity. Shares `blue-500` / `red-500` with the
- * context-window meter so a full plan window and a full context window read
- * as the same kind of alarm.
+ * Arc/bar color per severity. Reuses the context-window meter's
+ * `blue-500` / `red-500` vocabulary so a full plan window and a full context
+ * window read as the same kind of alarm, with an amber tier the
+ * context-window meter has no equivalent for.
  */
 export const USAGE_SEVERITY_COLOR: Record<ServerProviderUsageSeverity, string> = {
   normal: "var(--color-blue-500)",

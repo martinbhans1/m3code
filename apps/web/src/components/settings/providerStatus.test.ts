@@ -129,8 +129,8 @@ describe("getProviderUsageSummary", () => {
     if (summary.kind !== "measured") return;
     expect(summary.planLabel).toBe("max");
     expect(summary.headline?.id).toBe("weekly");
-    // 81% crosses the warning cutoff, so the whole provider is warning.
-    expect(summary.severity).toBe("warning");
+    // 81% crosses the warning cutoff.
+    expect(summary.headline?.severity).toBe("warning");
     expect(summary.windows[0]?.percentLabel).toBe("12%");
     expect(summary.windows[0]?.resetLabel).toBe("Resets in 1h");
     expect(summary.windows[1]?.resetLabel).toBeNull();
@@ -181,7 +181,6 @@ describe("getProviderUsageSummary", () => {
     if (summary.kind !== "measured") return;
     expect(summary.windows).toEqual([]);
     expect(summary.headline).toBeNull();
-    expect(summary.severity).toBe("normal");
   });
 
   it("prefers the provider's own severity over the inferred one", () => {
@@ -197,7 +196,6 @@ describe("getProviderUsageSummary", () => {
     expect(summary.kind).toBe("measured");
     if (summary.kind !== "measured") return;
     expect(summary.windows[0]?.severity).toBe("critical");
-    expect(summary.severity).toBe("critical");
   });
 
   it("infers critical at the 90% cutoff", () => {
@@ -210,7 +208,30 @@ describe("getProviderUsageSummary", () => {
 
     expect(summary.kind).toBe("measured");
     if (summary.kind !== "measured") return;
-    expect(summary.severity).toBe("critical");
+    expect(summary.headline?.severity).toBe("critical");
+  });
+
+  it("ranks the headline by severity before utilization", () => {
+    // The meter takes both its length and its colour from `headline`, so the
+    // provider-flagged critical window must win over a merely larger one —
+    // otherwise the dial paints a 50% arc in a colour describing a different
+    // window entirely.
+    const summary = getProviderUsageSummary(
+      providerWithUsage(
+        usage({
+          windows: [
+            { id: "big", label: "Weekly", percent: 50, resetsAt: null },
+            { id: "urgent", label: "5-hour", percent: 20, resetsAt: null, severity: "critical" },
+          ],
+        }),
+      ),
+      NOW,
+    );
+
+    expect(summary.kind).toBe("measured");
+    if (summary.kind !== "measured") return;
+    expect(summary.headline?.id).toBe("urgent");
+    expect(summary.headline?.severity).toBe("critical");
   });
 
   it("surfaces staleness from capturedAt", () => {

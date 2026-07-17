@@ -1,10 +1,10 @@
 /**
  * Compact circular gauge used by the composer's meters.
  *
- * Extracted from `ContextWindowMeter` when the provider plan-usage meter
- * grew the same dial: both render a single stroked arc at the same size next
- * to the composer controls, and they must stay pixel-identical so two meters
- * sitting side by side read as one control surface rather than two.
+ * Extracted from `ContextWindowMeter` when the provider plan-usage meter grew
+ * the same dial. The two render in different corners of the composer, but
+ * they mean the same thing — "how much of a budget is gone" — so they must
+ * keep reading identically rather than drifting into two dialects of dial.
  */
 export function UsageRing(props: {
   /** `0`–`100`. Clamped, so callers may pass raw provider percentages. */

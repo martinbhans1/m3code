@@ -130,8 +130,12 @@ export function getProviderVersionAdvisoryPresentation(
 /**
  * Utilization cutoffs applied when a provider reports no `severity` of its
  * own — Codex never does, and Claude only starts once it is already warning.
- * The critical cutoff matches the context-window meter's own 90% "overloaded"
- * line so the two meters in the composer footer agree on what red means.
+ *
+ * Deliberately inclusive (`>=`): a window reported at exactly 90% is at the
+ * cutoff, not below it. This is a hair stricter than `ContextWindowMeter`'s
+ * `> 90`, which the two meters can afford to disagree about — a context
+ * window is a soft budget that compaction reclaims, a plan window is a hard
+ * limit that stops the session.
  */
 const USAGE_WARNING_PERCENT = 75;
 const USAGE_CRITICAL_PERCENT = 90;
@@ -181,12 +185,16 @@ export type ProviderUsageSummary =
       readonly planLabel: string | null;
       readonly windows: ReadonlyArray<ProviderUsageWindowPresentation>;
       /**
-       * The window closest to its limit — the binding constraint, and so the
-       * one a single-dial meter should show. `null` when no window reported
-       * a utilization.
+       * The binding constraint: the most severe window, breaking ties on the
+       * highest utilization. A single-dial meter must take BOTH its length and
+       * its color from this one window — deriving colour from an aggregate
+       * severity and length from a different window would paint a dial that
+       * describes no real window at all.
+       *
+       * `null` when no window reported a utilization, which is distinct from
+       * 0%: callers must not render it as an empty dial.
        */
       readonly headline: ProviderUsageWindowPresentation | null;
-      readonly severity: ServerProviderUsageSeverity;
       /** Non-null only once the capture is old enough to be worth flagging. */
       readonly staleLabel: string | null;
     };
@@ -307,17 +315,14 @@ export function getProviderUsageSummary(
   const windows = usage.windows.map((window) => presentUsageWindow(window, now));
 
   let headline: ProviderUsageWindowPresentation | null = null;
-  let headlinePercent = -1;
-  let severity: ServerProviderUsageSeverity = "normal";
   for (const window of windows) {
-    // Windows with unknown utilization can never be the headline: the dial
-    // would read as "0% used", which is a claim we cannot make.
-    if (window.percent !== null && window.percent > headlinePercent) {
-      headline = window;
-      headlinePercent = window.percent;
+    // Windows with unknown utilization can never be the headline: a dial has
+    // no honest length to draw for them.
+    if (window.percent === null) {
+      continue;
     }
-    if (USAGE_SEVERITY_RANK[window.severity] > USAGE_SEVERITY_RANK[severity]) {
-      severity = window.severity;
+    if (headline === null || isMoreBinding(window, headline)) {
+      headline = window;
     }
   }
 
@@ -326,7 +331,26 @@ export function getProviderUsageSummary(
     planLabel: usage.planLabel,
     windows,
     headline,
-    severity,
     staleLabel: formatProviderUsageStaleLabel(usage.capturedAt, now),
   };
+}
+
+/**
+ * Order two windows by how much they constrain the user: severity first,
+ * then utilization. Severity leads because a provider that sets it knows
+ * plan-specific cutoffs we cannot infer from a percentage — a window it calls
+ * critical at 20% binds harder than one it leaves normal at 50%.
+ *
+ * Both arguments must have a non-null `percent`.
+ */
+function isMoreBinding(
+  candidate: ProviderUsageWindowPresentation,
+  incumbent: ProviderUsageWindowPresentation,
+): boolean {
+  const candidateRank = USAGE_SEVERITY_RANK[candidate.severity];
+  const incumbentRank = USAGE_SEVERITY_RANK[incumbent.severity];
+  if (candidateRank !== incumbentRank) {
+    return candidateRank > incumbentRank;
+  }
+  return (candidate.percent ?? 0) > (incumbent.percent ?? 0);
 }
