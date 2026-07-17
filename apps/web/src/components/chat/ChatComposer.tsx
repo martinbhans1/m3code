@@ -401,6 +401,7 @@ export interface ChatComposerHandle {
   openModelPicker: () => void;
   toggleModelPicker: () => void;
   isModelPickerOpen: () => boolean;
+  openUsageDialog: () => void;
   readSnapshot: () => {
     value: string;
     cursor: number;
@@ -1994,6 +1995,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       },
       openModelPicker: () => {
         setIsComposerModelPickerOpen(true);
+      },
+      openUsageDialog: () => {
+        setIsComposerUsageDialogOpen(true);
       },
       toggleModelPicker: () => {
         setIsComposerModelPickerOpen((open) => !open);

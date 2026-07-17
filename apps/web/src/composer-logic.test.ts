@@ -7,6 +7,7 @@ import {
   expandCollapsedComposerCursor,
   isCollapsedCursorAdjacentToInlineToken,
   parseStandaloneComposerSlashCommand,
+  parseStandaloneComposerUiSurfaceCommand,
   replaceTextRange,
 } from "./composer-logic";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
@@ -346,5 +347,32 @@ describe("parseStandaloneComposerSlashCommand", () => {
 
   it("ignores slash commands with extra message text", () => {
     expect(parseStandaloneComposerSlashCommand("/plan explain this")).toBeNull();
+  });
+
+  it("does not treat UI-surface commands as interaction modes", () => {
+    // These open a panel; routing them to handleInteractionModeChange would
+    // silently switch the thread's mode instead.
+    expect(parseStandaloneComposerSlashCommand("/usage")).toBeNull();
+    expect(parseStandaloneComposerSlashCommand("/model")).toBeNull();
+  });
+});
+
+describe("parseStandaloneComposerUiSurfaceCommand", () => {
+  it("parses the UI-surface commands, including the trailing-space form", () => {
+    expect(parseStandaloneComposerUiSurfaceCommand("/usage")).toBe("usage");
+    expect(parseStandaloneComposerUiSurfaceCommand("/model")).toBe("model");
+    // The trailing space is the whole point: it kills the composer menu's
+    // trigger, so without this the literal text reaches the agent.
+    expect(parseStandaloneComposerUiSurfaceCommand("/usage ")).toBe("usage");
+    expect(parseStandaloneComposerUiSurfaceCommand(" /model ")).toBe("model");
+    expect(parseStandaloneComposerUiSurfaceCommand("/USAGE")).toBe("usage");
+  });
+
+  it("ignores mode commands and anything with real message text", () => {
+    expect(parseStandaloneComposerUiSurfaceCommand("/plan")).toBeNull();
+    expect(parseStandaloneComposerUiSurfaceCommand("/default")).toBeNull();
+    // A genuine question that merely starts with the word must still send.
+    expect(parseStandaloneComposerUiSurfaceCommand("/usage of this API?")).toBeNull();
+    expect(parseStandaloneComposerUiSurfaceCommand("what is /usage")).toBeNull();
   });
 });

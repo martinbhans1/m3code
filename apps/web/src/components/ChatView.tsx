@@ -45,6 +45,7 @@ import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch"
 import {
   collapseExpandedComposerCursor,
   parseStandaloneComposerSlashCommand,
+  parseStandaloneComposerUiSurfaceCommand,
 } from "../composer-logic";
 import {
   derivePendingApprovals,
@@ -3822,16 +3823,36 @@ function ChatViewContent(props: ChatViewProps) {
       });
       return;
     }
-    const standaloneSlashCommand =
+    const isStandaloneCommandCandidate =
       composerImages.length === 0 &&
       sendableComposerTerminalContexts.length === 0 &&
       composerElementContexts.length === 0 &&
       composerPreviewAnnotations.length === 0 &&
-      composerReviewComments.length === 0
-        ? parseStandaloneComposerSlashCommand(trimmed)
-        : null;
+      composerReviewComments.length === 0;
+    const standaloneSlashCommand = isStandaloneCommandCandidate
+      ? parseStandaloneComposerSlashCommand(trimmed)
+      : null;
     if (standaloneSlashCommand) {
       handleInteractionModeChange(standaloneSlashCommand);
+      promptRef.current = "";
+      clearComposerDraftContent(composerDraftTarget);
+      composerRef.current?.resetCursorState();
+      return;
+    }
+    // `/model` and `/usage` are local UI, never prompts. The composer menu
+    // dispatches them while its trigger is live, but the trigger dies as soon
+    // as the token is no longer a bare `/word` — typing `/usage` then a space
+    // leaves the text with no menu to catch it, and this send would post the
+    // literal command to the agent.
+    const standaloneUiSurfaceCommand = isStandaloneCommandCandidate
+      ? parseStandaloneComposerUiSurfaceCommand(trimmed)
+      : null;
+    if (standaloneUiSurfaceCommand) {
+      if (standaloneUiSurfaceCommand === "model") {
+        composerRef.current?.openModelPicker();
+      } else {
+        composerRef.current?.openUsageDialog();
+      }
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();

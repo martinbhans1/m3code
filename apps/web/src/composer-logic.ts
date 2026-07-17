@@ -14,6 +14,9 @@ export type ComposerSlashCommand = "model" | "plan" | "default" | "usage";
 /** The subset of {@link ComposerSlashCommand} that changes interaction mode. */
 export type ComposerInteractionModeSlashCommand = Extract<ComposerSlashCommand, "plan" | "default">;
 
+/** The subset of {@link ComposerSlashCommand} that only opens a UI surface. */
+export type ComposerUiSurfaceSlashCommand = Extract<ComposerSlashCommand, "model" | "usage">;
+
 export interface ComposerTrigger {
   kind: ComposerTriggerKind;
   query: string;
@@ -285,6 +288,26 @@ export function parseStandaloneComposerSlashCommand(
   const command = match[1]?.toLowerCase();
   if (command === "plan") return "plan";
   return "default";
+}
+
+/**
+ * Recognize a prompt that is *only* a UI-surface command (`/model`,
+ * `/usage`), so sending it opens that surface instead of prompting the agent
+ * with the literal text.
+ *
+ * The composer menu normally dispatches these before a send can happen, but
+ * the menu's trigger dies as soon as the token stops being a bare `/word` —
+ * type `/usage` then a space, and the trigger is gone while the text remains.
+ * Without this, the next Enter posts "/usage" to the agent as a question.
+ */
+export function parseStandaloneComposerUiSurfaceCommand(
+  text: string,
+): ComposerUiSurfaceSlashCommand | null {
+  const match = /^\/(model|usage)\s*$/i.exec(text.trim());
+  if (!match) {
+    return null;
+  }
+  return match[1]?.toLowerCase() === "model" ? "model" : "usage";
 }
 
 export function replaceTextRange(
