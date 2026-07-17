@@ -39,6 +39,13 @@ const isCodexAppServerSpawnError = Schema.is(CodexErrors.CodexAppServerSpawnErro
 
 const CODEX_APP_SERVER_PROBE_FORCE_KILL_AFTER = "2 seconds" as const;
 
+/**
+ * Slice of `AUTH_PROBE_TIMEOUT_MS` the `account/rateLimits/read` leg may
+ * consume before the probe gives up on plan usage and returns the snapshot
+ * without it.
+ */
+const CODEX_RATE_LIMITS_PROBE_TIMEOUT_MS = 2_000;
+
 const CODEX_PRESENTATION = {
   displayName: "Codex",
   showInteractionModeToggle: true,
@@ -352,10 +359,18 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
       requestAllCodexModels(client),
       // Rate limits are a bonus on top of the auth/model probe: an API-key
       // session has none, and older app-servers may not know the method at
-      // all. Never let that failure sink the whole snapshot.
+      // all. Never let that sink the whole snapshot — note `Effect.all` joins
+      // on its slowest leg, so an app-server that never answers this request
+      // (rather than returning a method-not-found error) would otherwise stall
+      // the probe into `AUTH_PROBE_TIMEOUT_MS` and degrade the whole snapshot
+      // to "Timed out while checking Codex app-server provider status". Hence
+      // a per-leg timeout as well as the error fallback.
       client
         .request("account/rateLimits/read", undefined)
-        .pipe(Effect.map(Option.some), Effect.orElseSucceed(Option.none)),
+        .pipe(
+          Effect.timeoutOption(Duration.millis(CODEX_RATE_LIMITS_PROBE_TIMEOUT_MS)),
+          Effect.orElseSucceed(Option.none),
+        ),
     ],
     { concurrency: "unbounded" },
   );

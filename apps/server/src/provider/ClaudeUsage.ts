@@ -159,7 +159,7 @@ const normalizeNamedWindow = (input: {
     label: claudeWindowLabel(input.id),
     percent: clampUsagePercent(window["utilization"]),
     resetsAt: isoStringToIsoDateTime(window["resets_at"]),
-    ...(input.severity ? { severity: input.severity } : {}),
+    severity: input.severity,
   });
 };
 
@@ -212,14 +212,13 @@ const normalizeClaudeUsageEvent = (input: {
   const id = readNonEmptyString(input.rateLimitInfo["rateLimitType"]);
   if (!id) return undefined;
 
-  const severity = readSeverity(input.rateLimitInfo["status"]);
   const window = makeUsageWindow({
     id,
     label: claudeWindowLabel(id),
     percent: clampUsagePercent(input.rateLimitInfo["utilization"]),
     // Events carry epoch seconds here, unlike the probe's ISO `resets_at`.
     resetsAt: epochToIsoDateTime(input.rateLimitInfo["resetsAt"]),
-    ...(severity ? { severity } : {}),
+    severity: readSeverity(input.rateLimitInfo["status"]),
   });
 
   return {

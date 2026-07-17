@@ -479,30 +479,56 @@ type ClaudeCapabilitiesProbe = {
 const CLAUDE_USAGE_METHOD = "usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET" as const;
 
 /**
+ * Budget for the usage read, held *separately* from
+ * `CAPABILITIES_PROBE_TIMEOUT_MS` rather than carved out of it.
+ *
+ * Usage is a bonus that runs after `initializationResult()` has already
+ * produced the account data the probe exists for. Sharing one deadline would
+ * mean a slow usage call retroactively discards a successful auth probe, so
+ * each owns its own.
+ */
+const CLAUDE_USAGE_TIMEOUT_MS = 2_000;
+
+/**
+ * Settle a probe leg into `A | undefined`: both a failure and a timeout mean
+ * "no answer", and every caller here treats those identically.
+ */
+const settleProbeLeg = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  timeoutMs: number,
+): Effect.Effect<A | undefined, never, R> =>
+  effect.pipe(
+    Effect.timeoutOption(timeoutMs),
+    Effect.result,
+    Effect.map((result) => {
+      if (Result.isFailure(result)) return undefined;
+      return Option.isSome(result.success) ? result.success.value : undefined;
+    }),
+  );
+
+/**
  * Read plan usage off a live SDK query, defensively.
  *
- * The auth probe's contract is to return account info and slash commands;
- * usage is a bonus. This method is explicitly documented as unstable and
- * renameable, so it is feature-detected and its failures are swallowed —
- * a missing, renamed, or throwing usage API must never degrade the auth
- * probe into "could not verify Claude authentication status".
+ * The method is documented as unstable and renameable, so it is feature
+ * -detected; the caller additionally bounds it with `CLAUDE_USAGE_TIMEOUT_MS`
+ * and swallows failures. A missing, renamed, throwing, or *hanging* usage API
+ * must never degrade the auth probe into "could not verify Claude
+ * authentication status".
  *
- * Returns `undefined` on any of: method absent, method throws, or payload
- * unrecognized by the normalizer.
+ * The hang is the failure mode worth spelling out: feature detection only
+ * proves the *SDK* has the method, while the control request itself travels to
+ * the `claude` CLI subprocess, whose version is user-configurable via
+ * `binaryPath`. An older CLI that doesn't implement the request may simply
+ * never answer.
  */
-const readClaudeUsage = async (
-  query: object,
-  capturedAt: string,
-): Promise<ServerProviderUsage | undefined> => {
-  const usageMethod = (query as Record<string, unknown>)[CLAUDE_USAGE_METHOD];
-  if (typeof usageMethod !== "function") return undefined;
-  try {
-    const response: unknown = await usageMethod.call(query);
+const readClaudeUsage = (query: object) =>
+  Effect.gen(function* () {
+    const usageMethod = (query as Record<string, unknown>)[CLAUDE_USAGE_METHOD];
+    if (typeof usageMethod !== "function") return undefined;
+    const capturedAt = DateTime.formatIso(yield* DateTime.now);
+    const response = yield* Effect.tryPromise(() => usageMethod.call(query) as Promise<unknown>);
     return normalizeClaudeUsage({ raw: response, capturedAt });
-  } catch {
-    return undefined;
-  }
-};
+  });
 
 function parseClaudeInitializationCommands(
   commands: ReadonlyArray<ClaudeSlashCommand> | undefined,
@@ -588,6 +614,12 @@ function waitForAbortSignal(signal: AbortSignal): Promise<void> {
  *
  * This is used as a fallback when `claude auth status` does not include
  * subscription type information.
+ *
+ * The account read and the plan-usage read are settled as two independent
+ * legs against the same spawned session. Usage reuses that session (one extra
+ * local IPC round-trip, not a second subprocess) but never shares its
+ * deadline: a hung experimental usage API must not retract account data the
+ * probe has already obtained.
  */
 const probeClaudeCapabilities = (
   claudeSettings: ClaudeSettings,
@@ -596,8 +628,8 @@ const probeClaudeCapabilities = (
   const abort = new AbortController();
   return Effect.gen(function* () {
     const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
-    return yield* Effect.tryPromise(async () => {
-      const q = claudeQuery({
+    const query = yield* Effect.sync(() =>
+      claudeQuery({
         // Never yield — we only need initialization data, not a conversation.
         // This prevents any prompt from reaching the Anthropic API.
         // oxlint-disable-next-line require-yield
@@ -613,39 +645,42 @@ const probeClaudeCapabilities = (
           env: claudeEnvironment,
           stderr: () => {},
         },
-      });
-      const init = await q.initializationResult();
-      const account = init.account as
-        | {
-            readonly email?: string;
-            readonly subscriptionType?: string;
-            readonly tokenSource?: string;
-          }
-        | undefined;
-      // Reuses the session we already paid to spawn, so plan usage costs one
-      // extra local IPC round-trip rather than a second subprocess. Runs
-      // inside the shared CAPABILITIES_PROBE_TIMEOUT_MS budget below.
-      const usage = await readClaudeUsage(q, DateTime.formatIso(DateTime.nowUnsafe()));
-      return {
-        email: account?.email,
-        subscriptionType: account?.subscriptionType,
-        tokenSource: account?.tokenSource,
-        slashCommands: parseClaudeInitializationCommands(init.commands),
-        ...(usage ? { usage } : {}),
-      } satisfies ClaudeCapabilitiesProbe;
-    });
+      }),
+    );
+
+    const capabilities = yield* settleProbeLeg(
+      Effect.tryPromise(async () => {
+        const init = await query.initializationResult();
+        const account = init.account as
+          | {
+              readonly email?: string;
+              readonly subscriptionType?: string;
+              readonly tokenSource?: string;
+            }
+          | undefined;
+        return {
+          email: account?.email,
+          subscriptionType: account?.subscriptionType,
+          tokenSource: account?.tokenSource,
+          slashCommands: parseClaudeInitializationCommands(init.commands),
+        } satisfies ClaudeCapabilitiesProbe;
+      }),
+      CAPABILITIES_PROBE_TIMEOUT_MS,
+    );
+
+    if (!capabilities) return undefined;
+
+    const usage = yield* settleProbeLeg(readClaudeUsage(query), CLAUDE_USAGE_TIMEOUT_MS);
+    return {
+      ...capabilities,
+      ...(usage ? { usage } : {}),
+    } satisfies ClaudeCapabilitiesProbe;
   }).pipe(
     Effect.ensuring(
       Effect.sync(() => {
         if (!abort.signal.aborted) abort.abort();
       }),
     ),
-    Effect.timeoutOption(CAPABILITIES_PROBE_TIMEOUT_MS),
-    Effect.result,
-    Effect.map((result) => {
-      if (Result.isFailure(result)) return undefined;
-      return Option.isSome(result.success) ? result.success.value : undefined;
-    }),
   );
 };
 

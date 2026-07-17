@@ -31,6 +31,20 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     readonly snapshot: ServerProvider;
     readonly getSnapshot: Effect.Effect<ServerProvider>;
     readonly publishSnapshot: (snapshot: ServerProvider) => Effect.Effect<void>;
+    /**
+     * Read-modify-write the live snapshot atomically.
+     *
+     * Prefer this over `getSnapshot` + `publishSnapshot` whenever an
+     * enrichment sets one field and must not clobber the others. Those two are
+     * separate atomic operations, so composing them is a TOCTOU: two
+     * concurrent enrichments (say version advisory and plan usage) can both
+     * read the same snapshot and the second write silently drops the first's
+     * field. `update` runs *inside* the same `Ref.modify` that publishes, so
+     * concurrent enrichments compose instead of racing.
+     */
+    readonly updateSnapshot: (
+      update: (current: ServerProvider) => ServerProvider,
+    ) => Effect.Effect<void>;
   }) => Effect.Effect<void>;
   readonly refreshInterval?: Duration.Input;
 }): Effect.fn.Return<ServerProviderShape, ServerSettingsError, Scope.Scope> {
@@ -49,12 +63,19 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
   const enrichmentFiberRef = yield* Ref.make<Fiber.Fiber<void, unknown> | null>(null);
   const scope = yield* Effect.scope;
 
-  const publishEnrichedSnapshot = Effect.fn("publishEnrichedSnapshot")(function* (
+  const updateEnrichedSnapshot = Effect.fn("updateEnrichedSnapshot")(function* (
     generation: number,
-    nextSnapshot: ServerProvider,
+    update: (current: ServerProvider) => ServerProvider,
   ) {
     const snapshotToPublish = yield* Ref.modify(snapshotStateRef, (state) => {
-      if (state.enrichmentGeneration !== generation || Equal.equals(state.snapshot, nextSnapshot)) {
+      if (state.enrichmentGeneration !== generation) {
+        return [null, state] as const;
+      }
+      // Applied inside `Ref.modify` so an enrichment that derives its next
+      // snapshot from the current one cannot lose a concurrent enrichment's
+      // write between the read and the publish.
+      const nextSnapshot = update(state.snapshot);
+      if (Equal.equals(state.snapshot, nextSnapshot)) {
         return [null, state] as const;
       }
       return [
@@ -70,6 +91,9 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
     }
     yield* PubSub.publish(changesPubSub, snapshotToPublish);
   });
+
+  const publishEnrichedSnapshot = (generation: number, nextSnapshot: ServerProvider) =>
+    updateEnrichedSnapshot(generation, () => nextSnapshot);
 
   const restartSnapshotEnrichment = Effect.fn("restartSnapshotEnrichment")(function* (
     settings: Settings,
@@ -91,6 +115,7 @@ export const makeManagedServerProvider = Effect.fn("makeManagedServerProvider")(
         snapshot,
         getSnapshot: Ref.get(snapshotStateRef).pipe(Effect.map((state) => state.snapshot)),
         publishSnapshot: (nextSnapshot) => publishEnrichedSnapshot(generation, nextSnapshot),
+        updateSnapshot: (update) => updateEnrichedSnapshot(generation, update),
       })
       .pipe(Effect.ignoreCause({ log: true }), Effect.forkIn(scope));
 
