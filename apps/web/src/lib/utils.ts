@@ -8,6 +8,24 @@ export function cn(...inputs: CxOptions) {
   return twMerge(cx(inputs));
 }
 
+/**
+ * Render a `0`–`100` percentage as a meter label. Values under 10 keep one
+ * significant decimal so a nearly-empty meter still reads as moving; above
+ * that the decimal is noise. Shared by the context-window meter and the
+ * provider plan-usage meter so the two never disagree on how a percentage
+ * looks. Returns `null` for absent/non-finite input so callers can decide
+ * their own fallback rather than rendering `NaN%`.
+ */
+export function formatPercentLabel(value: number | null | undefined): string | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return null;
+  }
+  if (value < 10) {
+    return `${value.toFixed(1).replace(/\.0$/, "")}%`;
+  }
+  return `${Math.round(value)}%`;
+}
+
 export function isMacPlatform(platform: string): boolean {
   return /mac|iphone|ipad|ipod/i.test(platform);
 }

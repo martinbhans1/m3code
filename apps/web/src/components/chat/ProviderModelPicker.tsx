@@ -12,6 +12,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 import { ModelPickerContent } from "./ModelPickerContent";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
+import { ProviderUsageMeter } from "./ProviderUsageMeter";
 import {
   ModelEsque,
   getTriggerDisplayModelLabel,
@@ -36,6 +37,12 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   activeProviderIconClassName?: string;
   compact?: boolean;
   disabled?: boolean;
+  /**
+   * Render the active instance's plan-usage meter beside the trigger. Opt-in
+   * because only the composer wants it: the settings page renders this picker
+   * to choose a default model, where a live usage dial is off-topic.
+   */
+  showPlanUsage?: boolean;
   terminalOpen?: boolean;
   open?: boolean;
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"];
@@ -141,79 +148,89 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   };
 
   return (
-    <Popover
-      open={isMenuOpen}
-      onOpenChange={(open) => {
-        if (props.disabled) {
-          setIsMenuOpen(false);
-          return;
-        }
-        setIsMenuOpen(open);
-      }}
-    >
-      <PopoverTrigger
-        render={
-          <Button
-            size="sm"
-            variant={props.triggerVariant ?? "ghost"}
-            data-chat-provider-model-picker="true"
-            className={cn(
-              "min-w-0 justify-between whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80",
-              props.compact ? "max-w-42 shrink-0" : "max-w-48 shrink sm:max-w-56 sm:px-3",
-              props.triggerClassName,
-            )}
-            disabled={props.disabled}
-          />
-        }
+    <>
+      <Popover
+        open={isMenuOpen}
+        onOpenChange={(open) => {
+          if (props.disabled) {
+            setIsMenuOpen(false);
+            return;
+          }
+          setIsMenuOpen(open);
+        }}
       >
-        <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
-          {activeEntry ? (
-            <ProviderInstanceIcon
-              driverKind={activeEntry.driverKind}
-              displayName={activeEntry.displayName}
-              accentColor={activeEntry.accentColor}
-              showBadge={showInstanceBadge}
-              className={showInstanceBadge ? "size-5" : "size-4"}
-              iconClassName={cn("size-4", props.activeProviderIconClassName)}
-              indicatorBackground="var(--input)"
-              badgeClassName={cn(
-                "right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3",
-                "px-0.5 text-[7px]",
+        <PopoverTrigger
+          render={
+            <Button
+              size="sm"
+              variant={props.triggerVariant ?? "ghost"}
+              data-chat-provider-model-picker="true"
+              className={cn(
+                "min-w-0 justify-between whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80",
+                props.compact ? "max-w-42 shrink-0" : "max-w-48 shrink sm:max-w-56 sm:px-3",
+                props.triggerClassName,
               )}
+              disabled={props.disabled}
             />
-          ) : null}
-          <Tooltip>
-            <TooltipTrigger render={<span className="min-w-0 flex-1 overflow-hidden truncate" />}>
-              {triggerTitle}
-            </TooltipTrigger>
-            <TooltipPopup side="top">{triggerLabel}</TooltipPopup>
-          </Tooltip>
-        </span>
-        <span aria-hidden="true" className="flex items-center">
-          <ChevronDownIcon aria-hidden="true" className="!ms-0 !-me-1 size-3 shrink-0 opacity-60" />
-        </span>
-      </PopoverTrigger>
-      <PopoverPopup
-        align="start"
-        className="border-0 bg-transparent p-0 shadow-none before:hidden [--viewport-inline-padding:0]"
-        viewportClassName="!overflow-hidden p-0"
-      >
-        <ModelPickerContent
-          activeInstanceId={activeInstanceId}
-          model={props.model}
-          lockedProvider={props.lockedProvider}
-          lockedContinuationGroupKey={props.lockedContinuationGroupKey ?? null}
-          instanceEntries={props.instanceEntries}
-          {...(props.keybindings ? { keybindings: props.keybindings } : {})}
-          modelOptionsByInstance={props.modelOptionsByInstance}
-          terminalOpen={props.terminalOpen ?? false}
-          onRequestClose={() => setIsMenuOpen(false)}
-          {...(props.getModelDisabledReason
-            ? { getModelDisabledReason: props.getModelDisabledReason }
-            : {})}
-          onInstanceModelChange={handleInstanceModelChange}
-        />
-      </PopoverPopup>
-    </Popover>
+          }
+        >
+          <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+            {activeEntry ? (
+              <ProviderInstanceIcon
+                driverKind={activeEntry.driverKind}
+                displayName={activeEntry.displayName}
+                accentColor={activeEntry.accentColor}
+                showBadge={showInstanceBadge}
+                className={showInstanceBadge ? "size-5" : "size-4"}
+                iconClassName={cn("size-4", props.activeProviderIconClassName)}
+                indicatorBackground="var(--input)"
+                badgeClassName={cn(
+                  "right-[-0.125rem] bottom-[-0.125rem] h-3 min-w-3",
+                  "px-0.5 text-[7px]",
+                )}
+              />
+            ) : null}
+            <Tooltip>
+              <TooltipTrigger render={<span className="min-w-0 flex-1 overflow-hidden truncate" />}>
+                {triggerTitle}
+              </TooltipTrigger>
+              <TooltipPopup side="top">{triggerLabel}</TooltipPopup>
+            </Tooltip>
+          </span>
+          <span aria-hidden="true" className="flex items-center">
+            <ChevronDownIcon
+              aria-hidden="true"
+              className="!ms-0 !-me-1 size-3 shrink-0 opacity-60"
+            />
+          </span>
+        </PopoverTrigger>
+        <PopoverPopup
+          align="start"
+          className="border-0 bg-transparent p-0 shadow-none before:hidden [--viewport-inline-padding:0]"
+          viewportClassName="!overflow-hidden p-0"
+        >
+          <ModelPickerContent
+            activeInstanceId={activeInstanceId}
+            model={props.model}
+            lockedProvider={props.lockedProvider}
+            lockedContinuationGroupKey={props.lockedContinuationGroupKey ?? null}
+            instanceEntries={props.instanceEntries}
+            {...(props.keybindings ? { keybindings: props.keybindings } : {})}
+            modelOptionsByInstance={props.modelOptionsByInstance}
+            terminalOpen={props.terminalOpen ?? false}
+            onRequestClose={() => setIsMenuOpen(false)}
+            {...(props.getModelDisabledReason
+              ? { getModelDisabledReason: props.getModelDisabledReason }
+              : {})}
+            onInstanceModelChange={handleInstanceModelChange}
+          />
+        </PopoverPopup>
+      </Popover>
+      {/* Sibling of the trigger, not a child: the trigger is a <button>, and
+          the meter needs its own focusable hover target. */}
+      {props.showPlanUsage && activeEntry ? (
+        <ProviderUsageMeter provider={activeEntry.snapshot} displayName={activeEntry.displayName} />
+      ) : null}
+    </>
   );
 });

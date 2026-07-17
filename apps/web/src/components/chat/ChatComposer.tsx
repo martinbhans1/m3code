@@ -65,6 +65,7 @@ import {
 } from "../composerFooterLayout";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
 import { ProviderModelPicker } from "./ProviderModelPicker";
+import { ProviderUsageDialog } from "./ProviderUsageDialog";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
@@ -886,6 +887,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
   const [isComposerPrimaryActionsCompact, setIsComposerPrimaryActionsCompact] = useState(false);
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
+  const [isComposerUsageDialogOpen, setIsComposerUsageDialogOpen] = useState(false);
   const [isComposerFocused, setIsComposerFocused] = useState(false);
   const isMobileViewport = useMediaQuery("max-sm");
   const isComposerCollapsedMobile = isMobileViewport && !isComposerFocused;
@@ -978,6 +980,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           command: "default",
           label: "/default",
           description: "Switch this thread back to normal build mode",
+        },
+        {
+          id: "slash:usage",
+          type: "slash-command",
+          command: "usage",
+          label: "/usage",
+          description: "Show plan usage for every configured provider",
         },
       ] satisfies ReadonlyArray<Extract<ComposerCommandItem, { type: "slash-command" }>>;
       const providerSlashCommandItems = (selectedProviderStatus?.slashCommands ?? []).map(
@@ -1597,14 +1606,24 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         return;
       }
       if (item.type === "slash-command") {
-        if (item.command === "model") {
+        // `/model` and `/usage` open a local UI surface: the typed text is
+        // erased and nothing is ever sent to the provider. Everything below
+        // falls through to an interaction-mode switch, so any new
+        // surface-opening command must be matched here.
+        const openComposerSurface =
+          item.command === "model"
+            ? () => setIsComposerModelPickerOpen(true)
+            : item.command === "usage"
+              ? () => setIsComposerUsageDialogOpen(true)
+              : null;
+        if (openComposerSurface) {
           const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
             expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
             focusEditorAfterReplace: false,
           });
           if (applied) {
             setComposerHighlightedItemId(null);
-            setIsComposerModelPickerOpen(true);
+            openComposerSurface();
           }
           return;
         }
@@ -2597,6 +2616,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 </Tooltip>
                 <ProviderModelPicker
                   compact={isComposerFooterCompact}
+                  showPlanUsage
                   activeInstanceId={selectedInstanceId}
                   model={selectedModelForPickerWithCustomFallback}
                   lockedProvider={lockedProvider}
@@ -2616,6 +2636,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   }}
                   getModelDisabledReason={getModelDisabledReason}
                   onInstanceModelChange={onProviderModelSelect}
+                />
+                <ProviderUsageDialog
+                  open={isComposerUsageDialogOpen}
+                  onOpenChange={setIsComposerUsageDialogOpen}
+                  instanceEntries={providerInstanceEntries}
                 />
 
                 {isComposerFooterCompact ? (

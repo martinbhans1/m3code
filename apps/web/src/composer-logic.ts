@@ -2,7 +2,17 @@ import { splitPromptIntoComposerSegments } from "./composer-editor-mentions";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
 
 export type ComposerTriggerKind = "path" | "slash-command" | "skill";
-export type ComposerSlashCommand = "model" | "plan" | "default";
+
+/**
+ * Built-in composer commands. Two kinds live in this union: commands that
+ * switch the thread's interaction mode (`plan`, `default`) and commands that
+ * only open a local UI surface (`model`, `usage`). The latter are never sent
+ * to a provider — see `parseStandaloneComposerSlashCommand`.
+ */
+export type ComposerSlashCommand = "model" | "plan" | "default" | "usage";
+
+/** The subset of {@link ComposerSlashCommand} that changes interaction mode. */
+export type ComposerInteractionModeSlashCommand = Extract<ComposerSlashCommand, "plan" | "default">;
 
 export interface ComposerTrigger {
   kind: ComposerTriggerKind;
@@ -255,9 +265,19 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
   };
 }
 
+/**
+ * Recognize a prompt that is *only* an interaction-mode command, so sending
+ * it switches mode instead of prompting the agent with the literal text.
+ *
+ * Returns the mode-switching commands only. The UI-surface commands
+ * (`model`, `usage`) are handled by the composer menu's own dispatch and have
+ * no meaning as a standalone prompt, so they are deliberately not matched —
+ * the return type states that positively rather than excluding them one by
+ * one, so a new UI command cannot leak in here by default.
+ */
 export function parseStandaloneComposerSlashCommand(
   text: string,
-): Exclude<ComposerSlashCommand, "model"> | null {
+): ComposerInteractionModeSlashCommand | null {
   const match = /^\/(plan|default)\s*$/i.exec(text.trim());
   if (!match) {
     return null;
