@@ -52,6 +52,8 @@ interface BranchToolbarProps {
   onComposerFocusRequest?: () => void;
   availableEnvironments?: readonly EnvironmentOption[];
   onEnvironmentChange?: (environmentId: EnvironmentId) => void;
+  /** When false the git controls are omitted, but the mobile nav row stays. */
+  isGitRepo?: boolean;
 }
 
 interface MobileRunContextSelectorProps {
@@ -203,6 +205,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   onComposerFocusRequest,
   availableEnvironments,
   onEnvironmentChange,
+  isGitRepo = true,
 }: BranchToolbarProps) {
   const threadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
@@ -239,7 +242,21 @@ export const BranchToolbar = memo(function BranchToolbar({
   );
   const isMobile = useIsMobile();
 
-  if (!hasActiveThread || !activeProject) return null;
+  // The toggle in this row is the only thumb-reachable way back to the thread
+  // list on a phone. Keep it on screen even when there is no project/git
+  // context — after a hard reload the project isn't in the store yet, and
+  // returning null here left the thread a dead end you could only escape by
+  // editing the URL.
+  if (!hasActiveThread || !activeProject || !isGitRepo) {
+    return (
+      <div className="mx-auto flex w-full max-w-208 items-center gap-2 px-2.5 pb-3 pt-1 sm:px-3 md:hidden">
+        <SidebarTrigger
+          className="size-8 shrink-0 text-muted-foreground"
+          aria-label="Open chat history"
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto flex w-full max-w-208 items-center gap-2 px-2.5 pb-3 pt-1 sm:px-3">

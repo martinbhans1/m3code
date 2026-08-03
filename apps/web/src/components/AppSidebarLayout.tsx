@@ -2,6 +2,8 @@ import { useEffect, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
 import ThreadSidebar from "./Sidebar";
+import { StarfieldCanvas } from "./StarfieldCanvas";
+import { SidebarSwipeGesture } from "./SidebarSwipeGesture";
 import { Sidebar, SidebarProvider, SidebarRail } from "./ui/sidebar";
 import {
   clearShortcutModifierState,
@@ -55,6 +57,8 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
 
   return (
     <SidebarProvider className="app-ambient-shell h-dvh! min-h-0!" defaultOpen>
+      <StarfieldCanvas />
+      <SidebarSwipeGesture />
       <Sidebar
         side="left"
         collapsible="offcanvas"

@@ -175,7 +175,7 @@ import { appendPreviewAnnotationPrompt } from "../lib/previewAnnotation";
 import { appendReviewCommentsToPrompt, type ReviewCommentContext } from "../reviewCommentContext";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { QueuedTurns } from "./chat/QueuedTurns";
-import { useQueuedTurnStore } from "../queuedTurnStore";
+import { selectQueuedTurns, useQueuedTurnStore } from "../queuedTurnStore";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
@@ -1294,7 +1294,7 @@ function ChatViewContent(props: ChatViewProps) {
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
   const queuedDispatchAwaitingRunRef = useRef<string | null>(null);
   const activeQueuedTurns = useQueuedTurnStore((state) =>
-    activeThreadKey ? (state.byThreadKey[activeThreadKey] ?? []) : [],
+    selectQueuedTurns(state.byThreadKey, activeThreadKey),
   );
   const activeRightPanelKind = useRightPanelStore((store) =>
     selectActiveRightPanelKindWithUrl(store.byThreadKey, activeThreadRef, diffOpen),
@@ -5244,9 +5244,13 @@ function ChatViewContent(props: ChatViewProps) {
               <div
                 className={cn(
                   "pl-[calc(env(safe-area-inset-left)+0.75rem)] pr-[calc(env(safe-area-inset-right)+0.75rem)] pt-1.5 sm:pl-[calc(env(safe-area-inset-left)+1.25rem)] sm:pr-[calc(env(safe-area-inset-right)+1.25rem)] sm:pt-2",
+                  // The extra padding only applies where no toolbar row follows.
+                  // Non-git projects still get the mobile nav row (with the
+                  // sidebar toggle) below the composer, so that case needs the
+                  // tight padding under `md` and the roomy one above it.
                   isGitRepo
                     ? "pb-[calc(env(safe-area-inset-bottom)+0.25rem)]"
-                    : "pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:pb-[calc(env(safe-area-inset-bottom)+1rem)]",
+                    : "pb-[calc(env(safe-area-inset-bottom)+0.25rem)] md:pb-[calc(env(safe-area-inset-bottom)+1rem)]",
                 )}
               >
                 <div className="relative isolate">
@@ -5255,6 +5259,7 @@ function ChatViewContent(props: ChatViewProps) {
                       className="mb-2"
                       followups={pendingFollowups}
                       busyId={followupBusyId}
+                      cwd={gitCwd}
                       onDoNow={(followup) => void onDoFollowupNow(followup)}
                       onSpinOff={(followup) => void onSpinOffFollowup(followup)}
                       onDismiss={onDismissFollowup}
@@ -5347,8 +5352,9 @@ function ChatViewContent(props: ChatViewProps) {
                     />
                   </div>
                 </div>
-                {isGitRepo && (
+                {
                   <BranchToolbar
+                    isGitRepo={isGitRepo}
                     environmentId={activeThread.environmentId}
                     threadId={activeThread.id}
                     {...(routeKind === "draft" && draftId ? { draftId } : {})}
@@ -5370,7 +5376,7 @@ function ChatViewContent(props: ChatViewProps) {
                     {...(hasMultipleEnvironments ? { onEnvironmentChange } : {})}
                     availableEnvironments={logicalProjectEnvironments}
                   />
-                )}
+                }
               </div>
 
               {pullRequestDialogState ? (

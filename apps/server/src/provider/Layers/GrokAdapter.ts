@@ -136,6 +136,12 @@ function settlePendingUserInputsAsCancelled(
   );
 }
 
+/** Names the rejected model in the surfaced error: a bare "Invalid params" from the Grok
+ * CLI gives no hint that the selected model is the thing it refused. */
+function setSessionModelMethodLabel(modelId: string | undefined): string {
+  return modelId ? `session/set_model (model '${modelId}')` : "session/set_model";
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -546,7 +552,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             currentModelId: currentGrokModelIdFromSessionSetup(started.sessionSetupResult),
             requestedModelId: requestedStartModelId,
             mapError: (cause) =>
-              mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_model", cause),
+              mapAcpToAdapterError(
+                PROVIDER,
+                input.threadId,
+                setSessionModelMethodLabel(requestedStartModelId),
+                cause,
+              ),
           });
 
           const now = yield* nowIso;
@@ -711,7 +722,12 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 currentModelId: ctx.currentModelId,
                 requestedModelId: requestedTurnModelId,
                 mapError: (cause) =>
-                  mapAcpToAdapterError(PROVIDER, input.threadId, "session/set_model", cause),
+                  mapAcpToAdapterError(
+                    PROVIDER,
+                    input.threadId,
+                    setSessionModelMethodLabel(requestedTurnModelId),
+                    cause,
+                  ),
               });
 
               const text = input.input?.trim();

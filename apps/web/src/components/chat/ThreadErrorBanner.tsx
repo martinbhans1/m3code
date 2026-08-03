@@ -1,8 +1,9 @@
 import { memo } from "react";
 import { Alert, AlertAction, AlertDescription } from "../ui/alert";
 import { Button } from "../ui/button";
-import { CircleAlertIcon, XIcon } from "lucide-react";
+import { CheckIcon, CircleAlertIcon, CopyIcon, XIcon } from "lucide-react";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 
 export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
@@ -11,7 +12,9 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error: string | null;
   onDismiss?: () => void;
 }) {
+  const { copyToClipboard, isCopied } = useCopyToClipboard();
   if (!error) return null;
+  const copyLabel = isCopied ? "Copied error" : "Copy error";
   return (
     <div className="pt-3 mx-auto w-full max-w-3xl px-3">
       <Alert variant="error">
@@ -24,13 +27,32 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
             {error}
           </TooltipPopup>
         </Tooltip>
-        {onDismiss && (
-          <AlertAction>
+        <AlertAction>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={copyLabel}
+                  onClick={() => copyToClipboard(error)}
+                />
+              }
+            >
+              {isCopied ? (
+                <CheckIcon className="text-success" />
+              ) : (
+                <CopyIcon className="text-destructive" />
+              )}
+            </TooltipTrigger>
+            <TooltipPopup side="top">{copyLabel}</TooltipPopup>
+          </Tooltip>
+          {onDismiss && (
             <Button variant="ghost" size="icon-xs" aria-label="Dismiss error" onClick={onDismiss}>
               <XIcon className="text-destructive" />
             </Button>
-          </AlertAction>
-        )}
+          )}
+        </AlertAction>
       </Alert>
     </div>
   );

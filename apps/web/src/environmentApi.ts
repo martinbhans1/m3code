@@ -24,6 +24,10 @@ export function createEnvironmentApi(rpcClient: WsRpcClient): EnvironmentApi {
       searchEntries: rpcClient.projects.searchEntries,
       writeFile: rpcClient.projects.writeFile,
     },
+    database: {
+      executeSql: rpcClient.database.executeSql,
+      testConnection: rpcClient.database.testConnection,
+    },
     filesystem: {
       browse: rpcClient.filesystem.browse,
     },

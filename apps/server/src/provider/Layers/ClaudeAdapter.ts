@@ -953,6 +953,25 @@ const CLAUDE_SETTING_SOURCES = [
   "local",
 ] as const satisfies ReadonlyArray<SettingSource>;
 
+/**
+ * Nudge for the `suggest_followup` MCP tool, appended to the `claude_code`
+ * preset system prompt.
+ *
+ * Without this the tool is advertised but effectively never called: the preset
+ * steers hard toward `TodoWrite` and terse replies, and a lone optional MCP
+ * tool description does not compete with that. The follow-up chips in the web
+ * UI are fed exclusively by this tool, so no nudge means no chips — the
+ * feature looks broken rather than quiet.
+ *
+ * Deliberately short. This rides on every Claude turn, and a long append both
+ * costs tokens and dilutes the preset. It is only attached when the `t3-code`
+ * MCP server is actually mounted for the turn (see `mcpSession` below) — the
+ * model must never be told to call a tool it does not have.
+ */
+const FOLLOWUP_SYSTEM_PROMPT_APPEND = `When you finish a turn, if you noticed specific work that was out of scope for what the user asked — a bug you spotted but did not fix, a refactor you had to skip, a missing test, an obvious next step — call the \`mcp__t3-code__suggest_followup\` tool once per item rather than only mentioning it in prose. The user sees these as chips they can act on later, here or in a fresh conversation.
+
+Only for work you are NOT doing this turn: use your todo list for work in progress, and ask the user directly for questions. Write the detail for a human skimming one card — plain language first, then only the specifics needed to start; markdown lists render, run-on "(a) … (b) …" prose does not. If nothing genuinely qualifies, do not call it — invented follow-ups are worse than none.`;
+
 function buildPromptText(
   input: ProviderSendTurnInput,
   boundInstanceId: ProviderInstanceId,
@@ -3653,7 +3672,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(apiModelId ? { model: apiModelId } : {}),
         pathToClaudeCodeExecutable: claudeBinaryPath,
-        systemPrompt: { type: "preset", preset: "claude_code" },
+        systemPrompt: {
+          type: "preset",
+          preset: "claude_code",
+          // Only when the t3-code MCP server is mounted, which is what actually
+          // provides `suggest_followup`.
+          ...(mcpSession ? { append: FOLLOWUP_SYSTEM_PROMPT_APPEND } : {}),
+        },
         settingSources: [...CLAUDE_SETTING_SOURCES],
         // `ultracode` is a Claude Code setting, not an API effort level. It is
         // normalized to `xhigh` above and paired with `settings.ultracode`.
@@ -3724,6 +3749,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         "claude.query.include_partial_messages": true,
         "claude.query.additional_directories": input.cwd ? [input.cwd] : [],
         "claude.query.setting_sources": [...CLAUDE_SETTING_SOURCES],
+        // Both are false when the MCP session is missing — the case where
+        // follow-up chips silently cannot happen for this turn.
+        "claude.query.mcp_t3code_mounted": mcpSession !== undefined,
+        "claude.followup.prompt_attached": mcpSession !== undefined,
         "claude.query.settings_json": encodeJsonStringForDiagnostics(settings) ?? "",
         "claude.query.extra_args_json": encodeJsonStringForDiagnostics(extraArgs) ?? "",
         "claude.query.path_to_executable": claudeBinaryPath,

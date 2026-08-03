@@ -70,11 +70,24 @@ const composerDebouncedStorage = createDebouncedStorage(
   COMPOSER_PERSIST_DEBOUNCE_MS,
 );
 
-// Flush pending composer draft writes before page unload to prevent data loss.
+// Flush pending composer draft writes before the page goes away, to prevent
+// data loss. `beforeunload` alone is not enough on mobile Safari, which often
+// skips it when the tab is backgrounded or discarded — `pagehide` and the
+// hidden `visibilitychange` are the reliable signals there. Losing this flush
+// is what makes an unsent draft vanish across a reload on a phone.
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
-  window.addEventListener("beforeunload", () => {
+  const flushComposerDrafts = () => {
     composerDebouncedStorage.flush();
-  });
+  };
+  window.addEventListener("beforeunload", flushComposerDrafts);
+  window.addEventListener("pagehide", flushComposerDrafts);
+  if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        flushComposerDrafts();
+      }
+    });
+  }
 }
 
 export const PersistedComposerImageAttachment = Schema.Struct({

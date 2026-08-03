@@ -126,6 +126,10 @@ vi.mock("@t3tools/client-runtime", async (importOriginal) => {
       searchEntries: vi.fn(),
       writeFile: vi.fn(),
     },
+    database: {
+      executeSql: vi.fn(),
+      testConnection: vi.fn(),
+    },
     filesystem: {
       browse: vi.fn(),
     },

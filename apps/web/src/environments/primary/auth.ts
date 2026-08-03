@@ -193,6 +193,32 @@ async function exchangeBootstrapCredential(credential: string): Promise<AuthBrow
   });
 }
 
+function toFriendlyPasswordErrorMessage(status: number, message: string): string {
+  if (status === 401) {
+    return "Incorrect password. Try again.";
+  }
+  return message.trim();
+}
+
+async function exchangePasswordCredential(password: string): Promise<AuthBrowserSessionResult> {
+  return retryTransientBootstrap(async () => {
+    try {
+      return await runPrimaryHttp(
+        PrimaryEnvironmentHttpClient.pipe(
+          Effect.flatMap((client) => client.auth.passwordSession({ payload: { password } })),
+        ),
+      );
+    } catch (error) {
+      const status = readHttpApiStatus(error) ?? 500;
+      const message = toFriendlyPasswordErrorMessage(status, readHttpApiErrorMessage(error, ""));
+      throw new BootstrapHttpError({
+        message: message || `Failed to sign in (${status}).`,
+        status,
+      });
+    }
+  });
+}
+
 async function waitForAuthenticatedSessionAfterBootstrap(): Promise<AuthSessionState> {
   const startedAt = Date.now();
 

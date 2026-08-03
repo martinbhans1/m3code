@@ -1755,7 +1755,10 @@ function ComposerPromptEditorInner({
           contentEditable={
             <ContentEditable
               className={cn(
-                "block max-h-50 min-h-17.5 w-full overflow-y-auto whitespace-pre-wrap wrap-break-word bg-transparent text-[16px] leading-relaxed text-foreground focus:outline-none sm:text-[14px]",
+                // Mobile keeps a shorter cap than desktop: at 200px a long
+                // dictated prompt plus the on-screen keyboard leaves none of
+                // the conversation visible. It still scrolls past the cap.
+                "block max-h-35 min-h-17.5 w-full overflow-y-auto whitespace-pre-wrap wrap-break-word bg-transparent text-[16px] leading-relaxed text-foreground focus:outline-none sm:max-h-50 sm:text-[14px]",
                 className,
               )}
               data-testid="composer-editor"
@@ -1766,7 +1769,7 @@ function ComposerPromptEditorInner({
           }
           placeholder={
             terminalContexts.length > 0 ? null : (
-              <div className="pointer-events-none absolute inset-0 text-[16px] leading-relaxed text-muted-foreground/35 sm:text-[14px]">
+              <div className="pointer-events-none absolute inset-0 text-[16px] leading-relaxed text-muted-foreground/70 sm:text-[14px] sm:text-muted-foreground/35">
                 {placeholder}
               </div>
             )

@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  DatabaseConnectionId,
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -528,6 +529,118 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         roundTripped.providerInstances[instanceId]?.environment?.[0]?.value,
         "sk-or-secret",
       );
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("stores database connection strings outside settings.json", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsService;
+      const serverConfig = yield* ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const connectionId = DatabaseConnectionId.make("dbstaging");
+      const connectionString = "postgresql://postgres:hunter2@db.abc.supabase.co:5432/postgres";
+
+      const next = yield* serverSettings.updateSettings({
+        databaseConnections: {
+          [connectionId]: {
+            label: "Supabase staging",
+            projectPath: "/repo",
+            connectionString,
+          },
+        },
+      });
+
+      // Callers on the server see the real value...
+      assert.equal(next.databaseConnections[connectionId]?.connectionString, connectionString);
+
+      // ...but it never reaches settings.json.
+      const raw = yield* fileSystem.readFileString(serverConfig.settingsPath);
+      assert.notInclude(raw, "hunter2");
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      assert.deepEqual(JSON.parse(raw).databaseConnections.dbstaging, {
+        label: "Supabase staging",
+        projectPath: "/repo",
+        connectionString: "",
+        connectionStringRedacted: true,
+      });
+
+      // A client editing the label round-trips the redacted marker; the stored
+      // secret must survive rather than being cleared.
+      const relabelled = yield* serverSettings.updateSettings({
+        databaseConnections: {
+          [connectionId]: {
+            label: "Supabase prod",
+            projectPath: "/repo",
+            connectionString: "",
+            connectionStringRedacted: true,
+          },
+        },
+      });
+      assert.equal(relabelled.databaseConnections[connectionId]?.label, "Supabase prod");
+      assert.equal(
+        relabelled.databaseConnections[connectionId]?.connectionString,
+        connectionString,
+      );
+
+      // Removing the connection drops the secret, so re-creating the same id
+      // cannot resurrect the old credentials.
+      yield* serverSettings.updateSettings({ databaseConnections: {} });
+      const recreated = yield* serverSettings.updateSettings({
+        databaseConnections: {
+          [connectionId]: {
+            label: "Supabase staging",
+            projectPath: "/repo",
+            connectionString: "",
+            connectionStringRedacted: true,
+          },
+        },
+      });
+      assert.equal(recreated.databaseConnections[connectionId]?.connectionString, "");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("adopts a hand-written connection string instead of erasing it", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const connectionId = DatabaseConnectionId.make("dbhandwritten");
+      const connectionString = "postgresql://postgres:hunter2@db.abc.supabase.co:5432/postgres";
+
+      // Simulate a user adding the connection by editing settings.json directly:
+      // plaintext on disk, nothing in the secret store. Written before the
+      // settings cache is first read.
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        JSON.stringify({
+          databaseConnections: {
+            [connectionId]: { label: "Hand written", projectPath: "", connectionString },
+          },
+        }),
+      );
+
+      const serverSettings = yield* ServerSettingsService;
+      assert.equal(
+        (yield* serverSettings.getSettings).databaseConnections[connectionId]?.connectionString,
+        connectionString,
+      );
+
+      // The client only ever saw the redacted form, so an unrelated edit sends
+      // it straight back. The plaintext must survive rather than be wiped.
+      const next = yield* serverSettings.updateSettings({
+        databaseConnections: {
+          [connectionId]: {
+            label: "Hand written",
+            projectPath: "/repo",
+            connectionString: "",
+            connectionStringRedacted: true,
+          },
+        },
+      });
+
+      assert.equal(next.databaseConnections[connectionId]?.connectionString, connectionString);
+      const raw = yield* fileSystem.readFileString(serverConfig.settingsPath);
+      assert.notInclude(raw, "hunter2");
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 });

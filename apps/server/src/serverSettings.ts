@@ -11,6 +11,7 @@
  * @module ServerSettings
  */
 import {
+  type DatabaseConnectionConfig,
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -93,6 +94,24 @@ function redactProviderEnvironmentVariable(
   };
 }
 
+function databaseConnectionSecretName(connectionId: string): string {
+  return `database-connection-${Buffer.from(connectionId, "utf8").toString("base64url")}`;
+}
+
+/**
+ * Connection strings are always sensitive — they carry the password inline —
+ * so unlike provider env vars there is no non-sensitive branch here.
+ */
+function redactDatabaseConnection(connection: DatabaseConnectionConfig): DatabaseConnectionConfig {
+  return {
+    ...connection,
+    connectionString: "",
+    ...(connection.connectionString.length > 0 || connection.connectionStringRedacted
+      ? { connectionStringRedacted: true }
+      : {}),
+  };
+}
+
 export function redactServerSettingsForClient(settings: ServerSettings): ServerSettings {
   const providerInstances = Object.fromEntries(
     Object.entries(settings.providerInstances).map(([instanceId, instance]) => [
@@ -105,7 +124,17 @@ export function redactServerSettingsForClient(settings: ServerSettings): ServerS
         : instance,
     ]),
   );
-  return { ...settings, providerInstances };
+  const databaseConnections = Object.fromEntries(
+    Object.entries(settings.databaseConnections).map(([connectionId, connection]) => [
+      connectionId,
+      redactDatabaseConnection(connection),
+    ]),
+  );
+  return {
+    ...settings,
+    providerInstances,
+    databaseConnections: databaseConnections as ServerSettings["databaseConnections"],
+  };
 }
 
 export interface ServerSettingsShape {
@@ -448,6 +477,150 @@ const makeServerSettings = Effect.gen(function* () {
       };
     });
 
+  const materializeDatabaseConnectionSecrets = (
+    settings: ServerSettings,
+  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
+    Effect.gen(function* () {
+      const databaseConnections: Record<string, DatabaseConnectionConfig> = {
+        ...settings.databaseConnections,
+      };
+      for (const [connectionId, connection] of Object.entries(settings.databaseConnections)) {
+        if (!connection.connectionStringRedacted) continue;
+        const secret = yield* secretStore
+          .get(databaseConnectionSecretName(connectionId))
+          .pipe(
+            Effect.mapError((cause) =>
+              toSettingsError(`failed to read connection string for ${connection.label}`, cause),
+            ),
+          );
+        databaseConnections[connectionId] = {
+          ...connection,
+          connectionString: secret ? textDecoder.decode(secret) : "",
+        };
+      }
+      return {
+        ...settings,
+        databaseConnections: databaseConnections as ServerSettings["databaseConnections"],
+      };
+    });
+
+  const persistDatabaseConnectionSecrets = (
+    current: ServerSettings,
+    next: ServerSettings,
+  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
+    Effect.gen(function* () {
+      const databaseConnections: Record<string, DatabaseConnectionConfig> = {
+        ...next.databaseConnections,
+      };
+
+      for (const [connectionId, connection] of Object.entries(next.databaseConnections)) {
+        const secretName = databaseConnectionSecretName(connectionId);
+
+        // A redacted entry means the client round-tripped a value it never
+        // saw; the stored secret is already correct, so leave it alone.
+        if (connection.connectionStringRedacted && connection.connectionString.length === 0) {
+          // Unless there is no stored secret because the connection was written
+          // into settings.json by hand. The plaintext we are about to overwrite
+          // is the only copy, so adopt it into the secret store instead of
+          // silently discarding it.
+          const currentConnections = current.databaseConnections as Record<
+            string,
+            DatabaseConnectionConfig | undefined
+          >;
+          const currentPlaintext = currentConnections[connectionId]?.connectionString ?? "";
+          if (currentPlaintext.length > 0) {
+            const stored = yield* secretStore
+              .get(secretName)
+              .pipe(
+                Effect.mapError((cause) =>
+                  toSettingsError(
+                    `failed to read connection string for ${connection.label}`,
+                    cause,
+                  ),
+                ),
+              );
+            if (stored === null) {
+              yield* secretStore
+                .set(secretName, textEncoder.encode(currentPlaintext))
+                .pipe(
+                  Effect.mapError((cause) =>
+                    toSettingsError(
+                      `failed to adopt connection string for ${connection.label}`,
+                      cause,
+                    ),
+                  ),
+                );
+            }
+          }
+          databaseConnections[connectionId] = redactDatabaseConnection(connection);
+          continue;
+        }
+
+        if (connection.connectionString.length > 0) {
+          yield* secretStore
+            .set(secretName, textEncoder.encode(connection.connectionString))
+            .pipe(
+              Effect.mapError((cause) =>
+                toSettingsError(
+                  `failed to persist connection string for ${connection.label}`,
+                  cause,
+                ),
+              ),
+            );
+          databaseConnections[connectionId] = {
+            ...connection,
+            connectionString: "",
+            connectionStringRedacted: true,
+          };
+          continue;
+        }
+
+        yield* secretStore
+          .remove(secretName)
+          .pipe(
+            Effect.mapError((cause) =>
+              toSettingsError(`failed to remove connection string for ${connection.label}`, cause),
+            ),
+          );
+        const { connectionStringRedacted: _omit, ...rest } = connection;
+        databaseConnections[connectionId] = { ...rest, connectionString: "" };
+      }
+
+      // Drop secrets for connections the patch removed.
+      for (const connectionId of Object.keys(current.databaseConnections)) {
+        if (connectionId in databaseConnections) continue;
+        yield* secretStore
+          .remove(databaseConnectionSecretName(connectionId))
+          .pipe(
+            Effect.mapError((cause) =>
+              toSettingsError(`failed to remove stale connection string ${connectionId}`, cause),
+            ),
+          );
+      }
+
+      return {
+        ...next,
+        databaseConnections: databaseConnections as ServerSettings["databaseConnections"],
+      };
+    });
+
+  const materializeSecrets = (
+    settings: ServerSettings,
+  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
+    materializeProviderEnvironmentSecrets(settings).pipe(
+      Effect.flatMap(materializeDatabaseConnectionSecrets),
+    );
+
+  const persistSecrets = (
+    current: ServerSettings,
+    next: ServerSettings,
+  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
+    persistProviderEnvironmentSecrets(current, next).pipe(
+      Effect.flatMap((withProviderSecrets) =>
+        persistDatabaseConnectionSecrets(current, withProviderSecrets),
+      ),
+    );
+
   const writeSettingsAtomically = Effect.fnUntraced(
     function* (settings: ServerSettings) {
       const sparseSettingsJson = yield* encodeServerSettingsJson(
@@ -544,14 +717,14 @@ const makeServerSettings = Effect.gen(function* () {
     start,
     ready: Deferred.await(startedDeferred),
     getSettings: getSettingsFromCache.pipe(
-      Effect.flatMap(materializeProviderEnvironmentSecrets),
+      Effect.flatMap(materializeSecrets),
       Effect.map(resolveTextGenerationProvider),
     ),
     updateSettings: (patch) =>
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
           const current = yield* getSettingsFromCache;
-          const nextPersisted = yield* persistProviderEnvironmentSecrets(
+          const nextPersisted = yield* persistSecrets(
             current,
             applyServerSettingsPatch(current, patch),
           );
@@ -559,16 +732,16 @@ const makeServerSettings = Effect.gen(function* () {
           yield* writeSettingsAtomically(next);
           yield* Cache.set(settingsCache, cacheKey, next);
           yield* emitChange(next);
-          const materialized = yield* materializeProviderEnvironmentSecrets(next);
+          const materialized = yield* materializeSecrets(next);
           return resolveTextGenerationProvider(materialized);
         }),
       ),
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub).pipe(
         Stream.mapEffect((settings) =>
-          materializeProviderEnvironmentSecrets(settings).pipe(
+          materializeSecrets(settings).pipe(
             Effect.catch((error: ServerSettingsError) =>
-              Effect.logWarning("failed to materialize provider environment secrets", {
+              Effect.logWarning("failed to materialize settings secrets", {
                 detail: error.detail,
               }).pipe(Effect.as(settings)),
             ),

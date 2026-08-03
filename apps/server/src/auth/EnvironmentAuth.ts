@@ -26,17 +26,24 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import * as HttpServerRequest from "effect/unstable/http/HttpServerRequest";
 
 import * as EnvironmentAuthPolicy from "./EnvironmentAuthPolicy.ts";
 import * as PairingGrantStore from "./PairingGrantStore.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 import * as SessionStore from "./SessionStore.ts";
+import { hashAccessPassword, verifyAccessPasswordHash } from "./accessPassword.ts";
 import { verifyRequestDpopProof } from "./dpop.ts";
 import { layerConfig as SqlitePersistenceLayer } from "../persistence/Layers/Sqlite.ts";
 
 export const DEFAULT_SESSION_SUBJECT = "cli-issued-session";
 export const INTERNAL_ADMINISTRATIVE_BOOTSTRAP_SUBJECT = "administrative-bootstrap";
+export const ACCESS_PASSWORD_SECRET_NAME = "access-password";
+export const ACCESS_PASSWORD_SESSION_SUBJECT = "remote-access-password";
+/** Consecutive wrong-password attempts before a temporary lockout kicks in. */
+const ACCESS_PASSWORD_MAX_FAILURES = 10;
+const ACCESS_PASSWORD_LOCKOUT_MS = 30_000;
 
 export interface IssuedPairingLink {
   readonly id: string;
@@ -106,6 +113,17 @@ export interface EnvironmentAuthShape {
     },
     ServerAuthInvalidCredentialError | ServerAuthInternalError
   >;
+  readonly verifyAccessPassword: (
+    password: string,
+    requestMetadata: AuthClientMetadata,
+  ) => Effect.Effect<
+    {
+      readonly response: AuthBrowserSessionResult;
+      readonly sessionToken: string;
+    },
+    ServerAuthInvalidCredentialError | ServerAuthInternalError
+  >;
+  readonly setAccessPassword: (password: string) => Effect.Effect<void, ServerAuthInternalError>;
   readonly exchangeBootstrapCredentialForAccessToken: (
     credential: string,
     requestedScopes: ReadonlyArray<AuthEnvironmentScope> | undefined,
@@ -269,6 +287,10 @@ export const make = Effect.fn("makeEnvironmentAuth")(function* () {
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const crypto = yield* Crypto.Crypto;
   const descriptor = yield* policy.getDescriptor();
+  const accessPasswordThrottle = yield* Ref.make<{
+    readonly failures: number;
+    readonly lockedUntilMs: number;
+  }>({ failures: 0, lockedUntilMs: 0 });
 
   const authenticateToken = (
     token: string,
@@ -399,6 +421,84 @@ export const make = Effect.fn("makeEnvironmentAuth")(function* () {
       ),
       Effect.withSpan("EnvironmentAuth.createBrowserSession"),
     );
+
+  const setAccessPassword: EnvironmentAuthShape["setAccessPassword"] = (password) =>
+    Effect.try({
+      // Trim to match the login payload schema (TrimmedNonEmptyString), so a
+      // password set here always verifies against what the client submits.
+      try: () => hashAccessPassword(password.trim()),
+      catch: toInternalError("Failed to hash access password."),
+    }).pipe(
+      Effect.flatMap((encoded) =>
+        secretStore
+          .set(ACCESS_PASSWORD_SECRET_NAME, encoded)
+          .pipe(Effect.mapError(toInternalError("Failed to persist access password."))),
+      ),
+      Effect.withSpan("EnvironmentAuth.setAccessPassword"),
+    );
+
+  const verifyAccessPassword: EnvironmentAuthShape["verifyAccessPassword"] = (
+    password,
+    requestMetadata,
+  ) =>
+    Effect.gen(function* () {
+      const nowMs = (yield* DateTime.now).epochMilliseconds;
+      const gate = yield* Ref.get(accessPasswordThrottle);
+      if (gate.lockedUntilMs > nowMs) {
+        yield* Effect.logWarning("Rejected remote-access password attempt during lockout.");
+        return yield* new ServerAuthInvalidCredentialError({ reason: "invalid_credential" });
+      }
+
+      const stored = yield* secretStore
+        .get(ACCESS_PASSWORD_SECRET_NAME)
+        .pipe(Effect.mapError(toInternalError("Failed to read access password.")));
+
+      const matches =
+        stored !== null &&
+        (yield* Effect.try({
+          try: () => verifyAccessPasswordHash(password, stored),
+          catch: toInternalError("Failed to verify access password."),
+        }));
+
+      if (!matches) {
+        yield* Ref.update(accessPasswordThrottle, (current) => {
+          const failures = current.failures + 1;
+          return failures >= ACCESS_PASSWORD_MAX_FAILURES
+            ? { failures: 0, lockedUntilMs: nowMs + ACCESS_PASSWORD_LOCKOUT_MS }
+            : { failures, lockedUntilMs: current.lockedUntilMs };
+        });
+        return yield* new ServerAuthInvalidCredentialError({ reason: "invalid_credential" });
+      }
+
+      yield* Ref.set(accessPasswordThrottle, { failures: 0, lockedUntilMs: 0 });
+
+      const session = yield* sessions
+        .issue({
+          method: "browser-session-cookie",
+          subject: ACCESS_PASSWORD_SESSION_SUBJECT,
+          scopes: AuthStandardClientScopes,
+          client: requestMetadata,
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ServerAuthInternalError({
+                message: "Failed to issue authenticated session.",
+                cause,
+              }),
+          ),
+        );
+
+      return {
+        response: {
+          authenticated: true,
+          scopes: session.scopes,
+          sessionMethod: session.method,
+          expiresAt: DateTime.toUtc(session.expiresAt),
+        } satisfies AuthBrowserSessionResult,
+        sessionToken: session.token,
+      } satisfies BootstrapExchangeResult;
+    }).pipe(Effect.withSpan("EnvironmentAuth.verifyAccessPassword"));
 
   const exchangeBootstrapCredentialForAccessToken: EnvironmentAuthShape["exchangeBootstrapCredentialForAccessToken"] =
     (credential, requestedScopes, requestMetadata, input) =>
@@ -690,6 +790,8 @@ export const make = Effect.fn("makeEnvironmentAuth")(function* () {
       Effect.succeed(descriptor).pipe(Effect.withSpan("EnvironmentAuth.getDescriptor")),
     getSessionState,
     createBrowserSession,
+    verifyAccessPassword,
+    setAccessPassword,
     exchangeBootstrapCredentialForAccessToken,
     createPairingLink,
     issuePairingCredential,

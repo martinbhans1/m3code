@@ -31,6 +31,12 @@ import type {
   ProjectWriteFileInput,
   ProjectWriteFileResult,
 } from "./project.ts";
+import type {
+  DatabaseExecuteSqlInput,
+  DatabaseExecuteSqlResult,
+  DatabaseTestConnectionInput,
+  DatabaseTestConnectionResult,
+} from "./database.ts";
 import type { ProviderInstanceId } from "./providerInstance.ts";
 import type {
   ServerConfig,
@@ -1118,6 +1124,10 @@ export interface EnvironmentApi {
     readFile: (input: ProjectReadFileInput) => Promise<ProjectReadFileResult>;
     searchEntries: (input: ProjectSearchEntriesInput) => Promise<ProjectSearchEntriesResult>;
     writeFile: (input: ProjectWriteFileInput) => Promise<ProjectWriteFileResult>;
+  };
+  database: {
+    executeSql: (input: DatabaseExecuteSqlInput) => Promise<DatabaseExecuteSqlResult>;
+    testConnection: (input: DatabaseTestConnectionInput) => Promise<DatabaseTestConnectionResult>;
   };
   filesystem: {
     browse: (input: FilesystemBrowseInput) => Promise<FilesystemBrowseResult>;

@@ -2137,7 +2137,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           data-chat-composer-mobile-collapsed={isComposerCollapsedMobile ? "true" : "false"}
           className={cn(
             "rounded-[20px] border bg-card transition-colors duration-200 has-focus-visible:border-ring/45",
-            isDragOverComposer ? "border-primary/70 bg-accent/30" : "border-border",
+            // Outdoors on a phone (sunlight + sunglasses) the default 6%-alpha
+            // border is invisible, so the composer is impossible to aim at.
+            // Derived from `foreground` so all themes stay intact, and scoped
+            // to the non-drag branch so the drop highlight still wins.
+            isDragOverComposer
+              ? "border-primary/70 bg-accent/30"
+              : "border-border max-sm:border-foreground/30 max-sm:has-focus-visible:border-primary/70",
             environmentUnavailable ? "opacity-75" : null,
             composerProviderState.composerSurfaceClassName,
           )}
@@ -2266,14 +2272,14 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           ) : null}
 
           {showCollapsedMobilePromptRow ? (
-            <div className="flex items-center justify-between gap-2 px-2 py-1.5">
+            <div className="flex items-center justify-between gap-2 px-3 py-2.5">
               <button
                 type="button"
                 className={cn(
-                  "min-w-0 flex-1 truncate bg-transparent p-0 text-left text-[14px] focus:outline-none",
+                  "min-w-0 flex-1 truncate bg-transparent p-0 text-left text-[15px] focus:outline-none",
                   (activePendingProgress ? activePendingProgress.customAnswer : prompt.trim())
                     ? "text-foreground"
-                    : "text-muted-foreground/35",
+                    : "text-muted-foreground/70",
                 )}
                 onPointerDown={(event) => event.preventDefault()}
                 onClick={expandMobileComposer}

@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Code2,
   Copy,
+  DatabaseIcon,
   Eye,
   FolderTree,
   Globe2,
@@ -51,7 +52,8 @@ import { installFileEditorDismissal } from "./fileEditorDismissal";
 import { LocalCommentAnnotation } from "./LocalCommentAnnotation";
 import { projectFileCacheKey } from "./fileContentRevision";
 import { fileBreadcrumbs } from "./filePath";
-import { isMarkdownPreviewFile, setMarkdownTaskChecked } from "./filePreviewMode";
+import { isMarkdownPreviewFile, isSqlFile, setMarkdownTaskChecked } from "./filePreviewMode";
+import { RunSqlDialog } from "../database/RunSqlDialog";
 import { FileSaveCoordinator } from "./fileSaveCoordinator";
 import {
   confirmProjectFileQueryData,
@@ -626,6 +628,7 @@ export default function FilePreviewPanel({
       ),
   });
   const [explorerOpen, setExplorerOpen] = useState(initialExplorerOpen);
+  const [runSqlOpen, setRunSqlOpen] = useState(false);
   const [markdownView, setMarkdownView] = useState<{
     path: string | null;
     revealRequestId: number | null;
@@ -640,6 +643,11 @@ export default function FilePreviewPanel({
     (revealLine === null || markdownView.revealRequestId === revealRequestId);
   const canOpenInBrowser =
     relativePath !== null && isPreviewSupportedInRuntime() && isBrowserPreviewFile(relativePath);
+  // Running SQL needs the file's contents, so the action only appears once the
+  // read has landed. Truncated previews are excluded: we would submit a partial
+  // script, which for a migration is worse than not running it at all.
+  const canRunSql =
+    relativePath !== null && isSqlFile(relativePath) && file.data !== null && !file.data.truncated;
   const absolutePath = relativePath ? resolvePathLinkTarget(relativePath, cwd) : null;
   const breadcrumbs = useMemo(
     () => (relativePath ? fileBreadcrumbs(projectName, relativePath) : []),
@@ -796,6 +804,25 @@ export default function FilePreviewPanel({
               </TooltipPopup>
             </Tooltip>
           ) : null}
+          {canRunSql ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Toggle
+                    className="shrink-0"
+                    pressed={runSqlOpen}
+                    onPressedChange={() => setRunSqlOpen(true)}
+                    aria-label="Run this SQL against a database"
+                    variant="ghost"
+                    size="sm"
+                  >
+                    <DatabaseIcon className="size-3.5" />
+                  </Toggle>
+                }
+              />
+              <TooltipPopup>Run SQL</TooltipPopup>
+            </Tooltip>
+          ) : null}
           {canOpenInBrowser ? (
             <Tooltip>
               <TooltipTrigger
@@ -835,6 +862,17 @@ export default function FilePreviewPanel({
             </TooltipPopup>
           </Tooltip>
         </div>
+      ) : null}
+      {canRunSql && relativePath && file.data ? (
+        <RunSqlDialog
+          open={runSqlOpen}
+          onOpenChange={setRunSqlOpen}
+          environmentId={environmentId}
+          cwd={cwd}
+          projectName={projectName}
+          relativePath={relativePath}
+          sql={file.data.contents}
+        />
       ) : null}
       {relativePath && file.data?.truncated ? (
         <div className="shrink-0 border-b border-amber-500/20 bg-amber-500/8 px-3 py-1.5 text-[11px] text-amber-700 dark:text-amber-300">

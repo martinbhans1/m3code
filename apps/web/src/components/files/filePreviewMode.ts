@@ -1,5 +1,8 @@
 export const isMarkdownPreviewFile = (path: string): boolean => /\.(?:md|mdx)$/i.test(path);
 
+/** A file the "Run SQL" action can execute against a configured database. */
+export const isSqlFile = (path: string): boolean => /\.sql$/i.test(path);
+
 export function setMarkdownTaskChecked(
   markdown: string,
   markerOffset: number,

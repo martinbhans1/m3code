@@ -60,6 +60,10 @@ const rpcClientMock = {
     searchEntries: vi.fn(),
     writeFile: vi.fn(),
   },
+  database: {
+    executeSql: vi.fn(),
+    testConnection: vi.fn(),
+  },
   filesystem: {
     browse: vi.fn(),
   },

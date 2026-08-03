@@ -248,6 +248,7 @@ function createMockEnvironmentApi(input: {
   return {
     terminal: {} as EnvironmentApi["terminal"],
     projects: {} as EnvironmentApi["projects"],
+    database: {} as EnvironmentApi["database"],
     filesystem: {
       browse: input.browse,
     },
@@ -7152,7 +7153,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           model: "gpt-5.3-codex-spark",
         },
         planMarkdown:
-          "# Imaginary Long-Range Plan: T3 Code Adaptive Orchestration and Safe-Delay Execution Initiative",
+          "# Imaginary Long-Range Plan: M3 Code Adaptive Orchestration and Safe-Delay Execution Initiative",
       }),
     });
 
@@ -7185,7 +7186,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           model: "gpt-5.3-codex-spark",
         },
         planMarkdown:
-          "# Imaginary Long-Range Plan: T3 Code Adaptive Orchestration and Safe-Delay Execution Initiative",
+          "# Imaginary Long-Range Plan: M3 Code Adaptive Orchestration and Safe-Delay Execution Initiative",
       }),
     });
 

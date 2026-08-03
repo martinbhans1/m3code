@@ -49,7 +49,10 @@ export const DesktopConfig = Config.all({
     Config.withDefault(10_000),
   ),
   appImagePath: trimmedString("APPIMAGE"),
-  disableAutoUpdate: optionalBoolean("T3CODE_DISABLE_AUTO_UPDATE"),
+  // m3code fork: auto-update is force-disabled. Upstream builds bake pingdotgg/t3code
+  // into app-update.yml, so leaving updates on would let the pill offer (and install)
+  // vanilla T3 Code over this fork. We publish no releases, so keep it off unconditionally.
+  disableAutoUpdate: Config.succeed(true),
   mockUpdates: optionalBoolean("T3CODE_DESKTOP_MOCK_UPDATES"),
   mockUpdateServerPort: Config.port("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(
     Config.withDefault(3000),

@@ -79,6 +79,13 @@ import {
   ProjectWriteFileResult,
 } from "./project.ts";
 import {
+  DatabaseError,
+  DatabaseExecuteSqlInput,
+  DatabaseExecuteSqlResult,
+  DatabaseTestConnectionInput,
+  DatabaseTestConnectionResult,
+} from "./database.ts";
+import {
   TerminalAttachInput,
   TerminalAttachStreamEvent,
   TerminalClearInput,
@@ -151,6 +158,10 @@ export const WS_METHODS = {
   projectsReadFile: "projects.readFile",
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
+
+  // Database methods
+  databaseExecuteSql: "database.executeSql",
+  databaseTestConnection: "database.testConnection",
 
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
@@ -374,6 +385,18 @@ export const WsProjectsWriteFileRpc = Rpc.make(WS_METHODS.projectsWriteFile, {
   payload: ProjectWriteFileInput,
   success: ProjectWriteFileResult,
   error: Schema.Union([ProjectWriteFileError, EnvironmentAuthorizationError]),
+});
+
+export const WsDatabaseExecuteSqlRpc = Rpc.make(WS_METHODS.databaseExecuteSql, {
+  payload: DatabaseExecuteSqlInput,
+  success: DatabaseExecuteSqlResult,
+  error: Schema.Union([DatabaseError, EnvironmentAuthorizationError]),
+});
+
+export const WsDatabaseTestConnectionRpc = Rpc.make(WS_METHODS.databaseTestConnection, {
+  payload: DatabaseTestConnectionInput,
+  success: DatabaseTestConnectionResult,
+  error: Schema.Union([DatabaseError, EnvironmentAuthorizationError]),
 });
 
 export const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
@@ -700,6 +723,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsReadFileRpc,
   WsProjectsSearchEntriesRpc,
   WsProjectsWriteFileRpc,
+  WsDatabaseExecuteSqlRpc,
+  WsDatabaseTestConnectionRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsAssetsCreateUrlRpc,

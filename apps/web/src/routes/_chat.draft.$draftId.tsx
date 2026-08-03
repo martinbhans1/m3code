@@ -4,6 +4,7 @@ import ChatView from "../components/ChatView";
 import { threadHasStarted } from "../components/ChatView.logic";
 import { useComposerDraftStore, DraftId } from "../composerDraftStore";
 import { SidebarInset } from "../components/ui/sidebar";
+import { NoActiveThreadState } from "../components/NoActiveThreadState";
 import { createThreadSelectorAcrossEnvironments } from "../storeSelectors";
 import { useStore } from "../store";
 import { buildThreadRouteParams } from "../threadRoutes";
@@ -66,7 +67,9 @@ function DraftChatThreadRouteView() {
   }
 
   if (!draftSession) {
-    return null;
+    // The effect above redirects to "/", but that lands a frame late — render a
+    // shell with a sidebar toggle rather than a blank, inescapable screen.
+    return <NoActiveThreadState headerLabel="Loading" title="Loading…" description="" />;
   }
 
   return (

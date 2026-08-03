@@ -101,6 +101,10 @@ export interface WsRpcClient {
     readonly searchEntries: RpcUnaryMethod<typeof WS_METHODS.projectsSearchEntries>;
     readonly writeFile: RpcUnaryMethod<typeof WS_METHODS.projectsWriteFile>;
   };
+  readonly database: {
+    readonly executeSql: RpcUnaryMethod<typeof WS_METHODS.databaseExecuteSql>;
+    readonly testConnection: RpcUnaryMethod<typeof WS_METHODS.databaseTestConnection>;
+  };
   readonly filesystem: {
     readonly browse: RpcUnaryMethod<typeof WS_METHODS.filesystemBrowse>;
   };
@@ -277,6 +281,12 @@ export function createWsRpcClient(
         transport.request((client) => client[WS_METHODS.projectsSearchEntries](input)),
       writeFile: (input) =>
         transport.request((client) => client[WS_METHODS.projectsWriteFile](input)),
+    },
+    database: {
+      executeSql: (input) =>
+        transport.request((client) => client[WS_METHODS.databaseExecuteSql](input)),
+      testConnection: (input) =>
+        transport.request((client) => client[WS_METHODS.databaseTestConnection](input)),
     },
     filesystem: {
       browse: (input) => transport.request((client) => client[WS_METHODS.filesystemBrowse](input)),

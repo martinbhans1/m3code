@@ -240,7 +240,29 @@ const sessionCommand = Command.make("session").pipe(
   Command.withSubcommands([sessionIssueCommand, sessionListCommand, sessionRevokeCommand]),
 );
 
+const passwordSetCommand = Command.make("set", {
+  ...authLocationFlags,
+  password: Argument.string("password").pipe(
+    Argument.withDescription("The remote access password to set."),
+  ),
+}).pipe(
+  Command.withDescription("Set (or replace) the remote access password used to sign in remotely."),
+  Command.withHandler((flags) =>
+    runWithEnvironmentAuth(flags, (environmentAuth) =>
+      Effect.gen(function* () {
+        yield* environmentAuth.setAccessPassword(flags.password);
+        yield* Console.log("Remote access password updated.\n");
+      }),
+    ),
+  ),
+);
+
+const passwordCommand = Command.make("password").pipe(
+  Command.withDescription("Manage the remote access password."),
+  Command.withSubcommands([passwordSetCommand]),
+);
+
 export const authCommand = Command.make("auth").pipe(
   Command.withDescription("Manage the local auth control plane for headless deployments."),
-  Command.withSubcommands([pairingCommand, sessionCommand]),
+  Command.withSubcommands([pairingCommand, sessionCommand, passwordCommand]),
 );

@@ -16,6 +16,7 @@ import {
   ClaudeSettings,
   ProviderDriverKind,
   ProviderItemId,
+  EnvironmentId,
   ProviderRuntimeEvent,
   type RuntimeMode,
   ThreadId,
@@ -33,6 +34,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { attachmentRelativePath } from "../../attachmentStore.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
@@ -312,6 +314,72 @@ describe("ClaudeAdapterLive", () => {
       assert.deepEqual(createInput?.options.settingSources, ["user", "project", "local"]);
       assert.equal(createInput?.options.permissionMode, "bypassPermissions");
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("tells the agent about suggest_followup when the t3-code MCP server is mounted", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      // Follow-up chips are fed exclusively by this tool, and the model will
+      // not call it off the tool description alone — the preset steers toward
+      // TodoWrite. Without the appended nudge the whole feature is silent.
+      McpProviderSession.setMcpProviderSession({
+        environmentId: EnvironmentId.make("env-1"),
+        threadId: THREAD_ID,
+        providerSessionId: "session-1",
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        endpoint: "http://127.0.0.1:1234/mcp",
+        authorizationHeader: "Bearer test",
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => McpProviderSession.clearMcpProviderSession(THREAD_ID)),
+      );
+
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "approval-required",
+      });
+
+      const systemPrompt = harness.getLastCreateQueryInput()?.options.systemPrompt;
+      assert.equal(typeof systemPrompt, "object");
+      const append =
+        typeof systemPrompt === "object" && systemPrompt !== null && !Array.isArray(systemPrompt)
+          ? systemPrompt.append
+          : undefined;
+      assert.include(append ?? "", "suggest_followup");
+    }).pipe(
+      Effect.scoped,
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("omits the follow-up nudge when the tool is not available", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      // No MCP session means no `t3-code` server, so `suggest_followup` does
+      // not exist for this turn. Instructing the model to call a missing tool
+      // is strictly worse than saying nothing.
+      McpProviderSession.clearMcpProviderSession(THREAD_ID);
+
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "approval-required",
+      });
+
+      const systemPrompt = harness.getLastCreateQueryInput()?.options.systemPrompt;
+      const append =
+        typeof systemPrompt === "object" && systemPrompt !== null && !Array.isArray(systemPrompt)
+          ? systemPrompt.append
+          : undefined;
+      assert.equal(append, undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

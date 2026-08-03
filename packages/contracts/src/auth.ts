@@ -156,6 +156,11 @@ export const AuthBrowserSessionResult = Schema.Struct({
 });
 export type AuthBrowserSessionResult = typeof AuthBrowserSessionResult.Type;
 
+export const AuthPasswordSessionRequest = Schema.Struct({
+  password: TrimmedNonEmptyString,
+});
+export type AuthPasswordSessionRequest = typeof AuthPasswordSessionRequest.Type;
+
 export const AuthClientMetadataDeviceType = Schema.Literals([
   "desktop",
   "mobile",

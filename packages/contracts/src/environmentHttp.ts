@@ -12,6 +12,7 @@ import {
   AuthAccessTokenResult,
   AuthBrowserSessionRequest,
   AuthBrowserSessionResult,
+  AuthPasswordSessionRequest,
   AuthClientSession,
   AuthCreatePairingCredentialInput,
   AuthPairingCredentialResult,
@@ -357,6 +358,13 @@ export class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
   .add(
     HttpApiEndpoint.post("browserSession", "/api/auth/browser-session", {
       payload: AuthBrowserSessionRequest,
+      success: AuthBrowserSessionResult,
+      error: EnvironmentSessionCreationErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("passwordSession", "/api/auth/password-session", {
+      payload: AuthPasswordSessionRequest,
       success: AuthBrowserSessionResult,
       error: EnvironmentSessionCreationErrors,
     }),

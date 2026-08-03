@@ -171,6 +171,13 @@
     will-change: transform, filter;
   }
 
+  /* When the canvas starfield (StarfieldCanvas.tsx) is mounted it owns the
+     stars; hide the CSS fallback so the two don't stack. The CSS layer stays as
+     the pre-mount / canvas-unavailable fallback. */
+  :root[data-starfield="canvas"] .app-ambient-shell::after {
+    content: none;
+  }
+
   .app-ambient-shell > * {
     position: relative;
     z-index: 1;
