@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime";
-import { useQueuedTurnStore, type QueuedTurn } from "./queuedTurnStore";
+import { selectQueuedTurns, useQueuedTurnStore, type QueuedTurn } from "./queuedTurnStore";
 
 const threadRef = scopeThreadRef(EnvironmentId.make("local"), ThreadId.make("thread-1"));
 
@@ -26,6 +26,25 @@ function turn(id: string): QueuedTurn {
 
 describe("queuedTurnStore", () => {
   beforeEach(() => useQueuedTurnStore.setState({ byThreadKey: {} }));
+
+  it("returns one stable empty reference when a thread has no queued turns", () => {
+    // zustand v5 compares selector results with Object.is, so allocating a fresh []
+    // for the empty case re-renders forever (React error #185) on the launch path.
+    const { byThreadKey } = useQueuedTurnStore.getState();
+    const key = scopedThreadKey(threadRef);
+    expect(selectQueuedTurns(byThreadKey, key)).toBe(selectQueuedTurns(byThreadKey, key));
+    expect(selectQueuedTurns(byThreadKey, null)).toBe(selectQueuedTurns(byThreadKey, null));
+    expect(selectQueuedTurns(byThreadKey, null)).toBe(selectQueuedTurns(byThreadKey, key));
+    expect(selectQueuedTurns(byThreadKey, key)).toEqual([]);
+  });
+
+  it("returns the live array once a thread has queued turns", () => {
+    useQueuedTurnStore.getState().enqueue(turn("first"));
+    const { byThreadKey } = useQueuedTurnStore.getState();
+    const key = scopedThreadKey(threadRef);
+    expect(selectQueuedTurns(byThreadKey, key)).toBe(byThreadKey[key]);
+    expect(selectQueuedTurns(byThreadKey, key).map((x) => x.id)).toEqual(["first"]);
+  });
 
   it("queues and reorders messages per thread", () => {
     const store = useQueuedTurnStore.getState();

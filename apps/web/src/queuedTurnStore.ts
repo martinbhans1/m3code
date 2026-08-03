@@ -31,6 +31,23 @@ function updateTurn(
   return entries.map((entry) => (entry.id === id ? update(entry) : entry));
 }
 
+const EMPTY_QUEUED_TURNS: ReadonlyArray<QueuedTurn> = [];
+
+/**
+ * Reads a thread's queued turns, returning a stable reference when there are none.
+ *
+ * zustand v5 hands the selector result straight to `useSyncExternalStore` and compares
+ * with `Object.is`, so a selector that allocates a fresh `[]` for the empty case makes
+ * every snapshot look changed and re-renders forever (React error #185).
+ */
+export function selectQueuedTurns(
+  byThreadKey: Record<string, ReadonlyArray<QueuedTurn>>,
+  threadKey: string | null,
+): ReadonlyArray<QueuedTurn> {
+  if (!threadKey) return EMPTY_QUEUED_TURNS;
+  return byThreadKey[threadKey] ?? EMPTY_QUEUED_TURNS;
+}
+
 export const useQueuedTurnStore = create<QueuedTurnStoreState>()((set) => ({
   byThreadKey: {},
   enqueue: (turn) =>
