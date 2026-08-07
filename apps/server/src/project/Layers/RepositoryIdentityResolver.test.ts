@@ -38,6 +38,34 @@ const makeRepositoryIdentityResolverTestLayer = (options: {
     }),
   ).pipe(Layer.provide(ProcessRunner.layer));
 
+/**
+ * Counts `git` invocations so the tests can assert on process spawns rather
+ * than on wall-clock timing, which is what actually made `getSnapshot` slow.
+ */
+const makeCountingProcessRunnerLayer = () => {
+  const gitArgsByCall: string[][] = [];
+  const layer = Layer.effect(
+    ProcessRunner.ProcessRunner,
+    Effect.gen(function* () {
+      const delegate = yield* ProcessRunner.ProcessRunner;
+      return ProcessRunner.ProcessRunner.of({
+        ...delegate,
+        run: (input) => {
+          if (input.command === "git") {
+            gitArgsByCall.push([...input.args]);
+          }
+          return delegate.run(input);
+        },
+      });
+    }),
+  ).pipe(Layer.provide(ProcessRunner.layer));
+
+  const countGitCalls = (subcommand: string) =>
+    gitArgsByCall.filter((args) => args.includes(subcommand)).length;
+
+  return { layer, countGitCalls };
+};
+
 it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
   it.effect("normalizes equivalent GitHub remotes into a stable repository identity", () =>
     Effect.gen(function* () {
@@ -194,6 +222,146 @@ it.layer(NodeServices.layer)("RepositoryIdentityResolverLive", (it) => {
           ),
         ),
       ),
+  );
+
+  it.effect("resolves the git top-level once instead of spawning git on every call", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-root-cache-test-",
+      });
+
+      yield* git(cwd, ["init"]);
+      yield* git(cwd, ["remote", "add", "origin", "git@github.com:T3Tools/t3code.git"]);
+
+      const counting = makeCountingProcessRunnerLayer();
+
+      yield* Effect.gen(function* () {
+        const resolver = yield* RepositoryIdentityResolver;
+        for (const _attempt of [1, 2, 3, 4, 5]) {
+          const identity = yield* resolver.resolve(cwd);
+          expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
+        }
+
+        // The point of the fix: the key for the identity cache used to come
+        // from a subprocess that ran on every call, so five "cached" resolves
+        // still cost five spawns.
+        expect(counting.countGitCalls("rev-parse")).toBe(1);
+        expect(counting.countGitCalls("remote")).toBe(1);
+      }).pipe(
+        Effect.provide(
+          Layer.effect(
+            RepositoryIdentityResolver,
+            makeRepositoryIdentityResolver({ cacheCapacity: 16 }),
+          ).pipe(Layer.provide(counting.layer)),
+        ),
+      );
+    }),
+  );
+
+  it.effect("re-resolves the top-level after the positive TTL lapses", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-root-ttl-test-",
+      });
+
+      yield* git(cwd, ["init"]);
+      yield* git(cwd, ["remote", "add", "origin", "git@github.com:T3Tools/t3code.git"]);
+
+      const counting = makeCountingProcessRunnerLayer();
+
+      yield* Effect.gen(function* () {
+        const resolver = yield* RepositoryIdentityResolver;
+        yield* resolver.resolve(cwd);
+        yield* resolver.resolve(cwd);
+        expect(counting.countGitCalls("rev-parse")).toBe(1);
+
+        yield* TestClock.adjust(Duration.millis(180));
+
+        yield* resolver.resolve(cwd);
+        expect(counting.countGitCalls("rev-parse")).toBe(2);
+      }).pipe(
+        Effect.provide(
+          Layer.merge(
+            TestClock.layer(),
+            Layer.effect(
+              RepositoryIdentityResolver,
+              makeRepositoryIdentityResolver({
+                cacheCapacity: 16,
+                positiveCacheTtl: Duration.millis(100),
+                negativeCacheTtl: Duration.millis(50),
+              }),
+            ).pipe(Layer.provide(counting.layer)),
+          ),
+        ),
+      );
+    }),
+  );
+
+  it.effect("starts resolving a directory that becomes a repository after the negative TTL", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-late-init-test-",
+      });
+
+      const resolver = yield* RepositoryIdentityResolver;
+      expect(yield* resolver.resolve(cwd)).toBeNull();
+
+      yield* git(cwd, ["init"]);
+      yield* git(cwd, ["remote", "add", "origin", "git@github.com:T3Tools/t3code.git"]);
+
+      // Still null: the "not a repository" answer is cached too, or every miss
+      // would cost a spawn.
+      expect(yield* resolver.resolve(cwd)).toBeNull();
+
+      yield* TestClock.adjust(Duration.millis(120));
+
+      const identity = yield* resolver.resolve(cwd);
+      expect(identity?.canonicalKey).toBe("github.com/t3tools/t3code");
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          TestClock.layer(),
+          makeRepositoryIdentityResolverTestLayer({
+            negativeCacheTtl: Duration.millis(50),
+            positiveCacheTtl: Duration.seconds(1),
+          }),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("stops serving a cached top-level once the checkout is gone", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const parent = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-repository-identity-moved-checkout-test-",
+      });
+      const cwd = path.join(parent, "checkout");
+      yield* fileSystem.makeDirectory(cwd, { recursive: true });
+
+      yield* git(cwd, ["init"]);
+      yield* git(cwd, ["remote", "add", "origin", "git@github.com:T3Tools/t3code.git"]);
+
+      const resolver = yield* RepositoryIdentityResolver;
+      expect((yield* resolver.resolve(cwd))?.canonicalKey).toBe("github.com/t3tools/t3code");
+
+      // Long TTLs: without the liveness check the resolver would keep handing
+      // out the dead top-level for a full minute.
+      yield* fileSystem.remove(cwd, { recursive: true });
+
+      expect(yield* resolver.resolve(cwd)).toBeNull();
+    }).pipe(
+      Effect.provide(
+        makeRepositoryIdentityResolverTestLayer({
+          negativeCacheTtl: Duration.minutes(5),
+          positiveCacheTtl: Duration.minutes(5),
+        }),
+      ),
+    ),
   );
 
   it.effect("refreshes cached identities after the positive TTL when a remote changes", () =>

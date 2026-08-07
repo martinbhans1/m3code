@@ -179,16 +179,18 @@ const WAIT_FOR_THREAD_TIMEOUT_MS = 30_000;
 /**
  * Poll the projection until the thread looks the way the test expects.
  *
- * The budget has to cover whole `getSnapshot()` calls, and each one resolves
- * the project's repository identity — which shells out to `git rev-parse` per
- * project, uncached, on every call. On an idle machine that is milliseconds;
- * on a loaded one a single snapshot read has been measured at ~3s, which blew
- * the old 2s budget before the first poll even finished and failed all 65
- * call sites at once with a misleading "timed out waiting for thread state".
+ * The budget has to cover whole `getSnapshot()` calls. That used to mean a
+ * `git rev-parse` spawn per project on every single call, which on a loaded
+ * machine measured ~3s and blew the old 2s budget before the first poll
+ * finished — failing all 65 call sites at once with a misleading "timed out
+ * waiting for thread state". `RepositoryIdentityResolver` now caches the
+ * top-level lookup, and a steady-state snapshot read is ~1ms.
  *
- * A generous budget costs nothing when tests pass — the loop exits as soon as
- * the predicate matches — and only bounds how long a genuine failure takes to
- * report.
+ * The budget stays generous anyway: with the spawn cached, 2s still failed 7
+ * of these 39 tests on a loaded box, because the event-heavy ones do real work
+ * between polls. A generous budget costs nothing when tests pass — the loop
+ * exits as soon as the predicate matches — and only bounds how long a genuine
+ * failure takes to report.
  */
 async function waitForThread(
   readModel: () => Promise<ProviderRuntimeTestReadModel>,
