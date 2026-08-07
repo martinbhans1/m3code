@@ -102,8 +102,37 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       return nextReadModel;
     });
 
+  /**
+   * Re-read the command read model from the projection when the event log has
+   * moved past what this engine knows.
+   *
+   * The in-memory model is only ever grown by this engine's own commits, which
+   * silently assumes this process is the sole writer of `state.sqlite`. It is
+   * not: a dev desktop window shares the installed app's state directory, and
+   * the CLI opens the same database. A thread another writer created is then
+   * missing from this model forever — not until the next reload, but for the
+   * life of the process — and every command naming it is rejected with
+   * "Thread '<id>' does not exist", hours after the thread was created and is
+   * plainly visible in the UI.
+   *
+   * The projection tables are the shared source of truth (they are what the
+   * model is built from at boot), so re-reading them is exactly a boot-time
+   * rehydrate and picks up whatever the other writer committed.
+   *
+   * Returns whether anything actually moved: when the projection is no further
+   * along than the model, the model was not stale and the invariant that sent
+   * us here is a real one that must keep failing.
+   */
+  const refreshCommandReadModelIfStale = Effect.gen(function* () {
+    const refreshed = yield* projectionSnapshotQuery.getCommandReadModel();
+    if (refreshed.snapshotSequence <= commandReadModel.snapshotSequence) {
+      return false;
+    }
+    commandReadModel = refreshed;
+    return true;
+  });
+
   const processEnvelope = (envelope: CommandEnvelope): Effect.Effect<void> => {
-    const dispatchStartSequence = commandReadModel.snapshotSequence;
     let processingStartedAtMs = 0;
     const aggregateRef = commandToAggregateRef(envelope.command);
     const baseMetricAttributes = {
@@ -111,8 +140,13 @@ const makeOrchestrationEngine = Effect.gen(function* () {
       aggregateKind: aggregateRef.aggregateKind,
     } as const;
     const reconcileReadModelAfterDispatchFailure = Effect.gen(function* () {
+      // Read the sequence when the reconcile runs, not when the envelope was
+      // picked up: a rehydrate in between already folded in everything the
+      // event log holds, and replaying from the older mark would apply those
+      // events a second time (streaming message deltas would be appended
+      // twice).
       const persistedEvents = yield* Stream.runCollect(
-        eventStore.readFromSequence(dispatchStartSequence),
+        eventStore.readFromSequence(commandReadModel.snapshotSequence),
       ).pipe(Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)));
       if (persistedEvents.length === 0) {
         return;
@@ -150,67 +184,113 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           });
         }
 
-        const eventBase = yield* decideOrchestrationCommand({
-          command: envelope.command,
-          readModel: commandReadModel,
-        }).pipe(
-          Effect.provideService(Crypto.Crypto, crypto),
-          Effect.mapError((cause) =>
-            isOrchestrationCommandInvariantError(cause)
-              ? cause
-              : new OrchestrationCommandInvariantError({
-                  commandType: envelope.command.type,
-                  detail: "Failed to generate an event identifier.",
-                  cause,
-                }),
-          ),
-        );
-        const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
-        const committedCommand = yield* sql
-          .withTransaction(
-            Effect.gen(function* () {
-              const committedEvents: OrchestrationEvent[] = [];
-              let nextCommandReadModel = commandReadModel;
-
-              for (const nextEvent of eventBases) {
-                const savedEvent = yield* eventStore.append(nextEvent);
-                nextCommandReadModel = yield* projectEvent(nextCommandReadModel, savedEvent);
-                yield* projectionPipeline.projectEvent(savedEvent);
-                committedEvents.push(savedEvent);
-              }
-
-              const lastSavedEvent = committedEvents.at(-1) ?? null;
-              if (lastSavedEvent === null) {
-                return yield* new OrchestrationCommandInvariantError({
-                  commandType: envelope.command.type,
-                  detail: "Command produced no events.",
-                });
-              }
-
-              yield* commandReceiptRepository.upsert({
-                commandId: envelope.command.commandId,
-                aggregateKind: lastSavedEvent.aggregateKind,
-                aggregateId: lastSavedEvent.aggregateId,
-                acceptedAt: lastSavedEvent.occurredAt,
-                resultSequence: lastSavedEvent.sequence,
-                status: "accepted",
-                error: null,
-              });
-
-              return {
-                committedEvents,
-                lastSequence: lastSavedEvent.sequence,
-                nextCommandReadModel,
-              } as const;
-            }),
-          )
-          .pipe(
-            Effect.catchTag("SqlError", (sqlError) =>
-              Effect.fail(
-                toPersistenceSqlError("OrchestrationEngine.processEnvelope:transaction")(sqlError),
-              ),
+        const decideAndCommit = Effect.gen(function* () {
+          const eventBase = yield* decideOrchestrationCommand({
+            command: envelope.command,
+            readModel: commandReadModel,
+          }).pipe(
+            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.mapError((cause) =>
+              isOrchestrationCommandInvariantError(cause)
+                ? cause
+                : new OrchestrationCommandInvariantError({
+                    commandType: envelope.command.type,
+                    detail: "Failed to generate an event identifier.",
+                    cause,
+                  }),
             ),
           );
+          const eventBases = Array.isArray(eventBase) ? eventBase : [eventBase];
+          return yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const committedEvents: OrchestrationEvent[] = [];
+                let nextCommandReadModel = commandReadModel;
+
+                for (const nextEvent of eventBases) {
+                  const savedEvent = yield* eventStore.append(nextEvent);
+                  nextCommandReadModel = yield* projectEvent(nextCommandReadModel, savedEvent);
+                  yield* projectionPipeline.projectEvent(savedEvent);
+                  committedEvents.push(savedEvent);
+                }
+
+                const lastSavedEvent = committedEvents.at(-1) ?? null;
+                if (lastSavedEvent === null) {
+                  return yield* new OrchestrationCommandInvariantError({
+                    commandType: envelope.command.type,
+                    detail: "Command produced no events.",
+                  });
+                }
+
+                yield* commandReceiptRepository.upsert({
+                  commandId: envelope.command.commandId,
+                  aggregateKind: lastSavedEvent.aggregateKind,
+                  aggregateId: lastSavedEvent.aggregateId,
+                  acceptedAt: lastSavedEvent.occurredAt,
+                  resultSequence: lastSavedEvent.sequence,
+                  status: "accepted",
+                  error: null,
+                });
+
+                return {
+                  committedEvents,
+                  lastSequence: lastSavedEvent.sequence,
+                  nextCommandReadModel,
+                } as const;
+              }),
+            )
+            .pipe(
+              Effect.catchTag("SqlError", (sqlError) =>
+                Effect.fail(
+                  toPersistenceSqlError("OrchestrationEngine.processEnvelope:transaction")(
+                    sqlError,
+                  ),
+                ),
+              ),
+            );
+        });
+
+        // An invariant failure is the only symptom a stale read model has, so
+        // it is also the only place worth paying for a rehydrate. Retried once
+        // and only when the projection actually moved, so a genuinely invalid
+        // command still fails on the first pass with its original error.
+        const committedCommand = yield* decideAndCommit.pipe(
+          Effect.catch((error) => {
+            if (!isOrchestrationCommandInvariantError(error)) {
+              return Effect.fail(error);
+            }
+            return refreshCommandReadModelIfStale.pipe(
+              Effect.catch((refreshError) =>
+                Effect.logWarning("failed to refresh stale orchestration read model", {
+                  commandId: envelope.command.commandId,
+                  commandType: envelope.command.type,
+                  cause: refreshError,
+                }).pipe(Effect.as(false)),
+              ),
+              Effect.flatMap((refreshed) => {
+                if (!refreshed) {
+                  return Effect.fail(error);
+                }
+                // A warning, not an info line: reaching here means another
+                // process wrote this database behind us. The boot-time sibling
+                // check only fires in whichever backend started *second*, and
+                // the one that suffers is usually the incumbent — this is the
+                // only place the affected process says so, at the moment it
+                // matters.
+                return Effect.logWarning(
+                  "orchestration read model was stale; another process is writing this state store. Refreshed from the projection and retried.",
+                  {
+                    commandId: envelope.command.commandId,
+                    commandType: envelope.command.type,
+                    aggregateId: aggregateRef.aggregateId,
+                    detail: error.detail,
+                    snapshotSequence: commandReadModel.snapshotSequence,
+                  },
+                ).pipe(Effect.flatMap(() => decideAndCommit));
+              }),
+            );
+          }),
+        );
 
         commandReadModel = committedCommand.nextCommandReadModel;
         for (const [index, event] of committedCommand.committedEvents.entries()) {

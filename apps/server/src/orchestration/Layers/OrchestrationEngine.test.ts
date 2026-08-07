@@ -10,12 +10,14 @@ import {
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { it as effectIt } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Metric from "effect/Metric";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -231,6 +233,187 @@ describe("OrchestrationEngine", () => {
     expect(fullSnapshotReadCount).toBe(0);
 
     await runtime.dispose();
+  });
+
+  it("refreshes a stale command read model when another writer created the thread", async () => {
+    // A dev desktop window shares the installed app's `state.sqlite`, so the
+    // engine is not the sole writer: threads created by the other process never
+    // reach this process's in-memory model, and every later command naming them
+    // was rejected with "does not exist" for the life of the process.
+    let nextSequence = 20;
+    const eventStore: OrchestrationEventStoreShape = {
+      append: (event) =>
+        Effect.sync(() => {
+          const savedEvent = { ...event, sequence: nextSequence } as OrchestrationEvent;
+          nextSequence += 1;
+          return savedEvent;
+        }),
+      readFromSequence: () => Stream.empty,
+      readAll: () => Stream.empty,
+    };
+
+    const project = {
+      id: asProjectId("project-shared"),
+      title: "Shared Project",
+      workspaceRoot: "/tmp/project-shared",
+      defaultModelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+      },
+      scripts: [],
+      createdAt: "2026-03-03T00:00:00.000Z",
+      updatedAt: "2026-03-03T00:00:01.000Z",
+      deletedAt: null,
+    };
+    const threadFromOtherWriter = {
+      id: ThreadId.make("thread-other-writer"),
+      projectId: project.id,
+      title: "Created by the other process",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5-codex",
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "full-access" as const,
+      branch: null,
+      worktreePath: null,
+      latestTurn: null,
+      createdAt: "2026-03-03T00:00:02.000Z",
+      updatedAt: "2026-03-03T00:00:03.000Z",
+      archivedAt: null,
+      pinnedAt: null,
+      deletedAt: null,
+      messages: [],
+      proposedPlans: [],
+      activities: [],
+      checkpoints: [],
+      session: null,
+    };
+
+    // Boot sees an empty projection; the other process commits the thread
+    // afterwards, which only a fresh read of the shared projection can reveal.
+    let commandReadModelReadCount = 0;
+    const getCommandReadModel = () =>
+      Effect.sync(() => {
+        commandReadModelReadCount += 1;
+        return commandReadModelReadCount === 1
+          ? {
+              snapshotSequence: 10,
+              updatedAt: "2026-03-03T00:00:01.000Z",
+              projects: [project],
+              threads: [],
+            }
+          : {
+              snapshotSequence: 19,
+              updatedAt: "2026-03-03T00:00:03.000Z",
+              projects: [project],
+              threads: [threadFromOtherWriter],
+            };
+      });
+
+    const layer = OrchestrationEngineLive.pipe(
+      Layer.provide(
+        Layer.succeed(ProjectionSnapshotQuery, {
+          getCommandReadModel,
+          getSnapshot: () =>
+            Effect.succeed({
+              snapshotSequence: 19,
+              projects: [project],
+              threads: [threadFromOtherWriter],
+              updatedAt: "2026-03-03T00:00:03.000Z",
+            }),
+          getShellSnapshot: () =>
+            Effect.succeed({
+              snapshotSequence: 19,
+              projects: [],
+              threads: [],
+              updatedAt: "2026-03-03T00:00:03.000Z",
+            }),
+          getArchivedShellSnapshot: () =>
+            Effect.succeed({
+              snapshotSequence: 19,
+              projects: [],
+              threads: [],
+              updatedAt: "2026-03-03T00:00:03.000Z",
+            }),
+          getSnapshotSequence: () => Effect.succeed({ snapshotSequence: 19 }),
+          getCounts: () => Effect.succeed({ projectCount: 1, threadCount: 1 }),
+          getActiveProjectByWorkspaceRoot: () => Effect.succeed(Option.none()),
+          getProjectShellById: () => Effect.succeed(Option.none()),
+          getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
+          getThreadCheckpointContext: () => Effect.succeed(Option.none()),
+          getFullThreadDiffContext: () => Effect.succeed(Option.none()),
+          getThreadShellById: () => Effect.succeed(Option.none()),
+          getThreadDetailById: () => Effect.succeed(Option.none()),
+        }),
+      ),
+      Layer.provide(
+        Layer.succeed(OrchestrationProjectionPipeline, {
+          bootstrap: Effect.void,
+          projectEvent: () => Effect.void,
+        } satisfies OrchestrationProjectionPipelineShape),
+      ),
+      Layer.provide(Layer.succeed(OrchestrationEventStore, eventStore)),
+      Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+      Layer.provide(SqlitePersistenceMemory),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    const runtime = ManagedRuntime.make(layer);
+    const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
+
+    const result = await runtime.runPromise(
+      engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-other-writer"),
+        threadId: threadFromOtherWriter.id,
+        message: {
+          messageId: asMessageId("msg-other-writer"),
+          role: "user",
+          text: "hello",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        createdAt: now(),
+      }),
+    );
+
+    expect(result.sequence).toBe(21);
+    // Once at boot, once for the retry — not on every command.
+    expect(commandReadModelReadCount).toBe(2);
+
+    await runtime.dispose();
+  });
+
+  it("fails a genuinely unknown thread without retrying when the projection has not moved", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+
+    const outcome = await system
+      .run(
+        engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-turn-start-missing-thread"),
+          threadId: ThreadId.make("thread-never-created"),
+          message: {
+            messageId: asMessageId("msg-missing-thread"),
+            role: "user",
+            text: "hello",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now(),
+        }),
+      )
+      .then(
+        () => "accepted",
+        (error: unknown) => String(error),
+      );
+
+    expect(outcome).toContain("does not exist");
+    await system.dispose();
   });
 
   it("persists deterministic read models for repeated snapshot reads", async () => {
@@ -877,7 +1060,7 @@ describe("OrchestrationEngine", () => {
     await runtime.dispose();
   });
 
-  it("reconciles command state when append persists but projection fails", async () => {
+  effectIt.effect("reconciles command state when append persists but projection fails", () => {
     type StoredEvent =
       ReturnType<OrchestrationEventStoreShape["append"]> extends Effect.Effect<infer A, any, any>
         ? A
@@ -923,22 +1106,21 @@ describe("OrchestrationEngine", () => {
       },
     };
 
-    const runtime = ManagedRuntime.make(
-      OrchestrationEngineLive.pipe(
-        Layer.provide(OrchestrationProjectionSnapshotQueryLive),
-        Layer.provide(Layer.succeed(OrchestrationProjectionPipeline, flakyProjectionPipeline)),
-        Layer.provide(Layer.succeed(OrchestrationEventStore, nonTransactionalStore)),
-        Layer.provide(OrchestrationCommandReceiptRepositoryLive),
-        Layer.provide(RepositoryIdentityResolverLive),
-        Layer.provide(SqlitePersistenceMemory),
-        Layer.provide(NodeServices.layer),
-      ),
+    const testLayer = OrchestrationEngineLive.pipe(
+      Layer.provide(OrchestrationProjectionSnapshotQueryLive),
+      Layer.provide(Layer.succeed(OrchestrationProjectionPipeline, flakyProjectionPipeline)),
+      Layer.provide(Layer.succeed(OrchestrationEventStore, nonTransactionalStore)),
+      Layer.provide(OrchestrationCommandReceiptRepositoryLive),
+      Layer.provide(RepositoryIdentityResolverLive),
+      Layer.provide(SqlitePersistenceMemory),
+      Layer.provide(NodeServices.layer),
     );
-    const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
-    const createdAt = now();
 
-    await runtime.runPromise(
-      engine.dispatch({
+    return Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const createdAt = now();
+
+      yield* engine.dispatch({
         type: "project.create",
         commandId: CommandId.make("cmd-project-sync-create"),
         projectId: asProjectId("project-sync"),
@@ -949,10 +1131,8 @@ describe("OrchestrationEngine", () => {
           model: "gpt-5-codex",
         },
         createdAt,
-      }),
-    );
-    await runtime.runPromise(
-      engine.dispatch({
+      });
+      yield* engine.dispatch({
         type: "thread.create",
         commandId: CommandId.make("cmd-thread-sync-create"),
         threadId: ThreadId.make("thread-sync"),
@@ -967,30 +1147,32 @@ describe("OrchestrationEngine", () => {
         branch: null,
         worktreePath: null,
         createdAt,
-      }),
-    );
+      });
 
-    await expect(
-      runtime.runPromise(
+      const projectionFailure = yield* Effect.result(
         engine.dispatch({
           type: "thread.archive",
           commandId: CommandId.make("cmd-thread-archive-sync-fail"),
           threadId: ThreadId.make("thread-sync"),
         }),
-      ),
-    ).rejects.toThrow("projection failed");
+      );
+      expect(Result.isFailure(projectionFailure)).toBe(true);
+      if (Result.isFailure(projectionFailure)) {
+        expect(projectionFailure.failure.message).toContain("projection failed");
+      }
 
-    await expect(
-      runtime.runPromise(
+      const retryFailure = yield* Effect.result(
         engine.dispatch({
           type: "thread.archive",
           commandId: CommandId.make("cmd-thread-archive-sync-retry"),
           threadId: ThreadId.make("thread-sync"),
         }),
-      ),
-    ).rejects.toThrow("already archived");
-
-    await runtime.dispose();
+      );
+      expect(Result.isFailure(retryFailure)).toBe(true);
+      if (Result.isFailure(retryFailure)) {
+        expect(retryFailure.failure.message).toContain("already archived");
+      }
+    }).pipe(Effect.provide(testLayer));
   });
 
   it("fails command dispatch when command invariants are violated", async () => {

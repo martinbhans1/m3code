@@ -168,10 +168,32 @@ type ProviderRuntimeTestProposedPlan = ProviderRuntimeTestThread["proposedPlans"
 type ProviderRuntimeTestActivity = ProviderRuntimeTestThread["activities"][number];
 type ProviderRuntimeTestCheckpoint = ProviderRuntimeTestThread["checkpoints"][number];
 
+/**
+ * Shared poll budget. Exported as a constant because the call sites that watch
+ * a thread other than `thread-1` have to pass it positionally to reach the
+ * `threadId` argument, and eight hand-written copies of the number is exactly
+ * how half the suite kept a 2s budget after the default was raised.
+ */
+const WAIT_FOR_THREAD_TIMEOUT_MS = 30_000;
+
+/**
+ * Poll the projection until the thread looks the way the test expects.
+ *
+ * The budget has to cover whole `getSnapshot()` calls, and each one resolves
+ * the project's repository identity — which shells out to `git rev-parse` per
+ * project, uncached, on every call. On an idle machine that is milliseconds;
+ * on a loaded one a single snapshot read has been measured at ~3s, which blew
+ * the old 2s budget before the first poll even finished and failed all 65
+ * call sites at once with a misleading "timed out waiting for thread state".
+ *
+ * A generous budget costs nothing when tests pass — the loop exits as soon as
+ * the predicate matches — and only bounds how long a genuine failure takes to
+ * report.
+ */
 async function waitForThread(
   readModel: () => Promise<ProviderRuntimeTestReadModel>,
   predicate: (thread: ProviderRuntimeTestThread) => boolean,
-  timeoutMs = 2000,
+  timeoutMs = WAIT_FOR_THREAD_TIMEOUT_MS,
   threadId: ThreadId = asThreadId("thread-1"),
 ) {
   const deadline = (await Effect.runPromise(Clock.currentTimeMillis)) + timeoutMs;
@@ -1033,7 +1055,7 @@ describe("ProviderRuntimeIngestion", () => {
             proposedPlan.id === "plan:thread-plan:turn:turn-plan-source" &&
             proposedPlan.implementedAt === null,
         ),
-      2_000,
+      WAIT_FOR_THREAD_TIMEOUT_MS,
       sourceThreadId,
     );
     const sourcePlan = sourceThreadWithPlan.proposedPlans.find(
@@ -1073,7 +1095,7 @@ describe("ProviderRuntimeIngestion", () => {
           (proposedPlan: ProviderRuntimeTestProposedPlan) =>
             proposedPlan.id === sourcePlan.id && proposedPlan.implementedAt === null,
         ),
-      2_000,
+      WAIT_FOR_THREAD_TIMEOUT_MS,
       sourceThreadId,
     );
     expect(
@@ -1101,7 +1123,7 @@ describe("ProviderRuntimeIngestion", () => {
             proposedPlan.implementedAt !== null &&
             proposedPlan.implementationThreadId === targetThreadId,
         ),
-      2_000,
+      WAIT_FOR_THREAD_TIMEOUT_MS,
       sourceThreadId,
     );
     expect(
@@ -1178,7 +1200,7 @@ describe("ProviderRuntimeIngestion", () => {
       harness.readModel,
       (thread) =>
         thread.session?.status === "running" && thread.session?.activeTurnId === activeTurnId,
-      2_000,
+      WAIT_FOR_THREAD_TIMEOUT_MS,
       targetThreadId,
     );
 
@@ -1202,7 +1224,7 @@ describe("ProviderRuntimeIngestion", () => {
             proposedPlan.id === "plan:thread-plan:turn:turn-plan-source" &&
             proposedPlan.implementedAt === null,
         ),
-      2_000,
+      WAIT_FOR_THREAD_TIMEOUT_MS,
       sourceThreadId,
     );
     const sourcePlan = sourceThreadWithPlan.proposedPlans.find(
@@ -1296,7 +1318,7 @@ describe("ProviderRuntimeIngestion", () => {
       harness.readModel,
       (thread) =>
         thread.session?.status === "running" && thread.session?.activeTurnId === oldTurnId,
-      2_000,
+      WAIT_FOR_THREAD_TIMEOUT_MS,
       threadId,
     );
 
@@ -1342,7 +1364,7 @@ describe("ProviderRuntimeIngestion", () => {
       harness.readModel,
       (thread) =>
         thread.session?.status === "running" && thread.session?.activeTurnId === newTurnId,
-      2_000,
+      WAIT_FOR_THREAD_TIMEOUT_MS,
       threadId,
     );
     expect(threadAfterSteer.session?.activeTurnId).toBe(newTurnId);
@@ -1450,7 +1472,7 @@ describe("ProviderRuntimeIngestion", () => {
             proposedPlan.id === "plan:thread-plan:turn:turn-plan-source" &&
             proposedPlan.implementedAt === null,
         ),
-      2_000,
+      WAIT_FOR_THREAD_TIMEOUT_MS,
       sourceThreadId,
     );
     const sourcePlan = sourceThreadWithPlan.proposedPlans.find(
