@@ -1,0 +1,26 @@
+diff --git a/dist/NodeChildProcessSpawner.js b/dist/NodeChildProcessSpawner.js
+--- a/dist/NodeChildProcessSpawner.js
++++ b/dist/NodeChildProcessSpawner.js
+@@ -329,7 +329,8 @@
+             env,
+             stdio,
+             detached: cmd.options.detached ?? process.platform !== "win32",
+-            shell: cmd.options.shell
++            shell: cmd.options.shell,
++            windowsHide: true
+           }), Effect.fnUntraced(function* ([childProcess, exitSignal]) {
+             const exited = yield* Deferred.isDone(exitSignal);
+             const killWithTimeout = withTimeout(childProcess, cmd, cmd.options);
+diff --git a/src/NodeChildProcessSpawner.ts b/src/NodeChildProcessSpawner.ts
+--- a/src/NodeChildProcessSpawner.ts
++++ b/src/NodeChildProcessSpawner.ts
+@@ -463,7 +463,8 @@
+             env,
+             stdio,
+             detached: cmd.options.detached ?? process.platform !== "win32",
+-            shell: cmd.options.shell
++            shell: cmd.options.shell,
++            windowsHide: true
+           }),
+           Effect.fnUntraced(function*([childProcess, exitSignal]) {
+             const exited = yield* Deferred.isDone(exitSignal)
