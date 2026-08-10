@@ -91,6 +91,8 @@ describe("orchestration projector", () => {
         archivedAt: null,
         pinnedAt: null,
         deletedAt: null,
+        handoffThreadId: null,
+        sourceThreadId: null,
         messages: [],
         proposedPlans: [],
         activities: [],
