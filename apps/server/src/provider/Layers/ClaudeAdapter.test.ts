@@ -332,6 +332,7 @@ describe("ClaudeAdapterLive", () => {
         providerSessionId: "session-1",
         providerInstanceId: ProviderInstanceId.make("claudeAgent"),
         endpoint: "http://127.0.0.1:1234/mcp",
+        orchestratorEndpoint: null,
         authorizationHeader: "Bearer test",
       });
       yield* Effect.addFinalizer(() =>
@@ -352,12 +353,73 @@ describe("ClaudeAdapterLive", () => {
           ? systemPrompt.append
           : undefined;
       assert.include(append ?? "", "suggest_followup");
+      // An ordinary thread must not be given the cross-thread server, nor told
+      // it is an orchestrator.
+      const mcpServers = harness.getLastCreateQueryInput()?.options.mcpServers ?? {};
+      assert.isUndefined(mcpServers["t3-code-orchestrator"]);
+      assert.notInclude(append ?? "", "orchestrator");
     }).pipe(
       Effect.scoped,
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
   });
+
+  it.effect(
+    "mounts the orchestrator server and briefs the role only for orchestrator threads",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        // The endpoint is only issued to threads in the designated orchestrator
+        // project; everything downstream keys off its presence.
+        McpProviderSession.setMcpProviderSession({
+          environmentId: EnvironmentId.make("env-1"),
+          threadId: THREAD_ID,
+          providerSessionId: "session-1",
+          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+          endpoint: "http://127.0.0.1:1234/mcp",
+          orchestratorEndpoint: "http://127.0.0.1:1234/mcp-orchestrator",
+          authorizationHeader: "Bearer test",
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => McpProviderSession.clearMcpProviderSession(THREAD_ID)),
+        );
+
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "approval-required",
+        });
+
+        const options = harness.getLastCreateQueryInput()?.options;
+        const mcpServers = options?.mcpServers ?? {};
+        assert.deepEqual(mcpServers["t3-code-orchestrator"], {
+          type: "http",
+          url: "http://127.0.0.1:1234/mcp-orchestrator",
+          headers: { Authorization: "Bearer test" },
+        });
+
+        const systemPrompt = options?.systemPrompt;
+        const append =
+          typeof systemPrompt === "object" && systemPrompt !== null && !Array.isArray(systemPrompt)
+            ? systemPrompt.append
+            : undefined;
+        assert.include(append ?? "", "send_to_thread");
+        // The orchestrator brief *replaces* the follow-up nudge rather than
+        // being appended to it. The two contradict each other — one says to
+        // notice bugs and file them, the other says not to investigate code
+        // here — and a chip filed in an orchestrator thread is unreachable
+        // anyway, since its own project is excluded from `list_pending`,
+        // `read_thread` and `resolve_followup`.
+        assert.notInclude(append ?? "", "suggest_followup");
+      }).pipe(
+        Effect.scoped,
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
 
   it.effect("omits the follow-up nudge when the tool is not available", () => {
     const harness = makeHarness();
@@ -1485,6 +1547,65 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("reports an API-level refusal as failed even though the SDK calls it a success", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      // One more than the happy path: the refusal produces a runtime error as
+      // well as the settled turn.
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      // The shape an oversized prompt comes back as: the SDK loop ended
+      // cleanly, so `subtype` is "success", but the turn did nothing and says
+      // so via `is_error`. Trusting the subtype alone is how "Prompt is too
+      // long" reached the thread list as "Agent finished". Note there is no
+      // `errors` array — the success variant does not have one, so the wording
+      // has to come off `result` itself.
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        api_error_status: 400,
+        result: "Prompt is too long",
+        session_id: "sdk-session-too-long",
+        uuid: "result-too-long",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const turnCompleted = runtimeEvents.find((event) => event.type === "turn.completed");
+      assert.equal(turnCompleted?.type, "turn.completed", "the turn must be settled");
+      if (turnCompleted?.type === "turn.completed") {
+        assert.equal(String(turnCompleted.turnId), String(turn.turnId));
+        assert.equal(turnCompleted.payload.state, "failed");
+        assert.equal(turnCompleted.payload.errorMessage, "Prompt is too long");
+      }
+      // The runtime error is what drives the session to "error", which is what
+      // agent awareness turns into a "failed" phase for the thread list.
+      assert.ok(
+        runtimeEvents.some((event) => event.type === "runtime.error"),
+        "the refusal must reach the session as an error",
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("treats user-aborted Claude results as interrupted without a runtime error", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -1537,6 +1658,68 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(turnCompleted.payload.state, "interrupted");
         assert.equal(turnCompleted.payload.errorMessage, "Error: Request was aborted.");
         assert.equal(turnCompleted.payload.stopReason, "tool_use");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("treats a bare ede_diagnostic result after interruptTurn as interrupted", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      yield* adapter.interruptTurn(session.threadId, turn.turnId);
+
+      // Stopping mid-tool-use leaves the CLI on a half-finished transcript, so
+      // it reports `error_during_execution` carrying only its own breadcrumb.
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"],
+        stop_reason: "tool_use",
+        session_id: "sdk-session-ede",
+        uuid: "result-ede",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.deepEqual(
+        runtimeEvents.map((event) => event.type),
+        [
+          "session.started",
+          "session.configured",
+          "session.state.changed",
+          "turn.started",
+          "thread.started",
+          "turn.completed",
+        ],
+      );
+
+      const turnCompleted = runtimeEvents[runtimeEvents.length - 1];
+      assert.equal(turnCompleted?.type, "turn.completed");
+      if (turnCompleted?.type === "turn.completed") {
+        assert.equal(String(turnCompleted.turnId), String(turn.turnId));
+        assert.equal(turnCompleted.payload.state, "interrupted");
+        assert.equal(turnCompleted.payload.errorMessage, undefined);
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -3956,6 +4139,60 @@ describe("ClaudeAdapterLive", () => {
       );
       assert.equal(
         nativeThreadIds.every((threadId) => threadId === String(THREAD_ID)),
+        true,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not surface command_lifecycle SDK messages as runtime.warning", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runCollect, Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "command_lifecycle",
+        command_uuid: "6440c7f6-15ca-4f64-a64b-6ca9883f040a",
+        state: "started",
+        session_id: "sdk-session-lifecycle",
+        uuid: "command-lifecycle-1",
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-lifecycle",
+        uuid: "result-lifecycle",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "runtime.warning"),
+        false,
+      );
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "turn.completed"),
         true,
       );
     }).pipe(

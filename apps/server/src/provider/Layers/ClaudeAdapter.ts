@@ -207,6 +207,12 @@ interface ClaudeSessionContext {
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
   stopped: boolean;
+  /**
+   * Set when we asked the SDK to interrupt the current turn. The CLI does not
+   * always label a user-stopped turn as such in its result message, so this is
+   * the only trustworthy signal that the turn ended because we stopped it.
+   */
+  interruptRequested: boolean;
 }
 
 interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
@@ -325,10 +331,66 @@ function interruptionMessageFromClaudeCause(
   return isClaudeInterruptedMessage(message) ? "Claude runtime interrupted." : message;
 }
 
-function resultErrorsText(result: SDKResultMessage): string {
+/**
+ * Claude Code prefixes an internal breadcrumb onto the `errors` array of an
+ * `error_during_execution` result — e.g.
+ * `[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use`.
+ * It describes the shape of the last transcript message, not a fault, and the
+ * CLI's own renderer drops it before showing anything to the user. Surfacing it
+ * turned an ordinary stop-the-stream into a red "Claude turn failed."
+ */
+const EDE_DIAGNOSTIC_PREFIX = "[ede_diagnostic]";
+
+function resultErrorList(result: SDKResultMessage): Array<string> {
   return "errors" in result && Array.isArray(result.errors)
-    ? result.errors.join(" ").toLowerCase()
-    : "";
+    ? result.errors.filter((error): error is string => typeof error === "string")
+    : [];
+}
+
+function realResultErrors(result: SDKResultMessage): Array<string> {
+  return resultErrorList(result).filter((error) => !error.startsWith(EDE_DIAGNOSTIC_PREFIX));
+}
+
+/**
+ * An API-level refusal arrives as a `success` result carrying `is_error`, and
+ * that variant has no `errors` array at all — the wording lives in `result`.
+ * Reading `errors` alone left the user with the generic fallback.
+ */
+function resultRefusalText(result: SDKResultMessage): string | undefined {
+  if (result.subtype !== "success" || result.is_error !== true) {
+    return undefined;
+  }
+  const text = typeof result.result === "string" ? result.result.trim() : "";
+  if (text.length > 0) {
+    return text;
+  }
+  return typeof result.api_error_status === "number"
+    ? `Claude API error ${result.api_error_status}.`
+    : undefined;
+}
+
+/** The provider's own wording for what went wrong, when it gave one. */
+function firstResultError(result: SDKResultMessage): string | undefined {
+  const first = realResultErrors(result)[0];
+  if (first !== undefined && first.length > 0) {
+    return first;
+  }
+  return resultRefusalText(result);
+}
+
+function resultErrorsText(result: SDKResultMessage): string {
+  return resultErrorList(result).join(" ").toLowerCase();
+}
+
+/**
+ * True when the result carries nothing but the `[ede_diagnostic]` breadcrumb.
+ * That is what a turn stopped mid-tool-use looks like: the CLI ends the loop on
+ * a transcript whose last message isn't a completed assistant turn, flags
+ * `is_error`, and has no actual error to report.
+ */
+function isBareEdeDiagnosticResult(result: SDKResultMessage): boolean {
+  const errors = resultErrorList(result);
+  return errors.length > 0 && realResultErrors(result).length === 0;
 }
 
 function isInterruptedResult(result: SDKResultMessage): boolean {
@@ -972,6 +1034,37 @@ const FOLLOWUP_SYSTEM_PROMPT_APPEND = `When you finish a turn, if you noticed sp
 
 Only for work you are NOT doing this turn: use your todo list for work in progress, and ask the user directly for questions. Write the detail for a human skimming one card — plain language first, then only the specifics needed to start; markdown lists render, run-on "(a) … (b) …" prose does not. If nothing genuinely qualifies, do not call it — invented follow-ups are worse than none.`;
 
+/**
+ * Role brief for the orchestrator ("meta") conversation, appended only when the
+ * `t3-code-orchestrator` MCP server is mounted — i.e. only for threads in the
+ * designated orchestrator project.
+ *
+ * The `claude_code` preset assumes the agent is here to change code. In a meta
+ * conversation that assumption is wrong in an expensive way: the agent would
+ * open the repo and start working instead of routing the work to the thread
+ * that already owns it. This says what the thread is for, and pins the
+ * confirm-before-sending contract that `send_to_thread` depends on.
+ */
+const ORCHESTRATOR_SYSTEM_PROMPT_APPEND = `This conversation is an orchestrator: its job is to help the user keep track of their other conversations, not to do the work itself. Do not read, write, or run their code here, and do not investigate a bug yourself — the \`mcp__t3-code-orchestrator__*\` tools are your surface.
+
+What you can see is a setting, and \`list_threads\` reports it back as \`accessMode\`. On "per-conversation" you see only what the user shared thread by thread, and only some of those accept messages; a conversation you cannot find is then far more likely to be unshared than missing, so say that rather than telling the user it does not exist. On "read-all" or "control-all" you are seeing every conversation they have, so answer as if the list is complete rather than hedging about sharing. Two switches move this and both are theirs, not yours to work around: the access control in this conversation's own composer, which covers every conversation at once, and the orchestrator control next to a conversation's model picker, which covers just that one. When you are blocked, name the one that would unblock you.
+
+Answer "what have I got going on?" from \`list_threads\` and \`list_pending\` rather than from memory, and re-query rather than relying on what you saw earlier in the conversation; the state changes while you talk. Both return a page at a time with the true totals beside it, so quote the totals and page on rather than reporting the first page as everything.
+
+When the user describes work without naming a conversation, find it with \`search_threads\` and confirm you have the right one before acting. When they quote something instead of describing it — an identifier, a file path, an error message, a command — search it with \`exact: true\`, which greps for the string rather than for its keywords. That is also the only search whose empty result you can report as "nothing mentions this"; a normal search coming back empty means you have not found it, not that it is not there.
+
+To hand work back to the conversation that owns it, use \`send_to_thread\`. Show the user the exact message and the target thread first and wait for them to agree in that turn; never send to several threads off one approval. Write the message as the user, addressed to that thread's agent, carrying the context it lacks — it cannot see this conversation.
+
+When no existing conversation owns the work, \`create_thread\` opens a new one in a project and starts it with an opening prompt. Prefer \`send_to_thread\` when a thread already has the context; a new conversation starts from nothing, so its opening prompt has to carry everything decided here. Confirm the project, title and exact prompt with the user first, one conversation per approval, exactly as with \`send_to_thread\`. New conversations start supervised, so tell the user which permission mode it got — one you left on the default will stop and wait for them at its first command, and they will not know unless you say so.
+
+Both of those accept the turn rather than complete it: report what you started, and check back with \`read_thread\` instead of assuming it landed.
+
+A conversation that has stopped to ask a question is doing nothing until it gets an answer, and \`send_to_thread\` will not unblock it. \`read_thread\` and \`list_pending\` give you the question and its options; put them to the user in their own words, wait for them to choose in that turn, and relay the choice with \`answer_thread_question\`. Answer only what they decided, one request per approval — the other agent acts on the answer immediately and it cannot be taken back. If none of the options matches what they said, pass their wording as \`customAnswer\` rather than rounding it to the nearest option. Approvals are different: those you can see but not grant, so tell the user to handle it in the conversation itself.
+
+Before you report work as finished — and before you close anything — check what actually changed on disk with \`read_thread_changes\`. \`read_thread\` only tells you what an agent said it did, and agents report work as done that was never written. Its file list is cheap; ask for the patch only when you are going to read it.
+
+Follow-ups you have confirmed are finished should be closed with \`resolve_followup\`, or \`list_pending\` fills up with work that is already done and stops being worth reading. Confirm with \`read_thread_changes\`, or have the user tell you — never mark something done because an agent said it would do it.`;
+
 function buildPromptText(
   input: ProviderSendTurnInput,
   boundInstanceId: ProviderInstanceId,
@@ -1117,13 +1210,29 @@ const readAttachmentBytes = (fileSystem: FileSystem.FileSystem, attachmentPath: 
     ),
   );
 
-function turnStatusFromResult(result: SDKResultMessage): ProviderRuntimeTurnStatus {
-  if (result.subtype === "success") {
+function turnStatusFromResult(
+  result: SDKResultMessage,
+  interruptRequested: boolean,
+): ProviderRuntimeTurnStatus {
+  // `subtype` describes how the SDK loop ended, not whether the turn worked.
+  // An API-level refusal — an oversized prompt is the one that keeps happening —
+  // comes back as a well-formed result carrying `is_error`, so trusting the
+  // subtype alone reports a turn that did nothing as a completed one.
+  if (result.subtype === "success" && result.is_error !== true) {
     return "completed";
   }
 
   const errors = resultErrorsText(result);
   if (isInterruptedResult(result)) {
+    return "interrupted";
+  }
+  // A turn we stopped ourselves ends on a half-finished transcript, which the
+  // CLI reports as `error_during_execution` carrying only its own diagnostic
+  // breadcrumb. Nothing failed — the user pressed stop. A breadcrumb-only
+  // result is not proof of that on its own (a turn that runs out of tokens
+  // mid-tool-use looks identical), so it counts only when we asked for the
+  // interrupt or the CLI named the abort itself.
+  if (isBareEdeDiagnosticResult(result) && (interruptRequested || errors.includes("aborted"))) {
     return "interrupted";
   }
   if (errors.includes("cancel")) {
@@ -1426,6 +1535,17 @@ function previewUnknownSdkContent(message: unknown): string | undefined {
 function describeUnknownSdkMessage(kind: string, message: unknown): string {
   const preview = previewUnknownSdkContent(message);
   return preview ? `${kind} — ${preview}` : `${kind} (no displayable text content)`;
+}
+
+/** Untyped SDK stream messages that are lifecycle notices, not problems. */
+const BENIGN_UNTYPED_SDK_LIFECYCLE_TYPES = new Set(["command_lifecycle"]);
+
+function isBenignUntypedSdkLifecycleMessage(message: unknown): boolean {
+  if (!message || typeof message !== "object") {
+    return false;
+  }
+  const type = (message as { type?: unknown }).type;
+  return typeof type === "string" && BENIGN_UNTYPED_SDK_LIFECYCLE_TYPES.has(type);
 }
 
 function sdkNativeItemId(message: SDKMessage): string | undefined {
@@ -2665,6 +2785,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         capturedFollowupKeys: new Set(),
         nextSyntheticAssistantBlockIndex: -1,
       };
+      context.interruptRequested = false;
       context.session = {
         ...context.session,
         status: "running",
@@ -2770,8 +2891,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
-    const status = turnStatusFromResult(message);
-    const errorMessage = message.subtype === "success" ? undefined : message.errors[0];
+    const status = turnStatusFromResult(message, context.interruptRequested);
+    context.interruptRequested = false;
+    // Keyed off the resolved status rather than the subtype, so a refusal that
+    // arrives under a "success" subtype still carries its reason. Reading the
+    // subtype alone dropped the text and left the user with "Claude turn
+    // failed." in place of the API's own explanation.
+    const errorMessage = status === "completed" ? undefined : firstResultError(message);
 
     if (status === "failed") {
       yield* emitRuntimeError(context, errorMessage ?? "Claude turn failed.");
@@ -3094,6 +3220,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         yield* handleSdkTelemetryMessage(context, message);
         return;
       default:
+        // Newer SDK builds emit lifecycle telemetry that is not yet in our
+        // typed SDKMessage union (e.g. command_lifecycle state:started). These
+        // are benign process notices — log them, but do not surface a work-log
+        // warning that reads like a failure.
+        if (isBenignUntypedSdkLifecycleMessage(message)) {
+          return;
+        }
         yield* emitRuntimeWarning(
           context,
           describeUnknownSdkMessage(`Claude SDK message '${message.type}'`, message),
@@ -3677,7 +3810,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           preset: "claude_code",
           // Only when the t3-code MCP server is mounted, which is what actually
           // provides `suggest_followup`.
-          ...(mcpSession ? { append: FOLLOWUP_SYSTEM_PROMPT_APPEND } : {}),
+          //
+          // The orchestrator brief *replaces* the follow-up brief rather than
+          // being appended to it. The two contradict each other outright: one
+          // says to notice bugs and file them as chips, the other says not to
+          // investigate code here at all. And a chip filed in an orchestrator
+          // thread is unreachable by design — its own project is excluded from
+          // `list_pending`, `read_thread` and `resolve_followup` — so it would
+          // be creating follow-ups that can never be seen or closed, in the
+          // feature whose whole point is that those do not pile up.
+          ...(mcpSession
+            ? {
+                append: mcpSession.orchestratorEndpoint
+                  ? ORCHESTRATOR_SYSTEM_PROMPT_APPEND
+                  : FOLLOWUP_SYSTEM_PROMPT_APPEND,
+              }
+            : {}),
         },
         settingSources: [...CLAUDE_SETTING_SOURCES],
         // `ultracode` is a Claude Code setting, not an API effort level. It is
@@ -3720,6 +3868,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                 "t3-code": {
                   type: "http",
                   url: mcpSession.endpoint,
+                  headers: {
+                    Authorization: mcpSession.authorizationHeader,
+                  },
+                },
+              }
+            : {}),
+          // Only threads in the designated orchestrator project are issued this
+          // endpoint, so every other thread's tool list is unchanged.
+          ...(mcpSession?.orchestratorEndpoint
+            ? {
+                "t3-code-orchestrator": {
+                  type: "http",
+                  url: mcpSession.orchestratorEndpoint,
                   headers: {
                     Authorization: mcpSession.authorizationHeader,
                   },
@@ -3813,6 +3974,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastAssistantUuid: resumeState?.resumeSessionAt,
         lastThreadStartedId: undefined,
         stopped: false,
+        interruptRequested: false,
       };
       yield* Ref.set(contextRef, context);
       sessions.set(threadId, context);
@@ -3909,6 +4071,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       yield* completeTurn(context, "completed");
     }
 
+    // New prompt, new work — a stop the user asked for earlier must not carry
+    // over, whether this starts a fresh turn or steers the running one.
+    context.interruptRequested = false;
+
     if (modelSelection?.model) {
       const apiModelId = resolveClaudeApiModelId(modelSelection);
       if (context.currentApiModelId !== apiModelId) {
@@ -3998,10 +4164,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
   const interruptTurn: ClaudeAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
     function* (threadId, _turnId) {
       const context = yield* requireSession(threadId);
+      const hadActiveTurn = context.turnState !== undefined;
       yield* Effect.tryPromise({
         try: () => context.query.interrupt(),
         catch: (cause) => toRequestError(threadId, "turn/interrupt", cause),
       });
+      // Only after the SDK accepts the interrupt, and only when there was a
+      // turn to stop. Latching it earlier leaves a stale `true` behind when the
+      // stop lands on an already-settled turn, which would then swallow the
+      // next turn's genuine failure.
+      if (hadActiveTurn) {
+        context.interruptRequested = true;
+      }
     },
   );
 
