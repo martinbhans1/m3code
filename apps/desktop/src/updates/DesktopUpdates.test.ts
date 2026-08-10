@@ -130,6 +130,9 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
         NodeServices.layer,
         DesktopConfig.layerTest({
           T3CODE_HOME: `/tmp/t3-desktop-updates-test-${process.pid}`,
+          // This fork disables auto-update by default; opt back in so these tests
+          // still cover the real updater wiring (against the mock feed below).
+          T3CODE_DISABLE_AUTO_UPDATE: "false",
           T3CODE_DESKTOP_MOCK_UPDATES: "true",
           T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT: "4141",
           ...options.env,
@@ -147,6 +150,9 @@ function makeHarness(options: UpdatesHarnessOptions = {}) {
     Layer.provideMerge(
       DesktopConfig.layerTest({
         T3CODE_HOME: `/tmp/t3-desktop-updates-test-${process.pid}`,
+        // This fork disables auto-update by default; opt back in so these tests
+        // still cover the real updater wiring (against the mock feed below).
+        T3CODE_DISABLE_AUTO_UPDATE: "false",
         T3CODE_DESKTOP_MOCK_UPDATES: "true",
         T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT: "4141",
         ...options.env,

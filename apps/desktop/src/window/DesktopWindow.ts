@@ -189,8 +189,16 @@ const make = Effect.gen(function* () {
     const window = yield* electronWindow.create({
       width: 1100,
       height: 780,
-      minWidth: 840,
-      minHeight: 620,
+      // The responsive layout switches to its mobile form below the `md`
+      // breakpoint (767px — see useIsMobile). The floor sits below that in
+      // every build so the mobile layout is reachable by narrowing the window,
+      // rather than only in development: a layout you can only see in a dev
+      // build is one nobody checks. Development goes a little narrower still,
+      // to the smallest phone width worth supporting.
+      // Note this only reproduces mobile *layout*; touch-only behaviour (pan,
+      // swipe) still needs a real device or browser device emulation.
+      minWidth: environment.isDevelopment ? 360 : 400,
+      minHeight: environment.isDevelopment ? 480 : 520,
       show: false,
       autoHideMenuBar: true,
       ...(environment.platform === "darwin" ? { disableAutoHideCursor: true } : {}),

@@ -3,7 +3,13 @@
 - `bun run dev` — Starts contracts, server, and web in `turbo watch` mode.
 - `bun run dev:server` — Starts just the WebSocket server (uses Bun TypeScript execution).
 - `bun run dev:web` — Starts just the Vite dev server for the web app.
-- Dev commands default `T3CODE_STATE_DIR` to `~/.t3/dev` to keep dev state isolated from desktop/prod state.
+- Dev commands share the installed app's state store at `~/.t3/userdata`, so a dev window sees the
+  same conversations, provider authentication and settings. Pass `--isolated-state` (or set
+  `T3CODE_DEV_ISOLATED_STATE=1`) to run against a throwaway `~/.t3/dev` sandbox instead.
+- Running a dev instance and the installed app at the same time means two backends on one
+  `state.sqlite`. SQLite's WAL mode keeps that safe on disk, but neither process sees the other's
+  live writes, so each window shows a stale list until it reloads. The backend logs a warning when
+  it detects a sibling on the same state dir.
 - Override server CLI-equivalent flags from root dev commands with `--`, for example:
   `bun run dev -- --base-dir ~/.t3-2`
 - `bun run start` — Runs the production server (serves built web app as static files).

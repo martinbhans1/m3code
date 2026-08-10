@@ -44,6 +44,8 @@ export interface DesktopEnvironmentShape {
   readonly appDataDirectory: string;
   readonly baseDir: string;
   readonly stateDir: string;
+  /** True when dev mode opted into the isolated `dev` state store. */
+  readonly usesIsolatedStateStore: boolean;
   readonly desktopSettingsPath: string;
   readonly clientSettingsPath: string;
   readonly savedEnvironmentRegistryPath: string;
@@ -160,12 +162,14 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     appVersion: input.appVersion,
   });
   const displayName = branding.displayName;
-  // Dev mode normally uses an isolated `dev` state store so it can't touch the
-  // packaged app's data. Setting T3CODE_DEV_USE_PRIMARY_STATE points dev mode at
-  // the primary `userdata` store instead, so a hot-reloading dev window sees the
-  // same conversations/settings as the installed app. Only safe to run when the
-  // installed app is closed — both processes opening one state.sqlite conflict.
-  const useDevStateStore = isDevelopment && !config.devUsePrimaryState;
+  // Dev mode shares the installed app's `userdata` state store, so a
+  // hot-reloading dev window sees the same conversations, provider
+  // authentication and settings instead of coming up empty. Set
+  // T3CODE_DEV_ISOLATED_STATE to opt back into a throwaway `dev` sandbox.
+  // Sharing means both processes may open one state.sqlite: SQLite's WAL mode
+  // keeps that safe on disk, but neither process sees the other's live writes,
+  // so expect stale lists until reload when running dev and installed at once.
+  const useDevStateStore = isDevelopment && config.devIsolatedState;
   const stateDir = path.join(baseDir, useDevStateStore ? "dev" : "userdata");
   const userDataDirName = isDevelopment ? "m3code-dev" : "m3code";
   const legacyUserDataDirName = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)";
@@ -185,6 +189,7 @@ const makeDesktopEnvironment = Effect.fn("desktop.environment.make")(function* (
     appDataDirectory,
     baseDir,
     stateDir,
+    usesIsolatedStateStore: useDevStateStore,
     desktopSettingsPath: path.join(stateDir, "desktop-settings.json"),
     clientSettingsPath: path.join(stateDir, "client-settings.json"),
     savedEnvironmentRegistryPath: path.join(stateDir, "saved-environments.json"),

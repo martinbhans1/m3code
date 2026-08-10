@@ -9,3 +9,4 @@
 - [Providers](./providers/codex.md)
 - [Reference](./reference/encyclopedia.md)
 - [User guides](./user/keybindings.md)
+- [Orchestrator (meta conversations)](./user/orchestrator.md)

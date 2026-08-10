@@ -34,6 +34,16 @@ const makeEnvironment = (
 ) =>
   DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(makeEnvironmentLayer(overrides, env)));
 
+// The environment joins/resolves paths with the *host* `Path.Path`, so a
+// Windows dev box produces backslashes (and a drive letter on `resolve`) for
+// the same POSIX-shaped fixtures. Normalize both rather than pinning these
+// assertions to one host OS.
+const normalizePath = (value: string) => value.replaceAll("\\", "/").replace(/^[A-Za-z]:/, "");
+
+const assertPath = (actual: string, expected: string) => {
+  assert.equal(normalizePath(actual), expected);
+};
+
 describe("DesktopEnvironment", () => {
   it.effect("derives state paths and development identity inside Effect", () =>
     Effect.gen(function* () {
@@ -51,19 +61,23 @@ describe("DesktopEnvironment", () => {
       );
 
       assert.equal(environment.isDevelopment, true);
-      assert.equal(environment.appDataDirectory, "/Users/alice/Library/Application Support");
-      assert.equal(environment.baseDir, "/tmp/t3");
-      assert.equal(environment.stateDir, "/tmp/t3/dev");
-      assert.equal(environment.desktopSettingsPath, "/tmp/t3/dev/desktop-settings.json");
-      assert.equal(environment.clientSettingsPath, "/tmp/t3/dev/client-settings.json");
-      assert.equal(environment.savedEnvironmentRegistryPath, "/tmp/t3/dev/saved-environments.json");
-      assert.equal(environment.serverSettingsPath, "/tmp/t3/dev/settings.json");
-      assert.equal(environment.logDir, "/tmp/t3/dev/logs");
-      assert.equal(environment.browserArtifactsDir, "/tmp/t3/dev/browser-artifacts");
-      assert.equal(environment.rootDir, "/repo");
-      assert.equal(environment.appRoot, "/repo");
-      assert.equal(environment.backendEntryPath, "/repo/apps/server/dist/bin.mjs");
-      assert.equal(environment.backendCwd, "/repo");
+      assertPath(environment.appDataDirectory, "/Users/alice/Library/Application Support");
+      assertPath(environment.baseDir, "/tmp/t3");
+      assert.equal(environment.usesIsolatedStateStore, false);
+      assertPath(environment.stateDir, "/tmp/t3/userdata");
+      assertPath(environment.desktopSettingsPath, "/tmp/t3/userdata/desktop-settings.json");
+      assertPath(environment.clientSettingsPath, "/tmp/t3/userdata/client-settings.json");
+      assertPath(
+        environment.savedEnvironmentRegistryPath,
+        "/tmp/t3/userdata/saved-environments.json",
+      );
+      assertPath(environment.serverSettingsPath, "/tmp/t3/userdata/settings.json");
+      assertPath(environment.logDir, "/tmp/t3/userdata/logs");
+      assertPath(environment.browserArtifactsDir, "/tmp/t3/userdata/browser-artifacts");
+      assertPath(environment.rootDir, "/repo");
+      assertPath(environment.appRoot, "/repo");
+      assertPath(environment.backendEntryPath, "/repo/apps/server/dist/bin.mjs");
+      assertPath(environment.backendCwd, "/repo");
       assert.equal(environment.appUserModelId, "com.t3tools.t3code.dev");
       assert.equal(environment.linuxWmClass, "t3code-dev");
       assert.deepEqual(
@@ -78,6 +92,24 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
+  it.effect("keeps dev in its own sandbox when isolated state is requested", () =>
+    Effect.gen(function* () {
+      const environment = yield* makeEnvironment(
+        {},
+        {
+          T3CODE_HOME: "/tmp/t3",
+          VITE_DEV_SERVER_URL: "http://localhost:5173",
+          T3CODE_DEV_ISOLATED_STATE: "true",
+        },
+      );
+
+      assert.equal(environment.isDevelopment, true);
+      assert.equal(environment.usesIsolatedStateStore, true);
+      assertPath(environment.stateDir, "/tmp/t3/dev");
+      assertPath(environment.serverSettingsPath, "/tmp/t3/dev/settings.json");
+    }),
+  );
+
   it.effect("derives production state paths under userdata", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(
@@ -88,10 +120,11 @@ describe("DesktopEnvironment", () => {
       );
 
       assert.equal(environment.isDevelopment, false);
-      assert.equal(environment.stateDir, "/tmp/t3/userdata");
-      assert.equal(environment.logDir, "/tmp/t3/userdata/logs");
-      assert.equal(environment.browserArtifactsDir, "/tmp/t3/userdata/browser-artifacts");
-      assert.equal(environment.serverSettingsPath, "/tmp/t3/userdata/settings.json");
+      assert.equal(environment.usesIsolatedStateStore, false);
+      assertPath(environment.stateDir, "/tmp/t3/userdata");
+      assertPath(environment.logDir, "/tmp/t3/userdata/logs");
+      assertPath(environment.browserArtifactsDir, "/tmp/t3/userdata/browser-artifacts");
+      assertPath(environment.serverSettingsPath, "/tmp/t3/userdata/settings.json");
     }),
   );
 
@@ -123,7 +156,10 @@ describe("DesktopEnvironment", () => {
         Option.some("/Users/alice"),
       );
       assert.deepEqual(
-        environment.resolvePickFolderDefaultPath({ initialPath: "~/project" }),
+        Option.map(
+          environment.resolvePickFolderDefaultPath({ initialPath: "~/project" }),
+          (value) => normalizePath(value),
+        ),
         Option.some("/Users/alice/project"),
       );
     }),

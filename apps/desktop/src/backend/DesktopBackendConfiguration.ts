@@ -115,6 +115,10 @@ const resolveBackendStartConfig = Effect.fn("desktop.backendConfiguration.resolv
         desktopBootstrapToken: input.bootstrapToken,
         tailscaleServeEnabled: backendExposure.tailscaleServeEnabled,
         tailscaleServePort: backendExposure.tailscaleServePort,
+        // Keep the backend on the same state store the app resolved; otherwise a
+        // dev window reads its settings from `userdata` while the backend opens
+        // the `dev` database.
+        isolatedStateStore: environment.usesIsolatedStateStore,
         ...Option.match(input.observabilitySettings.otlpTracesUrl, {
           onNone: () => ({}),
           onSome: (otlpTracesUrl) => ({ otlpTracesUrl }),

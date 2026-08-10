@@ -11,6 +11,13 @@ export const DesktopBackendBootstrap = Schema.Struct({
   desktopBootstrapToken: Schema.String,
   tailscaleServeEnabled: Schema.Boolean,
   tailscaleServePort: PortSchema,
+  /**
+   * Dev builds share the installed app's `userdata` state store by default so a
+   * hot-reloading dev window sees the same conversations, providers and
+   * settings. Set when the desktop process opted into the isolated `dev`
+   * sandbox instead, so the backend picks the same state dir the app did.
+   */
+  isolatedStateStore: Schema.optional(Schema.Boolean),
   otlpTracesUrl: Schema.optional(Schema.String),
   otlpMetricsUrl: Schema.optional(Schema.String),
 });

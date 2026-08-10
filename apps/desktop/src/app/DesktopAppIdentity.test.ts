@@ -134,6 +134,11 @@ const withIdentity = <A, E, R>(
   );
 };
 
+// The identity service joins paths with the *host* `Path.Path`, so a Windows
+// dev box produces backslashes for the same POSIX-shaped fixtures. Normalize
+// rather than pinning the assertion to one host OS.
+const normalizePath = (value: string) => value.replaceAll("\\", "/").replace(/^[A-Za-z]:/, "");
+
 describe("DesktopAppIdentity", () => {
   it.effect("keeps using the legacy userData path when it already exists", () =>
     withIdentity(
@@ -141,7 +146,10 @@ describe("DesktopAppIdentity", () => {
         const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
         const userDataPath = yield* identity.resolveUserDataPath;
 
-        assert.equal(userDataPath, "/Users/alice/Library/Application Support/T3 Code (Alpha)");
+        assert.equal(
+          normalizePath(userDataPath),
+          "/Users/alice/Library/Application Support/T3 Code (Alpha)",
+        );
       }),
       { legacyPathExists: true },
     ),
@@ -159,8 +167,8 @@ describe("DesktopAppIdentity", () => {
         const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
         yield* identity.configure;
 
-        assert.deepEqual(calls.setName, ["T3 Code (Alpha)"]);
-        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "T3 Code (Alpha)");
+        assert.deepEqual(calls.setName, ["M3 Code (Alpha)"]);
+        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "M3 Code (Alpha)");
         assert.equal(calls.setAboutPanelOptions[0]?.applicationVersion, "1.2.3");
         assert.equal(calls.setAboutPanelOptions[0]?.version, "0123456789ab");
         assert.deepEqual(calls.setDockIcon, ["/icon.png"]);
