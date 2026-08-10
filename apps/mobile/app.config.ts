@@ -9,6 +9,9 @@ Object.assign(process.env, repoEnv);
 
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 
+// EAS project this fork builds under (@martinbrandvoll/m3code), not upstream's.
+const EAS_PROJECT_ID = "f9e28768-9368-48b0-968e-bfa08a7f948b";
+
 const VARIANT_CONFIG: Record<
   AppVariant,
   {
@@ -23,22 +26,22 @@ const VARIANT_CONFIG: Record<
     appName: "T3 Code Dev",
     scheme: "t3code-dev",
     iosIcon: "./assets/icon-composer-dev.icon",
-    iosBundleIdentifier: "com.t3tools.t3code.dev",
-    androidPackage: "com.t3tools.t3code.dev",
+    iosBundleIdentifier: "no.leep.m3code.dev",
+    androidPackage: "no.leep.m3code.dev",
   },
   preview: {
     appName: "T3 Code Preview",
     scheme: "t3code-preview",
     iosIcon: "./assets/icon-composer-prod.icon",
-    iosBundleIdentifier: "com.t3tools.t3code.preview",
-    androidPackage: "com.t3tools.t3code.preview",
+    iosBundleIdentifier: "no.leep.m3code.preview",
+    androidPackage: "no.leep.m3code.preview",
   },
   production: {
     appName: "T3 Code",
     scheme: "t3code",
     iosIcon: "./assets/icon-composer-prod.icon",
-    iosBundleIdentifier: "com.t3tools.t3code",
-    androidPackage: "com.t3tools.t3code",
+    iosBundleIdentifier: "no.leep.m3code",
+    androidPackage: "no.leep.m3code",
   },
 };
 
@@ -57,7 +60,7 @@ const variant = VARIANT_CONFIG[APP_VARIANT];
 
 const config: ExpoConfig = {
   name: variant.appName,
-  slug: "t3-code",
+  slug: "m3code",
   platforms: ["ios", "android"],
   scheme: variant.scheme,
   version: "0.1.0",
@@ -69,7 +72,7 @@ const config: ExpoConfig = {
   userInterfaceStyle: "automatic",
   updates: {
     enabled: true,
-    url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+    url: `https://u.expo.dev/${EAS_PROJECT_ID}`,
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
   },
@@ -167,10 +170,10 @@ const config: ExpoConfig = {
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
     eas: {
-      projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+      projectId: EAS_PROJECT_ID,
     },
   },
-  owner: "pingdotgg",
+  owner: "martinbrandvoll",
 };
 
 export default config;

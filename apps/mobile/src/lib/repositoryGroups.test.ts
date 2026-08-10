@@ -31,6 +31,8 @@ function makeThread(
     >,
 ): EnvironmentScopedThreadShell {
   return {
+    handoffThreadId: null,
+    sourceThreadId: null,
     runtimeMode: "full-access",
     interactionMode: "default",
     branch: null,
@@ -46,6 +48,7 @@ function makeThread(
     hasActionableProposedPlan: false,
     ...input,
     pinnedAt: input.pinnedAt ?? null,
+    hasPendingFollowups: input.hasPendingFollowups ?? false,
   };
 }
 

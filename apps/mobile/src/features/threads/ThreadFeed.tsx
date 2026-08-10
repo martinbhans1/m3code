@@ -676,6 +676,17 @@ function renderFeedEntry(
   const { markdownStyles, iconSubtleColor, userBubbleColor } = props;
 
   if (entry.type === "turn-fold") {
+    // A stopped turn that never reached a tool call has nothing behind the row.
+    if (!entry.expandable) {
+      return (
+        <View className="mb-3 min-h-11 flex-row items-center gap-2 border-b border-neutral-200/80 px-2 dark:border-white/[0.08]">
+          <Text className="font-t3-medium text-sm tabular-nums text-foreground-muted">
+            {entry.label}
+          </Text>
+        </View>
+      );
+    }
+
     return (
       <Pressable
         accessibilityRole="button"

@@ -30,6 +30,8 @@ function makeThread(
 ): OrchestrationThread {
   return {
     modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+    handoffThreadId: null,
+    sourceThreadId: null,
     runtimeMode: "full-access",
     interactionMode: "default",
     branch: null,
@@ -170,7 +172,7 @@ describe("buildThreadFeed", () => {
     ]);
   });
 
-  it("folds settled turn work while leaving the terminal answer visible", () => {
+  it("folds settled turn work while leaving every assistant message visible", () => {
     const turnId = TurnId.make("turn-1");
     const thread = makeThread({
       id: ThreadId.make("thread-3"),
@@ -223,8 +225,12 @@ describe("buildThreadFeed", () => {
 
     const feed = buildThreadFeed(thread, [], null);
     const collapsed = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set());
-    expect(collapsed.map((entry) => entry.id)).toEqual(["turn-fold:turn-1", "assistant-final"]);
-    expect(collapsed[0]).toMatchObject({
+    expect(collapsed.map((entry) => entry.id)).toEqual([
+      "assistant-commentary",
+      "turn-fold:turn-1",
+      "assistant-final",
+    ]);
+    expect(collapsed[1]).toMatchObject({
       type: "turn-fold",
       label: "Worked for 17s",
       expanded: false,
@@ -232,11 +238,51 @@ describe("buildThreadFeed", () => {
 
     const expanded = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set([turnId]));
     expect(expanded.map((entry) => entry.id)).toEqual([
-      "turn-fold:turn-1",
       "assistant-commentary",
+      "turn-fold:turn-1",
       "tool-completed",
       "assistant-final",
     ]);
+  });
+
+  it("keeps a label-only stopped row for an interrupted turn with no activity", () => {
+    const turnId = TurnId.make("turn-stopped");
+    const thread = makeThread({
+      id: ThreadId.make("thread-stopped"),
+      projectId: ProjectId.make("project-1"),
+      title: "Stopped early",
+      latestTurn: {
+        turnId,
+        state: "interrupted",
+        requestedAt: "2026-04-01T00:00:00.000Z",
+        startedAt: "2026-04-01T00:00:00.000Z",
+        completedAt: "2026-04-01T00:00:09.000Z",
+        assistantMessageId: MessageId.make("assistant-partial"),
+      },
+      messages: [
+        {
+          id: MessageId.make("assistant-partial"),
+          role: "assistant",
+          text: "Here is the plan, step one is",
+          turnId,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:05.000Z",
+          updatedAt: "2026-04-01T00:00:06.000Z",
+        },
+      ],
+    });
+
+    const feed = buildThreadFeed(thread, [], null);
+    const presented = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set());
+    expect(presented.map((entry) => entry.id)).toEqual([
+      "turn-fold:turn-stopped",
+      "assistant-partial",
+    ]);
+    expect(presented[0]).toMatchObject({
+      type: "turn-fold",
+      label: "You stopped after 9.0s",
+      expandable: false,
+    });
   });
 
   it("measures a steer-superseded turn from its user boundary through trailing work", () => {

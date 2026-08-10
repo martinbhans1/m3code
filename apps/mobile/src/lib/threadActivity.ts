@@ -118,6 +118,8 @@ export type ThreadFeedEntry =
       readonly turnId: TurnId;
       readonly label: string;
       readonly expanded: boolean;
+      /** False for a stopped turn that never reached a tool call — label only. */
+      readonly expandable: boolean;
     };
 
 export type ThreadFeedLatestTurn = Pick<
@@ -996,16 +998,24 @@ function deriveThreadFeedTurnFolds(
     }
 
     const terminalAssistantMessageId = terminalAssistantMessageIdByTurn.get(turnId);
+    // Only tool activity folds away — assistant prose, including commentary
+    // written between tool calls, is addressed to the user and always shows.
     const hiddenEntryIds = new Set(
-      entries.filter((entry) => entry.id !== terminalAssistantMessageId).map((entry) => entry.id),
+      entries.filter((entry) => entry.type === "activity-group").map((entry) => entry.id),
     );
-    if (hiddenEntryIds.size === 0) {
+    const interrupted = latestTurn?.turnId === turnId && latestTurn.state === "interrupted";
+    // A turn with nothing to fold still needs a row when the user stopped it —
+    // the "You stopped ..." label is the only interrupt marker in the feed.
+    if (hiddenEntryIds.size === 0 && !interrupted) {
       continue;
     }
 
     const firstEntry = entries[0];
     const lastEntry = entries.at(-1);
-    if (!firstEntry || !lastEntry) {
+    // Anchor the fold at the first folded activity so prose ahead of the
+    // turn's first tool call keeps its place above the row.
+    const anchorEntry = entries.find((entry) => hiddenEntryIds.has(entry.id)) ?? firstEntry;
+    if (!firstEntry || !lastEntry || !anchorEntry) {
       continue;
     }
     const terminalEntry = terminalAssistantMessageId
@@ -1025,7 +1035,6 @@ function deriveThreadFeedTurnFolds(
             ) ?? lastEntryEnd,
           );
     const duration = elapsedMs === null ? null : formatDuration(elapsedMs);
-    const interrupted = latestTurnMatches && latestTurn.state === "interrupted";
     const label = interrupted
       ? duration
         ? `You stopped after ${duration}`
@@ -1034,9 +1043,9 @@ function deriveThreadFeedTurnFolds(
         ? `Worked for ${duration}`
         : "Worked";
 
-    foldsByAnchorId.set(firstEntry.id, {
+    foldsByAnchorId.set(anchorEntry.id, {
       turnId,
-      createdAt: firstEntry.createdAt,
+      createdAt: anchorEntry.createdAt,
       hiddenEntryIds,
       label,
     });
@@ -1071,6 +1080,7 @@ export function deriveThreadFeedPresentation(
         turnId: fold.turnId,
         label: fold.label,
         expanded: expandedTurnIds.has(fold.turnId),
+        expandable: fold.hiddenEntryIds.size > 0,
       });
     }
     if (!collapsedEntryIds.has(entry.id)) {
