@@ -296,7 +296,15 @@ const make = Effect.gen(function* () {
       threadId: input.threadId,
       session: {
         ...session,
-        status: session.status === "stopped" ? "stopped" : "ready",
+        // "error", not "ready". A turn that never started is a failure, and this
+        // status is the only place the read model can say so: agent awareness
+        // derives "failed" from `status === "error"`, and reads `lastError` only
+        // once it has. Reporting "ready" here lost the failure twice over — the
+        // detail written on the next line was unreachable, and a turn already
+        // running was actively resettled to "completed" (a "ready" session
+        // settles its running turn as done), so a conversation that had just
+        // been refused with "Prompt is too long" showed up as "Agent finished".
+        status: session.status === "stopped" ? "stopped" : "error",
         activeTurnId: null,
         lastError: input.detail,
         updatedAt: input.createdAt,
@@ -526,8 +534,11 @@ const make = Effect.gen(function* () {
         activeSession?.providerInstanceId !== requestedModelSelection.instanceId;
       const shouldRestartForModelChange = modelChanged && sessionModelSwitch === "unsupported";
       const previousModelSelection = threadModelSelections.get(threadId);
+      // Claude applies some options only via session restart; Grok applies
+      // reasoning effort at process spawn (`--reasoning-effort`), so option
+      // changes likewise require restarting the agent (conversation resumed).
       const shouldRestartForModelSelectionChange =
-        preferredProvider === "claudeAgent" &&
+        (preferredProvider === "claudeAgent" || preferredProvider === "grok") &&
         requestedModelSelection !== undefined &&
         !Equal.equals(previousModelSelection, requestedModelSelection);
 

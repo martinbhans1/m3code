@@ -132,12 +132,27 @@ export interface FollowupState {
   updatedAt: string;
 }
 
+export interface HandoffState {
+  id: string;
+  direction: "continuedIn" | "spunOffFrom";
+  counterpartThreadId: ThreadId;
+  counterpartTitle: string;
+  followupId: string | null;
+  createdAt: string;
+}
+
 export type TimelineEntry =
   | {
       id: string;
       kind: "message";
       createdAt: string;
       message: ChatMessage;
+    }
+  | {
+      id: string;
+      kind: "handoff";
+      createdAt: string;
+      handoff: HandoffState;
     }
   | {
       id: string;
@@ -635,6 +650,53 @@ export function derivePendingFollowups(
   return deriveFollowups(activities).filter((followup) => followup.status === "pending");
 }
 
+// Handoffs are stored as thread activities of kind "thread.handoff" (see
+// buildHandoffActivity in contracts), one per direction. Latest per direction
+// wins — mirrors deriveHandoffThreadIdsFromActivities on the server, which
+// materializes the same thing into projection_threads for the sidebar.
+export function deriveHandoffs(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): HandoffState[] {
+  const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const byDirection = new Map<string, HandoffState>();
+  for (const activity of ordered) {
+    if (activity.kind !== "thread.handoff") {
+      continue;
+    }
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    const raw =
+      payload?.handoff && typeof payload.handoff === "object"
+        ? (payload.handoff as Record<string, unknown>)
+        : null;
+    if (!raw) {
+      continue;
+    }
+    const direction = raw.direction === "spunOffFrom" ? "spunOffFrom" : "continuedIn";
+    const counterpartThreadId =
+      typeof raw.counterpartThreadId === "string" ? raw.counterpartThreadId : "";
+    const counterpartTitle =
+      typeof raw.counterpartTitle === "string" ? raw.counterpartTitle.trim() : "";
+    if (counterpartThreadId.length === 0 || counterpartTitle.length === 0) {
+      continue;
+    }
+    byDirection.set(direction, {
+      id: activity.id,
+      direction,
+      counterpartThreadId: counterpartThreadId as ThreadId,
+      counterpartTitle,
+      followupId: typeof raw.followupId === "string" ? raw.followupId : null,
+      createdAt: typeof raw.createdAt === "string" ? raw.createdAt : activity.createdAt,
+    });
+  }
+  return [...byDirection.values()].toSorted(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+  );
+}
+
 export function findLatestProposedPlan(
   proposedPlans: ReadonlyArray<ProposedPlan>,
   latestTurnId: TurnId | string | null | undefined,
@@ -704,6 +766,9 @@ export function deriveWorkLogEntries(
     if (activity.kind === "tool.started") continue;
     if (activity.kind === "task.started") continue;
     if (activity.kind === "context-window.updated") continue;
+    // Handoffs get their own timeline card — a bare work-log line would bury
+    // the one thing the notice exists to offer, which is the link.
+    if (activity.kind === "thread.handoff") continue;
     if (activity.summary === "Checkpoint captured") continue;
     if (isPlanBoundaryToolActivity(activity)) continue;
     entries.push(toDerivedWorkLogEntry(activity));
@@ -1412,6 +1477,7 @@ export function deriveTimelineEntries(
   messages: ChatMessage[],
   proposedPlans: ProposedPlan[],
   workEntries: WorkLogEntry[],
+  handoffs: HandoffState[] = [],
 ): TimelineEntry[] {
   const messageRows: TimelineEntry[] = messages.map((message) => ({
     id: message.id,
@@ -1431,7 +1497,13 @@ export function deriveTimelineEntries(
     createdAt: entry.createdAt,
     entry,
   }));
-  return [...messageRows, ...proposedPlanRows, ...workRows].toSorted((a, b) =>
+  const handoffRows: TimelineEntry[] = handoffs.map((handoff) => ({
+    id: handoff.id,
+    kind: "handoff",
+    createdAt: handoff.createdAt,
+    handoff,
+  }));
+  return [...messageRows, ...proposedPlanRows, ...workRows, ...handoffRows].toSorted((a, b) =>
     a.createdAt.localeCompare(b.createdAt),
   );
 }

@@ -6,6 +6,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime";
+import { CornerUpLeftIcon } from "lucide-react";
 import { memo } from "react";
 import GitActionsControl from "../GitActionsControl";
 import { type DraftId } from "~/composerDraftStore";
@@ -29,6 +30,14 @@ interface ChatHeaderProps {
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   gitCwd: string | null;
+  /**
+   * Set when this thread was spun off from another conversation. Rendered as a
+   * backlink rather than a transcript entry: it is context for the whole thread,
+   * not something that happened partway through it.
+   */
+  sourceHandoff?: { counterpartThreadId: ThreadId; counterpartTitle: string } | null;
+  /** Navigation is passed in so this presentational header stays router-free. */
+  onOpenThread: (threadId: ThreadId) => void;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
@@ -60,6 +69,8 @@ export const ChatHeader = memo(function ChatHeader({
   keybindings,
   availableEditors,
   gitCwd,
+  sourceHandoff,
+  onOpenThread,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
@@ -80,6 +91,25 @@ export const ChatHeader = memo(function ChatHeader({
   return (
     <div className="@container/header-actions flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
+        {sourceHandoff ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={`Spun off from ${sourceHandoff.counterpartTitle}`}
+                  className="-ml-1 inline-flex shrink-0 items-center justify-center rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground hover:cursor-pointer"
+                  onClick={() => onOpenThread(sourceHandoff.counterpartThreadId)}
+                />
+              }
+            >
+              <CornerUpLeftIcon className="size-3.5" />
+            </TooltipTrigger>
+            <TooltipPopup side="bottom">
+              Spun off from “{sourceHandoff.counterpartTitle}” — open it
+            </TooltipPopup>
+          </Tooltip>
+        ) : null}
         {isMobile ? (
           // On a phone a single `project / title` line truncates to a few
           // characters of the thread name, and a hover tooltip is unreachable

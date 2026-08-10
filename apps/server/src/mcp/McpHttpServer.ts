@@ -15,6 +15,8 @@ import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import { FollowupToolkitHandlersLive } from "./toolkits/followup/handlers.ts";
 import { FollowupToolkit } from "./toolkits/followup/tools.ts";
+import { OrchestratorToolkitHandlersLive } from "./toolkits/orchestrator/handlers.ts";
+import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 import {
   PreviewSnapshotToolkitHandlersLive,
   PreviewStandardToolkitHandlersLive,
@@ -36,6 +38,18 @@ const unauthorized = HttpServerResponse.jsonUnsafe(
       "cache-control": "no-store",
       "www-authenticate": "Bearer",
     },
+  },
+);
+
+const forbidden = HttpServerResponse.jsonUnsafe(
+  {
+    error: "insufficient_mcp_capability",
+    message:
+      "This thread's MCP credential does not grant the orchestrator capability. Cross-thread tools are limited to the project designated in settings.",
+  },
+  {
+    status: 403,
+    headers: { "cache-control": "no-store" },
   },
 );
 
@@ -65,30 +79,43 @@ export const normalizeMcpHttpResponse = (
     : response;
 };
 
-const makeMcpAuthMiddleware = McpSessionRegistry.McpSessionRegistry.pipe(
-  Effect.map(
-    (registry): McpAuthMiddleware =>
-      Effect.fn("McpHttpServer.authenticateRequest")(function* (httpEffect) {
-        const request = yield* HttpServerRequest.HttpServerRequest;
-        const authorization = request.headers.authorization;
-        const token =
-          authorization?.startsWith("Bearer ") === true
-            ? authorization.slice("Bearer ".length).trim()
-            : "";
-        const invocation = yield* registry.resolve(token);
-        if (!invocation) return unauthorized;
-        return yield* httpEffect.pipe(
-          Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-          Effect.map(normalizeMcpHttpResponse),
-        );
-      }),
-  ),
-  Effect.withSpan("McpHttpServer.makeAuthMiddleware"),
-);
+const makeMcpAuthMiddleware = (
+  requiredCapability?: McpInvocationContext.McpCapability,
+): Effect.Effect<McpAuthMiddleware, never, McpSessionRegistry.McpSessionRegistry> =>
+  McpSessionRegistry.McpSessionRegistry.pipe(
+    Effect.map(
+      (registry): McpAuthMiddleware =>
+        Effect.fn("McpHttpServer.authenticateRequest")(function* (httpEffect) {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const authorization = request.headers.authorization;
+          const token =
+            authorization?.startsWith("Bearer ") === true
+              ? authorization.slice("Bearer ".length).trim()
+              : "";
+          const invocation = yield* registry.resolve(token);
+          if (!invocation) return unauthorized;
+          // The orchestrator mount is rejected here, before any MCP handshake,
+          // so a thread without the capability cannot even enumerate the
+          // cross-thread tools.
+          if (requiredCapability && !invocation.capabilities.has(requiredCapability)) {
+            return forbidden;
+          }
+          return yield* httpEffect.pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+            Effect.map(normalizeMcpHttpResponse),
+          );
+        }),
+    ),
+    Effect.withSpan("McpHttpServer.makeAuthMiddleware"),
+  );
 
 const McpAuthMiddlewareLive = HttpRouter.middleware<{
   provides: McpInvocationContext.McpInvocationContext;
-}>()(makeMcpAuthMiddleware).layer;
+}>()(makeMcpAuthMiddleware()).layer;
+
+const McpOrchestratorAuthMiddlewareLive = HttpRouter.middleware<{
+  provides: McpInvocationContext.McpInvocationContext;
+}>()(makeMcpAuthMiddleware("orchestrator")).layer;
 
 const registerPreviewSnapshot = Effect.fn("McpHttpServer.registerPreviewSnapshot")(function* () {
   const server = yield* McpServer.McpServer;
@@ -189,10 +216,37 @@ export const PreviewToolkitRegistrationLive = Layer.mergeAll(
 const McpTransportLive = McpServer.layerHttp({
   name: "M3 Code",
   version: packageJson.version,
-  path: "/mcp",
+  path: McpSessionRegistry.MCP_PATH,
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
-export const layer = PreviewToolkitRegistrationLive.pipe(
+const SharedMcpServerLive = PreviewToolkitRegistrationLive.pipe(
   Layer.provideMerge(McpTransportLive),
   Layer.provide(PreviewAutomationBroker.layer),
 );
+
+// A second, separately-mounted MCP server. It exists because MCP can only
+// filter `tools/list` by client identity, which is identical for every thread
+// here — so the only way to keep cross-thread tools out of ordinary threads'
+// tool lists (and their token budget) is to serve them from a route those
+// threads are never given.
+const McpOrchestratorTransportLive = McpServer.layerHttp({
+  name: "M3 Code Orchestrator",
+  version: packageJson.version,
+  path: McpSessionRegistry.MCP_ORCHESTRATOR_PATH,
+}).pipe(Layer.provide(McpOrchestratorAuthMiddlewareLive));
+
+// `Layer.fresh` around the whole subtree is load-bearing, not hygiene.
+// `McpServer.layerHttp` is built on one module-level `McpServer.layer`, which
+// Effect memoizes — so in a shared memo map both mounts resolve to the same
+// tool registry and every orchestrator tool also shows up on `/mcp`. The fresh
+// boundary must wrap the transport *and* the toolkit registration together, so
+// that inside it they agree on one second instance. See the route-isolation
+// test, which fails both ways this can be got wrong.
+const OrchestratorMcpServerLive = Layer.fresh(
+  McpServer.toolkit(OrchestratorToolkit).pipe(
+    Layer.provide(OrchestratorToolkitHandlersLive),
+    Layer.provideMerge(McpOrchestratorTransportLive),
+  ),
+);
+
+export const layer = Layer.mergeAll(SharedMcpServerLive, OrchestratorMcpServerLive);

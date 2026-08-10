@@ -4,7 +4,9 @@ import {
   ChevronRightIcon,
   CloudIcon,
   FolderPlusIcon,
+  GitBranchIcon,
   Globe2Icon,
+  LightbulbIcon,
   PinIcon,
   SearchIcon,
   SettingsIcon,
@@ -23,6 +25,8 @@ import { ProjectFavicon } from "./ProjectFavicon";
 import { autoAnimate } from "@formkit/auto-animate";
 import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { useOrchestratorProjectId } from "../hooks/useOrchestratorConversation";
+import { SidebarOrchestratorRow } from "./SidebarOrchestratorRow";
 import {
   DndContext,
   type DragCancelEvent,
@@ -42,12 +46,18 @@ import {
   type ContextMenuItem,
   type DesktopUpdateState,
   type EnvironmentId,
+  type OrchestratorThreadAccess,
   ProjectId,
   type ScopedThreadRef,
   type SidebarProjectGroupingMode,
   type ThreadEnvMode,
   ThreadId,
 } from "@t3tools/contracts";
+import {
+  orchestratorAccessPatch,
+  ORCHESTRATOR_ACCESS_INHERIT,
+  ORCHESTRATOR_ACCESS_LABELS,
+} from "../lib/orchestratorAccess";
 import {
   parseScopedThreadKey,
   scopedProjectKey,
@@ -410,8 +420,13 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
       lastVisitedAt,
     },
   });
+  const showChangeRequestStatus = useSettings<boolean>(
+    (settings) => settings.showThreadChangeRequestStatus,
+  );
   const pr = resolveThreadPr(thread.branch, gitStatus.data);
-  const prStatus = prStatusIndicator(pr, gitStatus.data?.sourceControlProvider);
+  const prStatus = showChangeRequestStatus
+    ? prStatusIndicator(pr, gitStatus.data?.sourceControlProvider)
+    : null;
   const terminalStatus = terminalStatusFromRunningIds(runningTerminalIds);
   const isConfirmingArchive = confirmingArchiveThreadKey === threadKey && !isThreadRunning;
   const threadMetaClassName = isConfirmingArchive
@@ -619,6 +634,36 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
         onContextMenu={handleRowContextMenu}
       >
         <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
+          {thread.hasPendingFollowups && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    aria-label="Suggested task waiting"
+                    className="inline-flex shrink-0 items-center justify-center text-amber-600 dark:text-amber-300/90"
+                  >
+                    <LightbulbIcon className="size-3" />
+                  </span>
+                }
+              />
+              <TooltipPopup side="top">Suggested task waiting</TooltipPopup>
+            </Tooltip>
+          )}
+          {thread.handoffThreadId !== null && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    aria-label="Handed off to another conversation"
+                    className="inline-flex shrink-0 items-center justify-center text-muted-foreground"
+                  >
+                    <GitBranchIcon className="size-3" />
+                  </span>
+                }
+              />
+              <TooltipPopup side="top">Continued in another conversation</TooltipPopup>
+            </Tooltip>
+          )}
           {prStatus && (
             <Tooltip>
               <TooltipTrigger
@@ -1043,6 +1088,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     (settings) => settings.defaultThreadEnvMode,
   );
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
+  const orchestratorThreadAccess = useSettings((settings) => settings.orchestratorThreadAccess);
+  const defaultOrchestratorThreadAccess = useSettings(
+    (settings) => settings.defaultOrchestratorThreadAccess,
+  );
+  const orchestratorProjectId = useSettings((settings) => settings.orchestratorProjectId);
   const { updateSettings } = useUpdateSettings();
   const sidebarThreadPreviewCount = useSettings<SidebarThreadPreviewCount>(
     (settings) => settings.sidebarThreadPreviewCount,
@@ -2037,10 +2087,39 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
       );
       const threadWorkspacePath = thread.worktreePath ?? threadProject?.cwd ?? project.cwd ?? null;
+      // Absent from the map means this thread follows the settings default
+      // rather than being closed outright, so "not shared" and "use the
+      // default" are separate choices below.
+      const orchestratorAccess = orchestratorThreadAccess[thread.id];
+      const orchestratorLabel = (access: OrchestratorThreadAccess) =>
+        orchestratorAccess === access
+          ? `${ORCHESTRATOR_ACCESS_LABELS[access]} (current)`
+          : ORCHESTRATOR_ACCESS_LABELS[access];
       const clicked = await api.contextMenu.show(
         [
           { id: "rename", label: "Rename thread" },
           { id: isPinned ? "unpin" : "pin", label: isPinned ? "Unpin thread" : "Pin thread" },
+          // Hidden entirely until an orchestrator project exists: without one,
+          // this names a feature the user has never turned on.
+          ...(orchestratorProjectId === null
+            ? []
+            : [
+                {
+                  id: "orchestrator",
+                  label: "Orchestrator access",
+                  children: [
+                    {
+                      id: "orchestrator-inherit",
+                      label: `Follow default (${ORCHESTRATOR_ACCESS_LABELS[
+                        defaultOrchestratorThreadAccess
+                      ].toLowerCase()})${orchestratorAccess === undefined ? " (current)" : ""}`,
+                    },
+                    { id: "orchestrator-none", label: orchestratorLabel("none") },
+                    { id: "orchestrator-watch", label: orchestratorLabel("watch") },
+                    { id: "orchestrator-control", label: orchestratorLabel("control") },
+                  ],
+                } satisfies ContextMenuItem,
+              ]),
           { id: "mark-unread", label: "Mark unread" },
           { id: "copy-path", label: "Copy Path" },
           { id: "copy-thread-id", label: "Copy Thread ID" },
@@ -2056,6 +2135,24 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
       if (clicked === "pin" || clicked === "unpin") {
         void setThreadPinned(threadRef, clicked === "pin");
+        return;
+      }
+
+      if (
+        clicked === "orchestrator-inherit" ||
+        clicked === "orchestrator-none" ||
+        clicked === "orchestrator-watch" ||
+        clicked === "orchestrator-control"
+      ) {
+        const selection =
+          clicked === "orchestrator-inherit"
+            ? ORCHESTRATOR_ACCESS_INHERIT
+            : clicked === "orchestrator-none"
+              ? "none"
+              : clicked === "orchestrator-watch"
+                ? "watch"
+                : "control";
+        updateSettings(orchestratorAccessPatch({ threadId: thread.id, selection }));
         return;
       }
 
@@ -2099,13 +2196,17 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       appSettingsConfirmThreadDelete,
       copyPathToClipboard,
       copyThreadIdToClipboard,
+      defaultOrchestratorThreadAccess,
       deleteThread,
       markThreadUnread,
       memberProjectByScopedKey,
+      orchestratorProjectId,
+      orchestratorThreadAccess,
       pinnedThreadKeySet,
       project.cwd,
       setThreadPinned,
       startThreadRename,
+      updateSettings,
     ],
   );
 
@@ -3269,6 +3370,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
           </Alert>
         </SidebarGroup>
       ) : null}
+      <SidebarOrchestratorRow />
       <SidebarPinnedThreadsSection
         groups={pinnedThreadGroups}
         activeRouteThreadKey={routeThreadKey}
@@ -3404,8 +3506,19 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
 });
 
 export default function Sidebar() {
-  const projects = useStore(useShallow(selectProjectsAcrossEnvironments));
-  const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
+  const orchestratorProjectId = useOrchestratorProjectId();
+  const allProjects = useStore(useShallow(selectProjectsAcrossEnvironments));
+  // The orchestrator project is a fixture of the sidebar row above, not a
+  // project the user manages, so it never appears in the project tree.
+  const projects = useMemo(
+    () => allProjects.filter((project) => project.id !== orchestratorProjectId),
+    [allProjects, orchestratorProjectId],
+  );
+  const allSidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
+  const sidebarThreads = useMemo(
+    () => allSidebarThreads.filter((thread) => thread.projectId !== orchestratorProjectId),
+    [allSidebarThreads, orchestratorProjectId],
+  );
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const reorderProjects = useUiStateStore((store) => store.reorderProjects);

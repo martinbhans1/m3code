@@ -140,6 +140,54 @@ describe("splitPromptIntoComposerSegments", () => {
       { type: "text", text: " " },
     ]);
   });
+
+  it("splits a quote block into its own segment", () => {
+    expect(splitPromptIntoComposerSegments("<quote>\nquoted line\n</quote>\nmy question")).toEqual([
+      {
+        type: "quote",
+        body: "quoted line",
+        source: "<quote>\nquoted line\n</quote>",
+      },
+      { type: "text", text: "\nmy question" },
+    ]);
+  });
+
+  it("keeps text on both sides of a quote block", () => {
+    expect(splitPromptIntoComposerSegments("before\n<quote>\nquoted\n</quote>\nafter")).toEqual([
+      { type: "text", text: "before\n" },
+      { type: "quote", body: "quoted", source: "<quote>\nquoted\n</quote>" },
+      { type: "text", text: "\nafter" },
+    ]);
+  });
+
+  it("splits multiple quote blocks", () => {
+    expect(
+      splitPromptIntoComposerSegments("<quote>\none\n</quote>\n<quote>\ntwo\n</quote>\n"),
+    ).toEqual([
+      { type: "quote", body: "one", source: "<quote>\none\n</quote>" },
+      { type: "text", text: "\n" },
+      { type: "quote", body: "two", source: "<quote>\ntwo\n</quote>" },
+      { type: "text", text: "\n" },
+    ]);
+  });
+
+  it("keeps mention and skill tokens inside a quote literal", () => {
+    expect(
+      splitPromptIntoComposerSegments("<quote>\ncheck @AGENTS.md and $review-follow-up \n</quote>"),
+    ).toEqual([
+      {
+        type: "quote",
+        body: "check @AGENTS.md and $review-follow-up ",
+        source: "<quote>\ncheck @AGENTS.md and $review-follow-up \n</quote>",
+      },
+    ]);
+  });
+
+  it("leaves an unterminated quote tag as plain text", () => {
+    expect(splitPromptIntoComposerSegments("<quote>\nstill typing")).toEqual([
+      { type: "text", text: "<quote>\nstill typing" },
+    ]);
+  });
 });
 
 describe("selectionTouchesMentionBoundary", () => {

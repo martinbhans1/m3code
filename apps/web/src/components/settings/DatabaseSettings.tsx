@@ -18,8 +18,13 @@ import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsL
 /** Direct row in the card – same pattern as the Provider / Connections list rows. */
 const ITEM_ROW_CLASSNAME = "border-t border-border/60 px-4 py-4 first:border-t-0 sm:px-5";
 
+// The session pooler, not the direct `db.<ref>.supabase.co` host: Supabase
+// serves direct connections over IPv6 only, so they fail with a bare
+// `getaddrinfo ENOENT` on any machine without global IPv6. Port 5432 keeps full
+// session semantics (transactions, DDL, prepared statements) — unlike the
+// transaction pooler on 6543, which the one-transaction runner cannot use.
 const CONNECTION_STRING_PLACEHOLDER =
-  "postgresql://postgres:[PASSWORD]@db.<ref>.supabase.co:5432/postgres";
+  "postgresql://postgres.<ref>:[PASSWORD]@aws-0-<region>.pooler.supabase.com:5432/postgres";
 
 /** Sentinel for the "All projects" option — `projectPath: ""` in the contract. */
 const ALL_PROJECTS_VALUE = "*";

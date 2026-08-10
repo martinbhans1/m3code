@@ -66,12 +66,14 @@ const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalReques
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
 
-const deriveServerPathsSync = (baseDir: string, devUrl: URL | undefined) =>
-  Effect.runSync(deriveServerPaths(baseDir, devUrl).pipe(Effect.provide(NodeServices.layer)));
+const deriveServerPathsSync = (baseDir: string, isolatedStateStore?: boolean) =>
+  Effect.runSync(
+    deriveServerPaths(baseDir, isolatedStateStore).pipe(Effect.provide(NodeServices.layer)),
+  );
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
-  timeoutMs = 2000,
+  timeoutMs = 15_000,
 ): Promise<void> {
   const deadline = (await Effect.runPromise(Clock.currentTimeMillis)) + timeoutMs;
   const poll = async (): Promise<void> => {
@@ -81,7 +83,11 @@ async function waitFor(
     if ((await Effect.runPromise(Clock.currentTimeMillis)) >= deadline) {
       throw new Error("Timed out waiting for expectation.");
     }
-    await Effect.runPromise(Effect.yieldNow);
+    // Sleep between polls rather than `Effect.yieldNow`: the latter only drains
+    // the microtask queue, so this loop busy-spun and starved the reactor's async
+    // SQLite/filesystem work, making every expectation here time out even though
+    // the reactor was behaving correctly. Matches CheckpointReactor.test.ts.
+    await Effect.runPromise(Effect.sleep("10 millis"));
     return poll();
   };
 
@@ -1523,6 +1529,15 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.providerName).toBe("codex");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+    // A turn that never started leaves the session in error, not ready. Agent
+    // awareness derives "failed" from this status and reads `lastError` only
+    // once it has, so a "ready" here reports the refusal as a finished turn —
+    // which is how a conversation that did nothing gets summarized as done.
+    expect(thread?.session?.status).toBe("error");
+    expect(thread?.session?.lastError).toEqual(
+      expect.stringContaining("cannot switch to 'claudeAgent'"),
+    );
+    expect(thread?.session?.activeTurnId).toBeNull();
     expect(
       thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
     ).toMatchObject({

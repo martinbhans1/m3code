@@ -108,6 +108,8 @@ describe("CheckpointDiffQueryLive", () => {
             }),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          getThreadMessagesTail: () => Effect.succeed([]),
+          listThreadActivitiesByKinds: () => Effect.succeed([]),
         }),
       ),
     );
@@ -200,6 +202,8 @@ describe("CheckpointDiffQueryLive", () => {
           getFullThreadDiffContext: () => Effect.die("unused"),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          getThreadMessagesTail: () => Effect.succeed([]),
+          listThreadActivitiesByKinds: () => Effect.succeed([]),
         }),
       ),
     );
@@ -282,6 +286,8 @@ describe("CheckpointDiffQueryLive", () => {
           getFullThreadDiffContext: () => Effect.die("unused"),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          getThreadMessagesTail: () => Effect.succeed([]),
+          listThreadActivitiesByKinds: () => Effect.succeed([]),
         }),
       ),
     );
@@ -349,6 +355,8 @@ describe("CheckpointDiffQueryLive", () => {
           getFullThreadDiffContext: () => Effect.die("unused"),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          getThreadMessagesTail: () => Effect.succeed([]),
+          listThreadActivitiesByKinds: () => Effect.succeed([]),
         }),
       ),
     );
@@ -401,6 +409,8 @@ describe("CheckpointDiffQueryLive", () => {
           getFullThreadDiffContext: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          getThreadMessagesTail: () => Effect.succeed([]),
+          listThreadActivitiesByKinds: () => Effect.succeed([]),
         }),
       ),
     );

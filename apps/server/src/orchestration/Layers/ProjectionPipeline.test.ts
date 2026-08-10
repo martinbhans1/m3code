@@ -1365,6 +1365,18 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       assert.deepEqual(settledRows, [
         { state: "completed", completedAt: "2026-01-01T00:01:00.000Z" },
       ]);
+
+      // The session going idle sets `activeTurnId: null`, but `latest_turn_id`
+      // means "most recent turn", not "in-flight turn". Clearing it here used
+      // to orphan the completed turn row: the shell snapshot joins through this
+      // column, so every settled thread came back with `latestTurn: null` and
+      // read downstream as one that had never run.
+      const pointerRows = yield* sql<{ readonly latestTurnId: string | null }>`
+        SELECT latest_turn_id AS "latestTurnId"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(pointerRows, [{ latestTurnId: turnId }]);
     }),
   );
 

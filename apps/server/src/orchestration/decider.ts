@@ -1,5 +1,6 @@
 import {
   buildFollowupActivity,
+  buildHandoffActivity,
   EventId,
   type OrchestrationCommand,
   type OrchestrationEvent,
@@ -755,6 +756,44 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           activity: buildFollowupActivity({
             id: activityId,
             followup: command.followup,
+            createdAt: command.createdAt,
+          }),
+        },
+      };
+    }
+
+    case "thread.handoff.record": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      // The counterpart is validated too, not just the thread being written to.
+      // A handoff's entire purpose is to render a link the user will click, so
+      // recording one that points at a thread that never existed (or has since
+      // been deleted) would bake a dead link into the transcript permanently.
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.handoff.counterpartThreadId,
+      });
+      // Like follow-ups, handoffs ride the activity log — one activity per side
+      // of the link, latest per direction wins.
+      const crypto = yield* Crypto.Crypto;
+      const activityId = EventId.make(yield* crypto.randomUUIDv4);
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.activity-appended",
+        payload: {
+          threadId: command.threadId,
+          activity: buildHandoffActivity({
+            id: activityId,
+            handoff: command.handoff,
             createdAt: command.createdAt,
           }),
         },

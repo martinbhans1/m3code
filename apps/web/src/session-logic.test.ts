@@ -11,6 +11,7 @@ import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   deriveFollowups,
+  deriveHandoffs,
   derivePendingFollowups,
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -1762,5 +1763,111 @@ describe("deriveFollowups", () => {
     expect(pending).toHaveLength(1);
     expect(pending[0]?.title).toBe("Extract shared helper");
     expect(pending[0]?.detail).toBeNull();
+  });
+});
+
+describe("deriveHandoffs", () => {
+  function handoffActivity(input: {
+    id: string;
+    createdAt: string;
+    sequence: number;
+    handoff: Record<string, unknown>;
+  }): OrchestrationThreadActivity {
+    return makeActivity({
+      id: input.id,
+      createdAt: input.createdAt,
+      kind: "thread.handoff",
+      summary: "Handoff",
+      tone: "info",
+      payload: { handoff: input.handoff },
+      sequence: input.sequence,
+    });
+  }
+
+  it("keeps only the latest handoff per direction", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      handoffActivity({
+        id: "a1",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        sequence: 1,
+        handoff: {
+          direction: "continuedIn",
+          counterpartThreadId: "thread-old",
+          counterpartTitle: "First spin-off",
+          followupId: "f1",
+          createdAt: "2026-02-23T00:00:01.000Z",
+        },
+      }),
+      handoffActivity({
+        id: "a2",
+        createdAt: "2026-02-23T00:00:05.000Z",
+        sequence: 2,
+        handoff: {
+          direction: "continuedIn",
+          counterpartThreadId: "thread-new",
+          counterpartTitle: "Second spin-off",
+          followupId: "f2",
+          createdAt: "2026-02-23T00:00:05.000Z",
+        },
+      }),
+    ];
+
+    const handoffs = deriveHandoffs(activities);
+    expect(handoffs).toHaveLength(1);
+    expect(handoffs[0]?.counterpartThreadId).toBe("thread-new");
+    expect(handoffs[0]?.counterpartTitle).toBe("Second spin-off");
+  });
+
+  it("tracks both directions independently and ignores other activities", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({ id: "tool", kind: "tool.started", summary: "Tool" }),
+      handoffActivity({
+        id: "a1",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        sequence: 1,
+        handoff: {
+          direction: "spunOffFrom",
+          counterpartThreadId: "thread-parent",
+          counterpartTitle: "Where this came from",
+          followupId: null,
+          createdAt: "2026-02-23T00:00:01.000Z",
+        },
+      }),
+      handoffActivity({
+        id: "a2",
+        createdAt: "2026-02-23T00:00:09.000Z",
+        sequence: 2,
+        handoff: {
+          direction: "continuedIn",
+          counterpartThreadId: "thread-child",
+          counterpartTitle: "Where this went",
+          followupId: "f9",
+          createdAt: "2026-02-23T00:00:09.000Z",
+        },
+      }),
+    ];
+
+    const handoffs = deriveHandoffs(activities);
+    expect(handoffs.map((handoff) => handoff.direction)).toEqual(["spunOffFrom", "continuedIn"]);
+    expect(handoffs[1]?.followupId).toBe("f9");
+  });
+
+  it("skips malformed handoff payloads", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      handoffActivity({
+        id: "a1",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        sequence: 1,
+        handoff: { direction: "continuedIn", counterpartTitle: "No thread id" },
+      }),
+      handoffActivity({
+        id: "a2",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        sequence: 2,
+        handoff: { direction: "continuedIn", counterpartThreadId: "thread-x" },
+      }),
+    ];
+
+    expect(deriveHandoffs(activities)).toHaveLength(0);
   });
 });

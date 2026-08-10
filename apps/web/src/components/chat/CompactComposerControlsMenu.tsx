@@ -1,4 +1,9 @@
-import { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
+import {
+  ProviderInteractionMode,
+  RuntimeMode,
+  type OrchestratorAccessOverride,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { memo, type ReactNode } from "react";
 import { EllipsisIcon, ListTodoIcon } from "lucide-react";
 import { Button } from "../ui/button";
@@ -11,6 +16,66 @@ import {
   MenuSeparator as MenuDivider,
   MenuTrigger,
 } from "../ui/menu";
+import {
+  ORCHESTRATOR_ACCESS_INHERIT,
+  ORCHESTRATOR_ACCESS_LABELS,
+  ORCHESTRATOR_ACCESS_ORDER,
+  ORCHESTRATOR_OVERRIDE_LABELS,
+  ORCHESTRATOR_OVERRIDE_ORDER,
+  type OrchestratorAccessSelection,
+} from "../../lib/orchestratorAccess";
+import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { useOrchestratorAccessState } from "./ComposerOrchestratorAccessControl";
+
+function OrchestratorAccessMenuSection(props: { threadId: ThreadId }) {
+  const { override, inheritLabel, setSelection } = useOrchestratorAccessState(props.threadId);
+  return (
+    <>
+      <MenuDivider />
+      <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Orchestrator</div>
+      <MenuRadioGroup
+        value={override ?? ORCHESTRATOR_ACCESS_INHERIT}
+        onValueChange={(value) => {
+          if (!value) return;
+          setSelection(value as OrchestratorAccessSelection);
+        }}
+      >
+        <MenuRadioItem value={ORCHESTRATOR_ACCESS_INHERIT}>{inheritLabel}</MenuRadioItem>
+        {ORCHESTRATOR_ACCESS_ORDER.map((access) => (
+          <MenuRadioItem key={access} value={access}>
+            {ORCHESTRATOR_ACCESS_LABELS[access]}
+          </MenuRadioItem>
+        ))}
+      </MenuRadioGroup>
+    </>
+  );
+}
+
+function OrchestratorVisibilityMenuSection() {
+  const accessOverride = useSettings((settings) => settings.orchestratorAccessOverride);
+  const { updateSettings } = useUpdateSettings();
+  return (
+    <>
+      <MenuDivider />
+      <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">What you can see</div>
+      <MenuRadioGroup
+        value={accessOverride}
+        onValueChange={(value) => {
+          if (!value) return;
+          updateSettings({
+            orchestratorAccessOverride: value as OrchestratorAccessOverride,
+          });
+        }}
+      >
+        {ORCHESTRATOR_OVERRIDE_ORDER.map((override) => (
+          <MenuRadioItem key={override} value={override}>
+            {ORCHESTRATOR_OVERRIDE_LABELS[override]}
+          </MenuRadioItem>
+        ))}
+      </MenuRadioGroup>
+    </>
+  );
+}
 
 export const CompactComposerControlsMenu = memo(function CompactComposerControlsMenu(props: {
   activePlan: boolean;
@@ -20,6 +85,10 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   runtimeMode: RuntimeMode;
   showInteractionModeToggle: boolean;
   traitsMenuContent?: ReactNode;
+  /** Null when the orchestrator is off, or this is the orchestrator's own thread. */
+  orchestratorAccessThreadId: ThreadId | null;
+  /** True in the orchestrator's own conversation, where the global default is the useful knob. */
+  isOrchestratorThread: boolean;
   onToggleInteractionMode: () => void;
   onTogglePlanSidebar: () => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
@@ -73,6 +142,10 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
           <MenuRadioItem value="auto-accept-edits">Auto-accept edits</MenuRadioItem>
           <MenuRadioItem value="full-access">Full access</MenuRadioItem>
         </MenuRadioGroup>
+        {props.orchestratorAccessThreadId ? (
+          <OrchestratorAccessMenuSection threadId={props.orchestratorAccessThreadId} />
+        ) : null}
+        {props.isOrchestratorThread ? <OrchestratorVisibilityMenuSection /> : null}
         {props.activePlan ? (
           <>
             <MenuDivider />

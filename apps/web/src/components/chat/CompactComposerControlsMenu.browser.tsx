@@ -134,6 +134,8 @@ async function mountMenu(props?: { modelSelection?: ModelSelection; prompt?: str
   const screen = await render(
     <CompactComposerControlsMenu
       activePlan={false}
+      isOrchestratorThread={false}
+      orchestratorAccessThreadId={null}
       interactionMode="default"
       planSidebarLabel="Plan"
       planSidebarOpen={false}
@@ -296,6 +298,8 @@ describe("CompactComposerControlsMenu", () => {
     const screen = await render(
       <CompactComposerControlsMenu
         activePlan={false}
+        isOrchestratorThread={false}
+        orchestratorAccessThreadId={null}
         interactionMode="default"
         planSidebarLabel="Plan"
         planSidebarOpen={false}
@@ -318,6 +322,83 @@ describe("CompactComposerControlsMenu", () => {
       expect(text).toContain("Access");
       expect(text).toContain("Supervised");
       expect(text).toContain("Full access");
+      // No thread id means the orchestrator is off, or this is its own thread.
+      expect(text).not.toContain("Orchestrator");
+    });
+
+    await screen.unmount();
+    host.remove();
+  });
+
+  it("offers orchestrator access for a shareable conversation", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <CompactComposerControlsMenu
+        activePlan={false}
+        isOrchestratorThread={false}
+        orchestratorAccessThreadId={ThreadId.make("thread-compact-menu")}
+        interactionMode="default"
+        planSidebarLabel="Plan"
+        planSidebarOpen={false}
+        runtimeMode="approval-required"
+        showInteractionModeToggle={false}
+        onToggleInteractionMode={vi.fn()}
+        onTogglePlanSidebar={vi.fn()}
+        onRuntimeModeChange={vi.fn()}
+      />,
+      { container: host },
+    );
+
+    await page.getByLabelText("More composer controls").click();
+
+    await vi.waitFor(() => {
+      const text = document.body.textContent ?? "";
+      expect(text).toContain("Orchestrator");
+      // Following the settings default is its own choice, distinct from the
+      // explicit "Not shared" that overrides an open default.
+      expect(text).toContain("Follow default (not shared)");
+      expect(text).toContain("Not shared");
+      expect(text).toContain("Watch and control");
+    });
+
+    await screen.unmount();
+    host.remove();
+  });
+
+  it("offers the blanket access override inside the orchestrator's own conversation", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <CompactComposerControlsMenu
+        activePlan={false}
+        isOrchestratorThread
+        // Its own conversation is never shareable with itself, so the
+        // per-conversation section is absent and this one takes its place.
+        orchestratorAccessThreadId={null}
+        interactionMode="default"
+        planSidebarLabel="Plan"
+        planSidebarOpen={false}
+        runtimeMode="approval-required"
+        showInteractionModeToggle={false}
+        onToggleInteractionMode={vi.fn()}
+        onTogglePlanSidebar={vi.fn()}
+        onRuntimeModeChange={vi.fn()}
+      />,
+      { container: host },
+    );
+
+    await page.getByLabelText("More composer controls").click();
+
+    await vi.waitFor(() => {
+      const text = document.body.textContent ?? "";
+      expect(text).toContain("What you can see");
+      expect(text).toContain("Per conversation");
+      expect(text).toContain("Shared, read-only");
+      // The two that reach conversations the user never shared — the reason
+      // this control exists at all.
+      expect(text).toContain("Read everything");
+      expect(text).toContain("Read and steer everything");
     });
 
     await screen.unmount();

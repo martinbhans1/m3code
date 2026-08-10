@@ -14,6 +14,8 @@ import type {
   OrchestrationReadModel,
   OrchestrationShellSnapshot,
   OrchestrationThread,
+  OrchestrationThreadActivity,
+  OrchestrationMessage,
   OrchestrationThreadShell,
   ProjectId,
   ThreadId,
@@ -157,6 +159,32 @@ export interface ProjectionSnapshotQueryShape {
   readonly getThreadDetailById: (
     threadId: ThreadId,
   ) => Effect.Effect<Option.Option<OrchestrationThread>, ProjectionRepositoryError>;
+
+  /**
+   * Read the most recent `limit` messages of one thread, oldest first.
+   *
+   * `getThreadDetailById` returns every message a conversation ever had, which
+   * a caller showing only the tail then throws away. Long conversations make
+   * that the dominant cost of reading one.
+   */
+  readonly getThreadMessagesTail: (
+    threadId: ThreadId,
+    limit: number,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationMessage>, ProjectionRepositoryError>;
+
+  /**
+   * Read only the activities of the given kinds for one thread.
+   *
+   * `getThreadDetailById` loads a thread's whole activity log, which is sized
+   * for rendering a timeline — every tool call, every step, with payloads. A
+   * caller that derives state from two or three kinds pays megabytes to read
+   * kilobytes: across this projection the orchestrator's kinds are 0.1% of the
+   * stored payload bytes. Same rows, same order, filtered in SQL.
+   */
+  readonly listThreadActivitiesByKinds: (
+    threadId: ThreadId,
+    kinds: ReadonlyArray<string>,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
 }
 
 /**

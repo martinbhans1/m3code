@@ -316,6 +316,18 @@ export async function submitServerAuthCredential(credential: string): Promise<vo
   stripPairingTokenFromUrl();
 }
 
+export async function submitServerPasswordCredential(password: string): Promise<void> {
+  const trimmedPassword = password.trim();
+  if (!trimmedPassword) {
+    throw new Error("Enter your password to continue.");
+  }
+
+  resolvedAuthenticatedGateState = null;
+  await exchangePasswordCredential(trimmedPassword);
+  bootstrapPromise = null;
+  stripPairingTokenFromUrl();
+}
+
 export async function createServerPairingCredential(input?: {
   readonly label?: string;
   readonly scopes?: ReadonlyArray<AuthEnvironmentScope>;

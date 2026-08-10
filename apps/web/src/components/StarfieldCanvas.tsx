@@ -7,29 +7,76 @@ import { useMediaQuery } from "../hooks/useMediaQuery";
  * Canvas-2D starfield for the "cosmos" ambient environment.
  *
  * Replaces the flat CSS radial-gradient dots (see .app-ambient-shell::after in
- * index.css) with stars that actually read as stars: a soft glow/halo around a
- * bright core, per-star twinkle at independent phases, subtle color temperature
- * (blue-white / white / warm), depth parallax, a few bright "hero" stars with
- * diffraction spikes, and the occasional shooting star.
+ * index.css) with stars that actually read as stars: a tight bright core with
+ * only a hint of halo, subtle color temperature (blue-white / white / warm), a
+ * wide spread of magnitudes, a few brighter "hero" stars with faint diffraction
+ * spikes, and the occasional shooting star.
  *
- * Deliberately NOT WebGL/three.js — that would add a big bundle + a persistent
- * GPU context for a background flourish in an app that stays open all day. A
- * couple hundred pre-rendered sprites drawn with additive blending on a 2D
- * context, throttled to ~30fps and paused when the window is hidden, is a tiny
- * fraction of that cost.
+ * Stars do NOT twinkle. Naked-eye scintillation is an atmospheric artifact, and
+ * a per-star brightness pulse reads as "breathing fairy lights" that pulls focus
+ * from the app. The field is fixed.
+ *
+ * The whole field drifts, though, and drifts *with* the ambient gradient behind
+ * it — same easing, and a period locked to a multiple of `ambient-drift` so the
+ * two read as one slowly-evolving scene rather than two effects running side by
+ * side. See `app-starfield-drift` in index.css.
+ *
+ * Because the stars are fixed relative to each other, there is no render loop
+ * at rest: they are painted once, the drift is a CSS transform (compositor
+ * only, no main thread), and requestAnimationFrame runs solely for the ~1s a
+ * shooting star is in flight. Idle cost is a single pending timer. Measured on
+ * a 2560x1440 viewport, an always-on 30fps loop cost ~10% of a core
+ * continuously — the clear-and-repaint alone was ~4% before a single star was
+ * drawn — against ~0.07% for this.
+ *
+ * Deliberately NOT WebGL/three.js: the whole effect is a few hundred static
+ * points, which a persistent GPU context and a 3D scene graph would not render
+ * any better, only more expensively for an app that stays open all day.
  *
  * While mounted it sets `data-starfield="canvas"` on <html> so the CSS starfield
  * hides (index.css) and the two don't stack. Gated to cosmos only; under
- * prefers-reduced-motion it paints a single static frame instead of animating.
+ * prefers-reduced-motion the field is painted without the drift animation and
+ * no shooting stars are scheduled.
  */
 
 const TARGET_FPS = 30;
 const FRAME_INTERVAL_MS = 1000 / TARGET_FPS;
-// Roughly one star per this many CSS px² of viewport, clamped to [MIN, MAX].
-const STAR_AREA_PER_STAR = 9000;
-const MIN_STARS = 60;
-const MAX_STARS = 220;
-const HERO_FRACTION = 0.05;
+// Roughly one star per this many CSS px². Denser than it sounds: without a glow
+// each star is only a couple of px, so a sparse field reads as empty.
+const STAR_AREA_PER_STAR = 6500;
+const HERO_FRACTION = 0.03;
+/**
+ * Stars live at fixed positions in a virtual field measured in CSS px, anchored
+ * to the top-left of the viewport, and are culled to whatever is on screen.
+ * They are NOT laid out in normalized viewport coordinates: that made every star
+ * shift when the window changed size, so nudging a window edge by a pixel visibly
+ * rearranged the whole sky. Resizing now reveals or hides stars at the edges and
+ * leaves every other star exactly where it was.
+ *
+ * The field is sized once from the display, with headroom, so it stays bigger
+ * than any window the app is likely to occupy. `growField` handles the case
+ * where it doesn't — by adding stars to the new region only, never disturbing
+ * the existing ones.
+ */
+const FIELD_HEADROOM = 512;
+const MIN_FIELD_WIDTH = 2560;
+const MIN_FIELD_HEIGHT = 1440;
+/** Widest a sprite can be drawn, used to cull stars just off screen. */
+const MAX_SPRITE_SIZE = 48;
+/**
+ * The canvas is oversized on every side so the drift transform never pulls a
+ * bare edge into view. The keyframes translate in percentages (of the element's
+ * own box), so the padding is a percentage of the viewport too — it has to stay
+ * comfortably above the largest translation in `app-starfield-drift`
+ * (index.css), currently 2.1%. The scale component only ever grows the element,
+ * so it can't expose an edge.
+ */
+const DRIFT_PAD_RATIO = 0.035;
+const MIN_DRIFT_PAD = 40;
+
+function driftPadFor(width: number, height: number): number {
+  return Math.max(MIN_DRIFT_PAD, Math.round(Math.max(width, height) * DRIFT_PAD_RATIO));
+}
 
 type StarColor = { r: number; g: number; b: number };
 
@@ -52,16 +99,14 @@ function pickStarColor(): StarColor {
 }
 
 interface Star {
-  /** Normalized position in [0, 1] so it survives resizes. */
+  /** Absolute CSS px within the virtual field, whose origin is the viewport's
+   * top-left corner. Fixed for the lifetime of the component. */
   x: number;
   y: number;
   /** Core radius in CSS px. */
   radius: number;
-  baseAlpha: number;
-  twinklePhase: number;
-  twinkleSpeed: number;
-  /** Parallax depth in [0, 1]; nearer (larger) stars drift more. */
-  depth: number;
+  /** Fixed brightness — stars do not pulse, see the module comment. */
+  alpha: number;
   color: StarColor;
   hero: boolean;
 }
@@ -76,7 +121,15 @@ interface ShootingStar {
   length: number;
 }
 
-/** Pre-render a soft round star sprite so the render loop only does drawImage. */
+/**
+ * Pre-render a star sprite so painting the field is just drawImage.
+ *
+ * The falloff is deliberately brutal: alpha is down to ~0.13 by 2x the core
+ * radius and hits exactly zero by 4x, so the sprite has no long tail at all.
+ * That last part matters more than it looks — the field is drawn with additive
+ * blending, so with several hundred stars even a 0.015 tail accumulates into a
+ * faint overall fog that reads as "glow".
+ */
 function createStarSprite(color: StarColor, withSpikes: boolean): HTMLCanvasElement {
   const size = 64;
   const half = size / 2;
@@ -89,52 +142,90 @@ function createStarSprite(color: StarColor, withSpikes: boolean): HTMLCanvasElem
   const { r, g, b } = color;
   const glow = ctx.createRadialGradient(half, half, 0, half, half, half);
   glow.addColorStop(0, `rgba(${r}, ${g}, ${b}, 1)`);
-  glow.addColorStop(0.12, `rgba(${r}, ${g}, ${b}, 0.9)`);
-  glow.addColorStop(0.35, `rgba(${r}, ${g}, ${b}, 0.28)`);
-  glow.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+  glow.addColorStop(0.11, `rgba(${r}, ${g}, ${b}, 0.98)`);
+  glow.addColorStop(0.16, `rgba(${r}, ${g}, ${b}, 0.5)`);
+  glow.addColorStop(0.22, `rgba(${r}, ${g}, ${b}, 0.13)`);
+  glow.addColorStop(0.32, `rgba(${r}, ${g}, ${b}, 0.025)`);
+  glow.addColorStop(0.45, `rgba(${r}, ${g}, ${b}, 0)`);
   ctx.fillStyle = glow;
   ctx.fillRect(0, 0, size, size);
 
   if (withSpikes) {
-    // Diffraction spikes: a thin, fading cross through the core.
-    const spike = ctx.createLinearGradient(0, half, size, half);
-    spike.addColorStop(0, `rgba(${r}, ${g}, ${b}, 0)`);
-    spike.addColorStop(0.5, `rgba(${r}, ${g}, ${b}, 0.5)`);
-    spike.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
-    ctx.fillStyle = spike;
-    ctx.fillRect(0, half - 0.75, size, 1.5);
-    const spikeV = ctx.createLinearGradient(half, 0, half, size);
-    spikeV.addColorStop(0, `rgba(${r}, ${g}, ${b}, 0)`);
-    spikeV.addColorStop(0.5, `rgba(${r}, ${g}, ${b}, 0.5)`);
-    spikeV.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
-    ctx.fillStyle = spikeV;
-    ctx.fillRect(half - 0.75, 0, 1.5, size);
+    // Diffraction spikes on the few brightest stars only — a hairline cross,
+    // short enough to read as a point of light rather than a starburst.
+    const inset = size * 0.3;
+    const span = size - inset * 2;
+    const stops = (grad: CanvasGradient) => {
+      grad.addColorStop(0, `rgba(${r}, ${g}, ${b}, 0)`);
+      grad.addColorStop(0.5, `rgba(${r}, ${g}, ${b}, 0.15)`);
+      grad.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+      return grad;
+    };
+    ctx.fillStyle = stops(ctx.createLinearGradient(inset, half, inset + span, half));
+    ctx.fillRect(inset, half - 0.5, span, 1);
+    ctx.fillStyle = stops(ctx.createLinearGradient(half, inset, half, inset + span));
+    ctx.fillRect(half - 0.5, inset, 1, span);
   }
 
   return sprite;
 }
 
-function createStars(width: number, height: number): Star[] {
-  const target = Math.round((width * height) / STAR_AREA_PER_STAR);
-  const count = Math.max(MIN_STARS, Math.min(MAX_STARS, target));
+function createStar(x: number, y: number): Star {
+  const hero = Math.random() < HERO_FRACTION;
+  return {
+    x,
+    y,
+    radius: hero ? 1.2 + Math.random() * 0.9 : 0.4 + Math.random() * 0.8,
+    // Magnitudes spread wide so the field has depth rather than reading as a
+    // uniform sheet of dots. Kept bright deliberately: the complaint about the
+    // earlier field was the halo, not the luminance, and once the halo is gone a
+    // dim core just reads as a smudge. Crisp and bright, not soft.
+    alpha: hero ? 0.75 + Math.random() * 0.25 : 0.22 + Math.random() * 0.48,
+    color: pickStarColor(),
+    hero,
+  };
+}
+
+interface Field {
+  width: number;
+  height: number;
+  stars: Star[];
+}
+
+function createField(width: number, height: number): Field {
+  const count = Math.round((width * height) / STAR_AREA_PER_STAR);
   const stars: Star[] = [];
   for (let i = 0; i < count; i += 1) {
-    const hero = Math.random() < HERO_FRACTION;
-    const depth = Math.random();
-    stars.push({
-      x: Math.random(),
-      y: Math.random(),
-      radius: hero ? 1.6 + Math.random() * 1.4 : 0.5 + Math.random() * 1.1,
-      baseAlpha: hero ? 0.85 + Math.random() * 0.15 : 0.3 + Math.random() * 0.5,
-      twinklePhase: Math.random() * Math.PI * 2,
-      // Radians/sec; hero stars twinkle a touch slower and more deliberately.
-      twinkleSpeed: (hero ? 0.5 : 0.8) + Math.random() * 1.4,
-      depth,
-      color: pickStarColor(),
-      hero,
-    });
+    stars.push(createStar(Math.random() * width, Math.random() * height));
   }
-  return stars;
+  return { width, height, stars };
+}
+
+/**
+ * Extend an existing field to cover a larger area, keeping every existing star
+ * exactly where it is and populating only the newly exposed L-shaped region at
+ * the same density. Rare — it takes a window bigger than the display the field
+ * was sized from.
+ */
+function growField(field: Field, width: number, height: number): Field {
+  const nextWidth = Math.max(field.width, width);
+  const nextHeight = Math.max(field.height, height);
+  if (nextWidth === field.width && nextHeight === field.height) return field;
+
+  const addedArea = nextWidth * nextHeight - field.width * field.height;
+  const toAdd = Math.round(addedArea / STAR_AREA_PER_STAR);
+  const stars = field.stars.slice();
+  for (let i = 0; i < toAdd; i += 1) {
+    // Rejection-sample so the new stars land only in the added region.
+    let x = 0;
+    let y = 0;
+    do {
+      x = Math.random() * nextWidth;
+      y = Math.random() * nextHeight;
+    } while (x < field.width && y < field.height);
+    stars.push(createStar(x, y));
+  }
+  return { width: nextWidth, height: nextHeight, stars };
 }
 
 export function StarfieldCanvas() {
@@ -160,14 +251,20 @@ export function StarfieldCanvas() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    let width = window.innerWidth;
-    let height = window.innerHeight;
-    let dpr = Math.min(window.devicePixelRatio || 1, 2);
-    let stars = createStars(width, height);
-    let shootingStar: ShootingStar | null = null;
-    let nextShootingStarAt = 6000 + Math.random() * 12000;
+    // Canvas dimensions include the drift padding on all four sides;
+    // `width`/`height` are the padded CSS size. Field coordinates are viewport
+    // coordinates, so canvas x = pad + star.x.
+    let width = 0;
+    let height = 0;
+    let pad = MIN_DRIFT_PAD;
+    let dpr = 1;
+    // Sized from the display rather than the window, so ordinary resizing never
+    // has to touch it and the stars stay put.
+    let field = createField(
+      Math.max(window.screen?.width ?? 0, window.innerWidth, MIN_FIELD_WIDTH) + FIELD_HEADROOM,
+      Math.max(window.screen?.height ?? 0, window.innerHeight, MIN_FIELD_HEIGHT) + FIELD_HEADROOM,
+    );
 
-    // One sprite per color, plus a spiked variant for hero stars.
     const spriteCache = new Map<string, HTMLCanvasElement>();
     const spriteFor = (color: StarColor, spikes: boolean): HTMLCanvasElement => {
       const key = `${color.r},${color.g},${color.b},${spikes ? 1 : 0}`;
@@ -178,40 +275,78 @@ export function StarfieldCanvas() {
       }
       return sprite;
     };
-    // The sprite's bright core occupies ~24% of its width; scale so a star's
-    // `radius` maps to that core, letting the surrounding glow spill outward.
-    const SPRITE_CORE_RATIO = 0.24;
+    // The sprite's bright core occupies ~12% of its width; scale so a star's
+    // `radius` maps to that core. The rest of the sprite box is the short
+    // falloff, which is fully transparent well before the edge.
+    const SPRITE_CORE_RATIO = 0.12;
+
+    const paintField = () => {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      ctx.globalCompositeOperation = "lighter";
+      // Cull to the padded canvas: the field is deliberately larger than the
+      // window, so most of it is off screen at any one time.
+      const minX = -pad - MAX_SPRITE_SIZE;
+      const minY = minX;
+      const maxX = width - pad + MAX_SPRITE_SIZE;
+      const maxY = height - pad + MAX_SPRITE_SIZE;
+      for (const star of field.stars) {
+        if (star.x < minX || star.x > maxX || star.y < minY || star.y > maxY) continue;
+        const sprite = spriteFor(star.color, star.hero);
+        const spriteSize = (star.radius / SPRITE_CORE_RATIO) * 2;
+        const px = pad + star.x;
+        const py = pad + star.y;
+        ctx.globalAlpha = star.alpha;
+        ctx.drawImage(sprite, px - spriteSize / 2, py - spriteSize / 2, spriteSize, spriteSize);
+      }
+      ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = "source-over";
+    };
 
     const resize = () => {
-      width = window.innerWidth;
-      height = window.innerHeight;
+      pad = driftPadFor(window.innerWidth, window.innerHeight);
+      width = window.innerWidth + pad * 2;
+      height = window.innerHeight + pad * 2;
       dpr = Math.min(window.devicePixelRatio || 1, 2);
       canvas.width = Math.floor(width * dpr);
       canvas.height = Math.floor(height * dpr);
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
-      stars = createStars(width, height);
+      canvas.style.top = `${-pad}px`;
+      canvas.style.left = `${-pad}px`;
+      field = growField(field, window.innerWidth, window.innerHeight);
+      paintField();
     };
 
-    const drawStar = (star: Star, alpha: number, driftX: number, driftY: number) => {
-      const sprite = spriteFor(star.color, star.hero);
-      const spriteSize = (star.radius / SPRITE_CORE_RATIO) * 2;
-      const px = star.x * width + driftX * star.depth;
-      const py = star.y * height + driftY * star.depth;
-      ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
-      ctx.drawImage(sprite, px - spriteSize / 2, py - spriteSize / 2, spriteSize, spriteSize);
-    };
+    resize();
+    window.addEventListener("resize", resize);
+
+    if (reducedMotion) {
+      return () => {
+        window.removeEventListener("resize", resize);
+      };
+    }
+
+    // ---- Shooting stars -----------------------------------------------------
+    // The only thing that animates. rAF spins up when one launches and stops
+    // the moment it burns out, so the field costs nothing the rest of the time.
+
+    let shootingStar: ShootingStar | null = null;
+    let rafId = 0;
+    let timerId: ReturnType<typeof setTimeout> | undefined;
+    let lastFrameMs = 0;
+    let accumulator = 0;
 
     const drawShootingStar = (s: ShootingStar) => {
       const progress = 1 - s.life / s.maxLife;
       // Fade in then out across its life so it doesn't pop.
       const fade = Math.sin(progress * Math.PI);
-      const tailX = s.x - (s.vx / Math.hypot(s.vx, s.vy)) * s.length;
-      const tailY = s.y - (s.vy / Math.hypot(s.vx, s.vy)) * s.length;
+      const speed = Math.hypot(s.vx, s.vy) || 1;
+      const tailX = s.x - (s.vx / speed) * s.length;
+      const tailY = s.y - (s.vy / speed) * s.length;
       const gradient = ctx.createLinearGradient(s.x, s.y, tailX, tailY);
       gradient.addColorStop(0, `rgba(255, 255, 255, ${0.9 * fade})`);
       gradient.addColorStop(1, "rgba(255, 255, 255, 0)");
-      ctx.globalAlpha = 1;
       ctx.strokeStyle = gradient;
       ctx.lineWidth = 1.6;
       ctx.beginPath();
@@ -220,109 +355,83 @@ export function StarfieldCanvas() {
       ctx.stroke();
     };
 
-    const render = (timeMs: number, deltaMs: number, animate: boolean) => {
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, width, height);
-      ctx.globalCompositeOperation = "lighter";
-
-      const t = timeMs / 1000;
-      // Very slow field-wide parallax sway (px), modulated per-star by depth.
-      const driftX = animate ? Math.sin(t * 0.03) * 12 : 0;
-      const driftY = animate ? Math.cos(t * 0.024) * 8 : 0;
-
-      for (const star of stars) {
-        const twinkle = animate
-          ? 0.65 + 0.35 * Math.sin(t * star.twinkleSpeed + star.twinklePhase)
-          : 1;
-        drawStar(star, star.baseAlpha * twinkle, driftX, driftY);
-      }
-
-      if (animate) {
-        if (shootingStar) {
-          shootingStar.x += shootingStar.vx * (deltaMs / 1000);
-          shootingStar.y += shootingStar.vy * (deltaMs / 1000);
-          shootingStar.life -= deltaMs;
-          if (shootingStar.life <= 0) {
-            shootingStar = null;
-          } else {
-            drawShootingStar(shootingStar);
-          }
-        } else {
-          nextShootingStarAt -= deltaMs;
-          if (nextShootingStarAt <= 0) {
-            const fromLeft = Math.random() < 0.5;
-            const speed = 380 + Math.random() * 220;
-            const angle = (fromLeft ? 0.35 : Math.PI - 0.35) + (Math.random() - 0.5) * 0.3;
-            shootingStar = {
-              x: fromLeft ? -40 : width + 40,
-              y: Math.random() * height * 0.5,
-              vx: Math.cos(angle) * speed,
-              vy: Math.sin(angle) * speed,
-              life: 900,
-              maxLife: 900,
-              length: 120 + Math.random() * 80,
-            };
-            nextShootingStarAt = 9000 + Math.random() * 16000;
-          }
-        }
-      }
-
-      ctx.globalAlpha = 1;
-      ctx.globalCompositeOperation = "source-over";
+    const scheduleShootingStar = (delay: number) => {
+      clearTimeout(timerId);
+      timerId = setTimeout(launchShootingStar, delay);
     };
 
-    resize();
-
-    if (reducedMotion) {
-      const handleStaticResize = () => {
-        resize();
-        render(0, 0, false);
-      };
-      render(0, 0, false);
-      window.addEventListener("resize", handleStaticResize);
-      return () => {
-        window.removeEventListener("resize", handleStaticResize);
-      };
-    }
-
-    let rafId = 0;
-    let lastFrameMs = performance.now();
-    let accumulator = 0;
-
-    const loop = (now: number) => {
-      rafId = requestAnimationFrame(loop);
-      const delta = now - lastFrameMs;
+    const step = (now: number) => {
+      const s = shootingStar;
+      if (!s) return;
+      rafId = requestAnimationFrame(step);
+      accumulator += now - lastFrameMs;
       lastFrameMs = now;
-      accumulator += delta;
       if (accumulator < FRAME_INTERVAL_MS) return;
-      // Clamp so a long stall (backgrounded tab) doesn't teleport motion.
-      const frameDelta = Math.min(accumulator, 100);
+      // Clamp so a long stall doesn't teleport the meteor across the screen.
+      const delta = Math.min(accumulator, 100);
       accumulator = 0;
-      render(now, frameDelta, true);
+
+      s.x += s.vx * (delta / 1000);
+      s.y += s.vy * (delta / 1000);
+      s.life -= delta;
+
+      // Repainting the whole field each frame is the simple, correct way to
+      // erase the previous tail; it only happens during the ~1s of flight.
+      paintField();
+      if (s.life > 0) {
+        drawShootingStar(s);
+        return;
+      }
+      shootingStar = null;
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+      scheduleShootingStar(7000 + Math.random() * 13000);
     };
+
+    function launchShootingStar() {
+      timerId = undefined;
+      if (document.hidden || shootingStar) return;
+      const viewportWidth = width - pad * 2;
+      const viewportHeight = height - pad * 2;
+      const fromLeft = Math.random() < 0.5;
+      const speed = 380 + Math.random() * 220;
+      const angle = (fromLeft ? 0.35 : Math.PI - 0.35) + (Math.random() - 0.5) * 0.3;
+      shootingStar = {
+        x: pad + (fromLeft ? -40 : viewportWidth + 40),
+        y: pad + Math.random() * viewportHeight * 0.65,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 900,
+        maxLife: 900,
+        length: 120 + Math.random() * 80,
+      };
+      lastFrameMs = performance.now();
+      accumulator = FRAME_INTERVAL_MS;
+      rafId = requestAnimationFrame(step);
+    }
 
     const handleVisibility = () => {
       if (document.hidden) {
         cancelAnimationFrame(rafId);
         rafId = 0;
-      } else if (rafId === 0) {
-        lastFrameMs = performance.now();
-        accumulator = FRAME_INTERVAL_MS;
-        rafId = requestAnimationFrame(loop);
+        clearTimeout(timerId);
+        timerId = undefined;
+        if (shootingStar) {
+          shootingStar = null;
+          paintField();
+        }
+      } else if (rafId === 0 && timerId === undefined) {
+        scheduleShootingStar(4000 + Math.random() * 10000);
       }
     };
 
-    const handleResize = () => resize();
-
-    window.addEventListener("resize", handleResize);
     document.addEventListener("visibilitychange", handleVisibility);
-    if (!document.hidden) {
-      rafId = requestAnimationFrame(loop);
-    }
+    if (!document.hidden) scheduleShootingStar(6000 + Math.random() * 12000);
 
     return () => {
       cancelAnimationFrame(rafId);
-      window.removeEventListener("resize", handleResize);
+      clearTimeout(timerId);
+      window.removeEventListener("resize", resize);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, [active, reducedMotion]);
@@ -333,9 +442,12 @@ export function StarfieldCanvas() {
     <canvas
       ref={canvasRef}
       aria-hidden="true"
+      className="app-starfield"
+      data-drift={reducedMotion ? "off" : "on"}
       style={{
         position: "fixed",
-        inset: 0,
+        // top/left are set alongside the canvas size in the effect, since the
+        // drift padding scales with the viewport.
         zIndex: 0,
         pointerEvents: "none",
         opacity: "var(--environment-stars-opacity, 0)",

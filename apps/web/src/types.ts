@@ -159,7 +159,10 @@ export interface SidebarThreadSummary {
   latestUserMessageAt: string | null;
   hasPendingApprovals: boolean;
   hasPendingUserInput: boolean;
+  hasPendingFollowups: boolean;
   hasActionableProposedPlan: boolean;
+  /** Set when this thread's work was deliberately continued in another one. */
+  handoffThreadId: ThreadId | null;
 }
 
 export interface ThreadSession {

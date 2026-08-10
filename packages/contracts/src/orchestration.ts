@@ -26,6 +26,7 @@ export const ORCHESTRATION_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
+  searchThreads: "orchestration.searchThreads",
   replayEvents: "orchestration.replayEvents",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   subscribeShell: "orchestration.subscribeShell",
@@ -338,6 +339,50 @@ export function buildFollowupActivity(input: {
   };
 }
 
+// A handoff records that one conversation was deliberately continued in
+// another. It is written in both directions — "continuedIn" on the thread being
+// left behind, "spunOffFrom" on the thread picking the work up — so each side
+// can render a link to the other without loading the other thread.
+export const ThreadHandoffDirection = Schema.Literals(["continuedIn", "spunOffFrom"]);
+export type ThreadHandoffDirection = typeof ThreadHandoffDirection.Type;
+
+export const ThreadHandoff = Schema.Struct({
+  direction: ThreadHandoffDirection,
+  // The thread on the other end of the handoff.
+  counterpartThreadId: ThreadId,
+  // Denormalized so the notice renders without fetching the counterpart. It is
+  // the title at handoff time and is deliberately not kept in sync.
+  counterpartTitle: TrimmedNonEmptyString,
+  // The follow-up that triggered the spin-off, when there was one.
+  followupId: Schema.NullOr(OrchestrationFollowupId),
+  createdAt: IsoDateTime,
+});
+export type ThreadHandoff = typeof ThreadHandoff.Type;
+
+// Handoffs ride the activity log for the same reason follow-ups do: no new
+// table, no new aggregate, and the notice lands in the transcript in
+// chronological order for free. The latest activity per direction wins.
+export const HANDOFF_ACTIVITY_KIND = "thread.handoff";
+
+export function buildHandoffActivity(input: {
+  readonly id: EventId;
+  readonly handoff: ThreadHandoff;
+  readonly createdAt: string;
+}): OrchestrationThreadActivity {
+  return {
+    id: input.id,
+    tone: "info",
+    kind: HANDOFF_ACTIVITY_KIND,
+    summary:
+      input.handoff.direction === "continuedIn"
+        ? `Continued in ${input.handoff.counterpartTitle}`
+        : `Spun off from ${input.handoff.counterpartTitle}`,
+    payload: { handoff: input.handoff },
+    turnId: null,
+    createdAt: input.createdAt,
+  };
+}
+
 export const OrchestrationSessionStatus = Schema.Literals([
   "idle",
   "starting",
@@ -446,6 +491,10 @@ export const OrchestrationThread = Schema.Struct({
   activities: Schema.Array(OrchestrationThreadActivity),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
   session: Schema.NullOr(OrchestrationSession),
+  // Handoff links, materialized from the activity log. Defaulted so a client can
+  // still decode a thread from a server that predates the handoff columns.
+  handoffThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  sourceThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
 });
 export type OrchestrationThread = typeof OrchestrationThread.Type;
 
@@ -489,7 +538,15 @@ export const OrchestrationThreadShell = Schema.Struct({
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
   hasPendingUserInput: Schema.Boolean,
+  // Defaulted so a client can still decode a shell from a server that predates
+  // the pending_followup_count column.
+  hasPendingFollowups: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   hasActionableProposedPlan: Schema.Boolean,
+  // Set when this thread was handed off to another conversation ("you can look
+  // away from this one"), or was itself spun off from one. Both defaulted for
+  // the same reason hasPendingFollowups is.
+  handoffThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  sourceThreadId: Schema.NullOr(ThreadId).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
 });
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 
@@ -763,6 +820,18 @@ const ThreadFollowupUpsertCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+// Record one side of a handoff. Dispatched twice by the client when a follow-up
+// is spun off with "mark this conversation as handed off": once against the
+// thread being left ("continuedIn") and once against the new thread
+// ("spunOffFrom"). Deciders are per-thread, so each side is its own command.
+const ThreadHandoffRecordCommand = Schema.Struct({
+  type: Schema.Literal("thread.handoff.record"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  handoff: ThreadHandoff,
+  createdAt: IsoDateTime,
+});
+
 const DispatchableClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
@@ -783,6 +852,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
   ThreadFollowupUpsertCommand,
+  ThreadHandoffRecordCommand,
 ]);
 export type DispatchableClientOrchestrationCommand =
   typeof DispatchableClientOrchestrationCommand.Type;
@@ -807,6 +877,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadCheckpointRevertCommand,
   ThreadSessionStopCommand,
   ThreadFollowupUpsertCommand,
+  ThreadHandoffRecordCommand,
 ]);
 export type ClientOrchestrationCommand = typeof ClientOrchestrationCommand.Type;
 
@@ -1345,6 +1416,69 @@ export type OrchestrationGetFullThreadDiffInput = typeof OrchestrationGetFullThr
 export const OrchestrationGetFullThreadDiffResult = ThreadTurnDiff;
 export type OrchestrationGetFullThreadDiffResult = typeof OrchestrationGetFullThreadDiffResult.Type;
 
+export const OrchestrationSearchThreadsInput = Schema.Struct({
+  query: TrimmedNonEmptyString,
+  limit: Schema.optionalKey(NonNegativeInt),
+  includeArchived: Schema.optionalKey(Schema.Boolean),
+  includeSemantic: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Match `query` as a literal substring instead of as keywords: no tokenizing,
+   * no stopwords, no ranking, no semantic pass. Case-sensitive when the query
+   * contains an uppercase letter, as in ripgrep.
+   *
+   * The point is a trustworthy negative. Keyword search cannot say "this string
+   * is nowhere", because it drops punctuation and matches terms separately — a
+   * search for a file path finds every thread mentioning any part of it. This
+   * either finds the string or reports honestly that nothing contains it.
+   */
+  exact: Schema.optionalKey(Schema.Boolean),
+});
+export type OrchestrationSearchThreadsInput = typeof OrchestrationSearchThreadsInput.Type;
+
+export const OrchestrationThreadSearchMatchKind = Schema.Literals([
+  "metadata",
+  "content",
+  /** Contains the search string verbatim — the only kind that is certain. */
+  "exact",
+  /**
+   * Matched some of the search terms but not all of them, after an all-terms
+   * search found nothing. Worth offering, but not worth asserting: treat it as
+   * a suggestion to confirm rather than as the thread the user meant.
+   */
+  "content-loose",
+  "semantic",
+  "hybrid",
+]);
+export type OrchestrationThreadSearchMatchKind = typeof OrchestrationThreadSearchMatchKind.Type;
+
+export const OrchestrationThreadSearchResult = Schema.Struct({
+  threadId: ThreadId,
+  projectId: ProjectId,
+  title: Schema.String,
+  projectTitle: Schema.String,
+  branch: Schema.NullOr(Schema.String),
+  archivedAt: Schema.NullOr(IsoDateTime),
+  updatedAt: IsoDateTime,
+  snippet: Schema.NullOr(Schema.String),
+  matchedRole: Schema.NullOr(Schema.Literals(["user", "assistant", "system"])),
+  matchKind: OrchestrationThreadSearchMatchKind,
+  score: Schema.Number,
+});
+export type OrchestrationThreadSearchResult = typeof OrchestrationThreadSearchResult.Type;
+
+export const OrchestrationSemanticSearchStatus = Schema.Literals([
+  "ready",
+  "indexing",
+  "unavailable",
+]);
+export type OrchestrationSemanticSearchStatus = typeof OrchestrationSemanticSearchStatus.Type;
+
+export const OrchestrationSearchThreadsResult = Schema.Struct({
+  results: Schema.Array(OrchestrationThreadSearchResult),
+  semanticStatus: OrchestrationSemanticSearchStatus,
+});
+export type OrchestrationSearchThreadsResult = typeof OrchestrationSearchThreadsResult.Type;
+
 export const OrchestrationReplayEventsInput = Schema.Struct({
   fromSequenceExclusive: NonNegativeInt,
 });
@@ -1366,6 +1500,10 @@ export const OrchestrationRpcSchemas = {
     input: OrchestrationGetFullThreadDiffInput,
     output: OrchestrationGetFullThreadDiffResult,
   },
+  searchThreads: {
+    input: OrchestrationSearchThreadsInput,
+    output: OrchestrationSearchThreadsResult,
+  },
   replayEvents: {
     input: OrchestrationReplayEventsInput,
     output: OrchestrationReplayEventsResult,
@@ -1386,6 +1524,14 @@ export const OrchestrationRpcSchemas = {
 
 export class OrchestrationGetSnapshotError extends Schema.TaggedErrorClass<OrchestrationGetSnapshotError>()(
   "OrchestrationGetSnapshotError",
+  {
+    message: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {}
+
+export class OrchestrationSearchThreadsError extends Schema.TaggedErrorClass<OrchestrationSearchThreadsError>()(
+  "OrchestrationSearchThreadsError",
   {
     message: TrimmedNonEmptyString,
     cause: Schema.optional(Schema.Defect()),

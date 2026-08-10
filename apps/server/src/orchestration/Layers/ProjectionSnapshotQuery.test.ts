@@ -364,6 +364,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             lastError: null,
             updatedAt: "2026-02-24T00:00:07.000Z",
           },
+          handoffThreadId: null,
+          sourceThreadId: null,
         },
       ]);
 
@@ -433,7 +435,10 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           latestUserMessageAt: "2026-02-24T00:00:04.000Z",
           hasPendingApprovals: true,
           hasPendingUserInput: false,
+          hasPendingFollowups: false,
           hasActionableProposedPlan: false,
+          handoffThreadId: null,
+          sourceThreadId: null,
         },
       ]);
 

@@ -46,6 +46,7 @@ function buildThread(title: string): SidebarThreadSummary {
     environmentId: ENVIRONMENT_ID,
     projectId: PROJECT_ID,
     title,
+    handoffThreadId: null,
     interactionMode: DEFAULT_INTERACTION_MODE,
     session: null,
     createdAt: "2024-01-01T00:00:00.000Z",
@@ -58,6 +59,7 @@ function buildThread(title: string): SidebarThreadSummary {
     latestUserMessageAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
+    hasPendingFollowups: false,
     hasActionableProposedPlan: false,
   };
 }

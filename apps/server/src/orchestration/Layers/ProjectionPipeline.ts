@@ -1,6 +1,8 @@
 import {
   ApprovalRequestId,
   type ChatAttachment,
+  FOLLOWUP_ACTIVITY_KIND,
+  HANDOFF_ACTIVITY_KIND,
   type OrchestrationEvent,
   type OrchestrationSessionStatus,
   ThreadId,
@@ -174,6 +176,97 @@ function derivePendingUserInputCountFromActivities(
   }
 
   return openRequestIds.size;
+}
+
+/**
+ * Agent-suggested follow-ups are event-sourced the same way the web client
+ * reads them (see deriveFollowups): each create/update appends another
+ * turn.followup.suggested activity carrying the whole record, and the latest
+ * activity per follow-up id wins. Anything not explicitly resolved counts as
+ * still pending.
+ */
+function derivePendingFollowupCountFromActivities(
+  activities: ReadonlyArray<ProjectionThreadActivity>,
+): number {
+  const ordered = [...activities].toSorted(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) ||
+      left.activityId.localeCompare(right.activityId),
+  );
+
+  const statusByFollowupId = new Map<string, string>();
+  for (const activity of ordered) {
+    if (activity.kind !== FOLLOWUP_ACTIVITY_KIND) {
+      continue;
+    }
+    const payload =
+      typeof activity.payload === "object" && activity.payload !== null
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    const followup =
+      payload?.followup && typeof payload.followup === "object"
+        ? (payload.followup as Record<string, unknown>)
+        : null;
+    const followupId = typeof followup?.id === "string" ? followup.id : null;
+    if (followupId === null || followupId.length === 0) {
+      continue;
+    }
+    statusByFollowupId.set(
+      followupId,
+      typeof followup?.status === "string" ? followup.status : "pending",
+    );
+  }
+
+  let pending = 0;
+  for (const status of statusByFollowupId.values()) {
+    if (status === "pending") {
+      pending += 1;
+    }
+  }
+  return pending;
+}
+
+/**
+ * Handoffs are event-sourced the same way follow-ups are: each one appends a
+ * thread.handoff activity carrying the whole record, and the latest activity per
+ * direction wins. Mirrors deriveHandoffs on the web side — keep the two in sync.
+ */
+function deriveHandoffThreadIdsFromActivities(
+  activities: ReadonlyArray<ProjectionThreadActivity>,
+): { readonly handoffThreadId: ThreadId | null; readonly sourceThreadId: ThreadId | null } {
+  const ordered = [...activities].toSorted(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) ||
+      left.activityId.localeCompare(right.activityId),
+  );
+
+  let handoffThreadId: ThreadId | null = null;
+  let sourceThreadId: ThreadId | null = null;
+  for (const activity of ordered) {
+    if (activity.kind !== HANDOFF_ACTIVITY_KIND) {
+      continue;
+    }
+    const payload =
+      typeof activity.payload === "object" && activity.payload !== null
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    const handoff =
+      payload?.handoff && typeof payload.handoff === "object"
+        ? (payload.handoff as Record<string, unknown>)
+        : null;
+    const counterpartThreadId =
+      typeof handoff?.counterpartThreadId === "string" ? handoff.counterpartThreadId : null;
+    if (counterpartThreadId === null || counterpartThreadId.length === 0) {
+      continue;
+    }
+    if (handoff?.direction === "continuedIn") {
+      handoffThreadId = ThreadId.make(counterpartThreadId);
+    } else if (handoff?.direction === "spunOffFrom") {
+      sourceThreadId = ThreadId.make(counterpartThreadId);
+    }
+  }
+
+  return { handoffThreadId, sourceThreadId };
 }
 
 function deriveHasActionableProposedPlan(input: {
@@ -574,6 +667,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         (approval) => approval.status === "pending",
       ).length;
       const pendingUserInputCount = derivePendingUserInputCountFromActivities(activities);
+      const pendingFollowupCount = derivePendingFollowupCountFromActivities(activities);
+      const { handoffThreadId, sourceThreadId } = deriveHandoffThreadIdsFromActivities(activities);
       const hasActionableProposedPlan = deriveHasActionableProposedPlan({
         latestTurnId: existingRow.value.latestTurnId,
         proposedPlans,
@@ -584,6 +679,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         latestUserMessageAt,
         pendingApprovalCount,
         pendingUserInputCount,
+        pendingFollowupCount,
+        handoffThreadId,
+        sourceThreadId,
         hasActionableProposedPlan: hasActionableProposedPlan ? 1 : 0,
       });
     });
@@ -610,6 +708,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestUserMessageAt: null,
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
+            pendingFollowupCount: 0,
+            handoffThreadId: null,
+            sourceThreadId: null,
             hasActionableProposedPlan: 0,
             deletedAt: null,
           });
@@ -771,7 +872,24 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
-            latestTurnId: event.payload.session.activeTurnId,
+            // `latest_turn_id` means the most recent turn, not the in-flight
+            // one — `deriveHasActionableProposedPlan` and the revert path both
+            // read it that way, and the shell snapshot joins through it to
+            // produce `latestTurn`.
+            //
+            // The session's `activeTurnId` goes null on every `turn.completed`
+            // and `session.exited`, so assigning it straight through erased the
+            // pointer the moment a turn finished: the completed turn row stayed
+            // in `projection_turns` but no longer joined, and every settled
+            // thread came back with `latestTurn: null`. That reads downstream as
+            // a thread that has never run — which is why the orchestrator
+            // reported "No turns yet" for threads with a dozen messages and
+            // commits behind them, and why interrupted turns dropped out of the
+            // "waiting on you" list once their session exited.
+            //
+            // Only advance the pointer; never clear it. The in-memory projector
+            // has always done it this way (projector.ts, thread.session-set).
+            latestTurnId: event.payload.session.activeTurnId ?? existingRow.value.latestTurnId,
             updatedAt: event.occurredAt,
           });
           yield* refreshThreadShellSummary(event.payload.threadId);

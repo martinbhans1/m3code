@@ -194,4 +194,43 @@ describe("serverSettings helpers", () => {
       config: { homePath: "~/.codex" },
     });
   });
+
+  it("sets and clears one thread's orchestrator access without touching the others", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      orchestratorThreadAccess: { "thread-a": "control", "thread-b": "watch" },
+    } as typeof DEFAULT_SERVER_SETTINGS;
+
+    // Setting one entry leaves every other thread's setting alone.
+    expect(
+      applyServerSettingsPatch(current, {
+        orchestratorThreadAccessEntry: { threadId: "thread-c", access: "watch" },
+      } as never).orchestratorThreadAccess,
+    ).toEqual({ "thread-a": "control", "thread-b": "watch", "thread-c": "watch" });
+
+    // A null access deletes the key, which puts the thread back on the default
+    // rather than closing it.
+    expect(
+      applyServerSettingsPatch(current, {
+        orchestratorThreadAccessEntry: { threadId: "thread-a", access: null },
+      } as never).orchestratorThreadAccess,
+    ).toEqual({ "thread-b": "watch" });
+
+    // An explicit "none" is a value, not a deletion: it holds the conversation
+    // closed even when the default is open.
+    expect(
+      applyServerSettingsPatch(current, {
+        orchestratorThreadAccessEntry: { threadId: "thread-a", access: "none" },
+      } as never).orchestratorThreadAccess,
+    ).toEqual({ "thread-a": "none", "thread-b": "watch" });
+
+    // The whole-map form still replaces wholesale, and the entry form wins when
+    // a patch carries both.
+    expect(
+      applyServerSettingsPatch(current, {
+        orchestratorThreadAccess: { "thread-z": "control" },
+        orchestratorThreadAccessEntry: { threadId: "thread-z", access: null },
+      } as never).orchestratorThreadAccess,
+    ).toEqual({});
+  });
 });

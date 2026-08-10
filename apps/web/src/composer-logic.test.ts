@@ -252,6 +252,46 @@ describe("collapseExpandedComposerCursor", () => {
   });
 });
 
+describe("quote block cursors", () => {
+  // Select-to-quote appends "<quote>\n…\n</quote>\n"; the composer renders that
+  // as a single atomic quote card, so it occupies one collapsed position and
+  // the newline after it stays reachable for typing a follow-up question.
+  const quoteSource = "<quote>\nquoted line\n</quote>";
+  const prompt = `${quoteSource}\n`;
+
+  it("collapses the whole quote block into one cursor position", () => {
+    expect(clampCollapsedComposerCursor(prompt, Number.POSITIVE_INFINITY)).toBe(2);
+  });
+
+  it("maps the collapsed position after the quote to the end of its source", () => {
+    expect(expandCollapsedComposerCursor(prompt, 0)).toBe(0);
+    expect(expandCollapsedComposerCursor(prompt, 1)).toBe(quoteSource.length);
+    expect(expandCollapsedComposerCursor(prompt, 2)).toBe(prompt.length);
+  });
+
+  it("maps expanded offsets inside the quote back onto the token", () => {
+    expect(collapseExpandedComposerCursor(prompt, 0)).toBe(0);
+    expect(collapseExpandedComposerCursor(prompt, 3)).toBe(1);
+    expect(collapseExpandedComposerCursor(prompt, quoteSource.length)).toBe(1);
+    expect(collapseExpandedComposerCursor(prompt, prompt.length)).toBe(2);
+  });
+
+  it("keeps cursors aligned for text typed after a quote", () => {
+    const withFollowUp = `${quoteSource}\nwhat does this mean?`;
+    const expandedCursor = withFollowUp.length;
+    const collapsedCursor = collapseExpandedComposerCursor(withFollowUp, expandedCursor);
+
+    expect(collapsedCursor).toBe(1 + "\nwhat does this mean?".length);
+    expect(expandCollapsedComposerCursor(withFollowUp, collapsedCursor)).toBe(expandedCursor);
+  });
+
+  it("treats the quote card as an inline token for arrow-key adjacency", () => {
+    expect(isCollapsedCursorAdjacentToInlineToken(prompt, 0, "right")).toBe(true);
+    expect(isCollapsedCursorAdjacentToInlineToken(prompt, 1, "left")).toBe(true);
+    expect(isCollapsedCursorAdjacentToInlineToken(prompt, 2, "left")).toBe(false);
+  });
+});
+
 describe("clampCollapsedComposerCursor", () => {
   it("clamps to collapsed prompt length when mentions are present", () => {
     const text = "open @AGENTS.md then ";

@@ -33,6 +33,7 @@ export interface ServerDerivedPaths {
   readonly providerStatusCacheDir: string;
   readonly worktreesDir: string;
   readonly attachmentsDir: string;
+  readonly orchestratorWorkspaceRoot: string;
   readonly logsDir: string;
   readonly serverLogPath: string;
   readonly serverTracePath: string;
@@ -42,6 +43,7 @@ export interface ServerDerivedPaths {
   readonly anonymousIdPath: string;
   readonly environmentIdPath: string;
   readonly serverRuntimeStatePath: string;
+  readonly turnAutoResumeStatePath: string;
   readonly secretsDir: string;
 }
 
@@ -75,14 +77,22 @@ export interface ServerConfigShape extends ServerDerivedPaths {
   readonly tailscaleServePort: number;
 }
 
+/**
+ * Dev runs used to be pinned to an isolated `dev` state store purely because a
+ * dev web URL was configured, which meant `pnpm dev:desktop` came up with an
+ * empty conversation history and no configured providers. Dev now shares the
+ * installed app's `userdata` store; pass `true` (T3CODE_DEV_ISOLATED_STATE) to
+ * opt back into the throwaway sandbox.
+ */
 export const deriveServerPaths = Effect.fn(function* (
   baseDir: ServerConfigShape["baseDir"],
-  devUrl: ServerConfigShape["devUrl"],
+  isolatedStateStore?: boolean | undefined,
 ): Effect.fn.Return<ServerDerivedPaths, never, Path.Path> {
   const { join } = yield* Path.Path;
-  const stateDir = join(baseDir, devUrl !== undefined ? "dev" : "userdata");
+  const stateDir = join(baseDir, isolatedStateStore === true ? "dev" : "userdata");
   const dbPath = join(stateDir, "state.sqlite");
   const attachmentsDir = join(stateDir, "attachments");
+  const orchestratorWorkspaceRoot = join(stateDir, "orchestrator");
   const logsDir = join(stateDir, "logs");
   const providerLogsDir = join(logsDir, "provider");
   const providerStatusCacheDir = join(baseDir, "caches");
@@ -94,6 +104,7 @@ export const deriveServerPaths = Effect.fn(function* (
     providerStatusCacheDir,
     worktreesDir: join(baseDir, "worktrees"),
     attachmentsDir,
+    orchestratorWorkspaceRoot,
     logsDir,
     serverLogPath: join(logsDir, "server.log"),
     serverTracePath: join(logsDir, "server.trace.ndjson"),
@@ -103,6 +114,7 @@ export const deriveServerPaths = Effect.fn(function* (
     anonymousIdPath: join(stateDir, "anonymous-id"),
     environmentIdPath: join(stateDir, "environment-id"),
     serverRuntimeStatePath: join(stateDir, "server-runtime.json"),
+    turnAutoResumeStatePath: join(stateDir, "turn-auto-resume.json"),
     secretsDir: join(stateDir, "secrets"),
   };
 });
@@ -146,7 +158,7 @@ export class ServerConfig extends Context.Service<ServerConfig, ServerConfigShap
           typeof baseDirOrPrefix === "string"
             ? baseDirOrPrefix
             : yield* fs.makeTempDirectoryScoped({ prefix: baseDirOrPrefix.prefix });
-        const derivedPaths = yield* deriveServerPaths(baseDir, devUrl);
+        const derivedPaths = yield* deriveServerPaths(baseDir);
         yield* ensureServerDirectories(derivedPaths);
 
         return {

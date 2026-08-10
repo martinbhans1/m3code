@@ -87,6 +87,10 @@ import { cn, randomUUID } from "~/lib/utils";
 import { Separator } from "../ui/separator";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
+import {
+  ComposerOrchestratorAccessControl,
+  OrchestratorVisibilityControl,
+} from "./ComposerOrchestratorAccessControl";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import {
@@ -94,6 +98,7 @@ import {
   CircleAlertIcon,
   FileTextIcon,
   ListTodoIcon,
+  LayoutDashboardIcon,
   PaperclipIcon,
   PencilRulerIcon,
   type LucideIcon,
@@ -542,6 +547,7 @@ export interface ChatComposerProps {
   handleRuntimeModeChange: (mode: RuntimeMode) => void;
   handleInteractionModeChange: (mode: ProviderInteractionMode) => void;
   togglePlanSidebar: () => void;
+  toggleOrchestratorBoard: () => void;
 
   focusComposer: () => void;
   scheduleComposerFocus: () => void;
@@ -563,7 +569,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadId,
     activeThreadEnvironmentId: _activeThreadEnvironmentId,
     activeThread,
-    isServerThread: _isServerThread,
+    isServerThread,
     isLocalDraftThread: _isLocalDraftThread,
     phase,
     isConnecting,
@@ -618,6 +624,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     handleRuntimeModeChange,
     handleInteractionModeChange,
     togglePlanSidebar,
+    toggleOrchestratorBoard,
     focusComposer,
     scheduleComposerFocus,
     setThreadError,
@@ -1064,6 +1071,29 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const composerFooterHasWideActions = showPlanFollowUpPrompt || activePendingProgress !== null;
   const showPlanSidebarToggle = Boolean(activePlan || sidebarProposedPlan || planSidebarOpen);
+
+  // The orchestrator control is a per-conversation setting keyed by thread id,
+  // so it only means anything once the thread exists on the server. It is
+  // hidden entirely until an orchestrator project is designated — most users
+  // never open one — and inside that project itself, where the orchestrator
+  // would be sharing its own conversations with itself.
+  const orchestratorAccessThreadId =
+    settings.orchestratorProjectId !== null &&
+    isServerThread &&
+    activeThreadId !== null &&
+    activeThread !== null &&
+    activeThread !== undefined &&
+    activeThread.projectId !== settings.orchestratorProjectId
+      ? activeThreadId
+      : null;
+
+  // Inside the orchestrator's own conversation the per-thread control would be
+  // nonsense — it would be sharing that conversation with itself. The baseline
+  // for every *other* conversation is the useful thing to have to hand here.
+  const isOrchestratorThread =
+    settings.orchestratorProjectId !== null &&
+    isServerThread &&
+    activeThread?.projectId === settings.orchestratorProjectId;
   const composerFooterActionLayoutKey = useMemo(() => {
     if (activePendingProgress) {
       return `pending:${activePendingProgress.questionIndex}:${activePendingProgress.isLastQuestion}:${activePendingIsResponding}`;
@@ -2667,6 +2697,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     runtimeMode={runtimeMode}
                     showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                     traitsMenuContent={providerTraitsMenuContent}
+                    orchestratorAccessThreadId={orchestratorAccessThreadId}
+                    isOrchestratorThread={isOrchestratorThread}
                     onToggleInteractionMode={toggleInteractionMode}
                     onTogglePlanSidebar={togglePlanSidebar}
                     onRuntimeModeChange={handleRuntimeModeChange}
@@ -2690,6 +2722,38 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       onRuntimeModeChange={handleRuntimeModeChange}
                       onTogglePlanSidebar={togglePlanSidebar}
                     />
+                    {orchestratorAccessThreadId ? (
+                      <>
+                        <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
+                        <ComposerOrchestratorAccessControl threadId={orchestratorAccessThreadId} />
+                      </>
+                    ) : null}
+                    {isOrchestratorThread ? (
+                      <>
+                        <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
+                        <OrchestratorVisibilityControl />
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                type="button"
+                                className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
+                                onClick={toggleOrchestratorBoard}
+                                aria-label="Show the board"
+                              />
+                            }
+                          >
+                            <LayoutDashboardIcon />
+                            <span className="sr-only sm:not-sr-only">Board</span>
+                          </TooltipTrigger>
+                          <TooltipPopup side="top">
+                            Every conversation the orchestrator can see, and what each is waiting on
+                          </TooltipPopup>
+                        </Tooltip>
+                      </>
+                    ) : null}
                   </>
                 )}
               </div>

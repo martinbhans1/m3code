@@ -133,6 +133,43 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  // Both of these used to be blanked by react-markdown's protocol allow-list:
+  // it scans for a colon before any slash and treats what precedes it as a URL
+  // scheme, so `notes.sql:7` looks like the scheme `notes.sql:` and `C:/x`
+  // looks like `C:`. Neither is in the safe list, so the href became "" and the
+  // link fell through to the external-link branch — which on desktop hands an
+  // `<a target="_blank">` straight to the system browser.
+  it("keeps a path:line link clickable rather than treating the colon as a scheme", async () => {
+    const screen = await render(
+      <ChatMarkdown text={"[notes.sql:7](notes.sql:7)"} cwd="/repo/project" />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: /notes\.sql/ });
+      await expect.element(link).toBeInTheDocument();
+      await expect.element(link).toHaveClass(/chat-markdown-file-link/);
+      await expect.element(link).not.toHaveAttribute("target", "_blank");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps a Windows absolute path clickable rather than treating the drive as a scheme", async () => {
+    const filePath = "C:/repo/project/notes.sql";
+    const screen = await render(
+      <ChatMarkdown text={`[notes.sql](${filePath})`} cwd="C:/repo/project" />,
+    );
+
+    try {
+      const link = page.getByRole("link", { name: /notes\.sql/ });
+      await expect.element(link).toBeInTheDocument();
+      await expect.element(link).toHaveClass(/chat-markdown-file-link/);
+      await expect.element(link).not.toHaveAttribute("target", "_blank");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("shows column information inline when present", async () => {
     const filePath =
       "/Users/yashsingh/p/sco/claude-code-extract/src/utils/permissions/PermissionRule.ts";

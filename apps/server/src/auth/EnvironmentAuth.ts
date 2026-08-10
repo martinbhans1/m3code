@@ -437,68 +437,66 @@ export const make = Effect.fn("makeEnvironmentAuth")(function* () {
       Effect.withSpan("EnvironmentAuth.setAccessPassword"),
     );
 
-  const verifyAccessPassword: EnvironmentAuthShape["verifyAccessPassword"] = (
-    password,
-    requestMetadata,
-  ) =>
-    Effect.gen(function* () {
-      const nowMs = (yield* DateTime.now).epochMilliseconds;
-      const gate = yield* Ref.get(accessPasswordThrottle);
-      if (gate.lockedUntilMs > nowMs) {
-        yield* Effect.logWarning("Rejected remote-access password attempt during lockout.");
-        return yield* new ServerAuthInvalidCredentialError({ reason: "invalid_credential" });
-      }
+  const verifyAccessPassword: EnvironmentAuthShape["verifyAccessPassword"] = Effect.fn(
+    "EnvironmentAuth.verifyAccessPassword",
+  )(function* (password, requestMetadata) {
+    const nowMs = (yield* DateTime.now).epochMilliseconds;
+    const gate = yield* Ref.get(accessPasswordThrottle);
+    if (gate.lockedUntilMs > nowMs) {
+      yield* Effect.logWarning("Rejected remote-access password attempt during lockout.");
+      return yield* new ServerAuthInvalidCredentialError({ reason: "invalid_credential" });
+    }
 
-      const stored = yield* secretStore
-        .get(ACCESS_PASSWORD_SECRET_NAME)
-        .pipe(Effect.mapError(toInternalError("Failed to read access password.")));
+    const stored = yield* secretStore
+      .get(ACCESS_PASSWORD_SECRET_NAME)
+      .pipe(Effect.mapError(toInternalError("Failed to read access password.")));
 
-      const matches =
-        stored !== null &&
-        (yield* Effect.try({
-          try: () => verifyAccessPasswordHash(password, stored),
-          catch: toInternalError("Failed to verify access password."),
-        }));
+    const matches =
+      stored !== null &&
+      (yield* Effect.try({
+        try: () => verifyAccessPasswordHash(password, stored),
+        catch: toInternalError("Failed to verify access password."),
+      }));
 
-      if (!matches) {
-        yield* Ref.update(accessPasswordThrottle, (current) => {
-          const failures = current.failures + 1;
-          return failures >= ACCESS_PASSWORD_MAX_FAILURES
-            ? { failures: 0, lockedUntilMs: nowMs + ACCESS_PASSWORD_LOCKOUT_MS }
-            : { failures, lockedUntilMs: current.lockedUntilMs };
-        });
-        return yield* new ServerAuthInvalidCredentialError({ reason: "invalid_credential" });
-      }
+    if (!matches) {
+      yield* Ref.update(accessPasswordThrottle, (current) => {
+        const failures = current.failures + 1;
+        return failures >= ACCESS_PASSWORD_MAX_FAILURES
+          ? { failures: 0, lockedUntilMs: nowMs + ACCESS_PASSWORD_LOCKOUT_MS }
+          : { failures, lockedUntilMs: current.lockedUntilMs };
+      });
+      return yield* new ServerAuthInvalidCredentialError({ reason: "invalid_credential" });
+    }
 
-      yield* Ref.set(accessPasswordThrottle, { failures: 0, lockedUntilMs: 0 });
+    yield* Ref.set(accessPasswordThrottle, { failures: 0, lockedUntilMs: 0 });
 
-      const session = yield* sessions
-        .issue({
-          method: "browser-session-cookie",
-          subject: ACCESS_PASSWORD_SESSION_SUBJECT,
-          scopes: AuthStandardClientScopes,
-          client: requestMetadata,
-        })
-        .pipe(
-          Effect.mapError(
-            (cause) =>
-              new ServerAuthInternalError({
-                message: "Failed to issue authenticated session.",
-                cause,
-              }),
-          ),
-        );
+    const session = yield* sessions
+      .issue({
+        method: "browser-session-cookie",
+        subject: ACCESS_PASSWORD_SESSION_SUBJECT,
+        scopes: AuthStandardClientScopes,
+        client: requestMetadata,
+      })
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new ServerAuthInternalError({
+              message: "Failed to issue authenticated session.",
+              cause,
+            }),
+        ),
+      );
 
-      return {
-        response: {
-          authenticated: true,
-          scopes: session.scopes,
-          sessionMethod: session.method,
-          expiresAt: DateTime.toUtc(session.expiresAt),
-        } satisfies AuthBrowserSessionResult,
-        sessionToken: session.token,
-      } satisfies BootstrapExchangeResult;
-    }).pipe(Effect.withSpan("EnvironmentAuth.verifyAccessPassword"));
+    return {
+      response: {
+        authenticated: true,
+        scopes: session.scopes,
+        sessionMethod: session.method,
+        expiresAt: DateTime.toUtc(session.expiresAt),
+      } satisfies AuthBrowserSessionResult,
+      sessionToken: session.token,
+    } satisfies BootstrapExchangeResult;
+  });
 
   const exchangeBootstrapCredentialForAccessToken: EnvironmentAuthShape["exchangeBootstrapCredentialForAccessToken"] =
     (credential, requestedScopes, requestMetadata, input) =>

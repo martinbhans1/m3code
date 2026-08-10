@@ -95,7 +95,10 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         latestUserMessageAt: null,
         pendingApprovalCount: 0,
         pendingUserInputCount: 0,
+        pendingFollowupCount: 0,
         hasActionableProposedPlan: 0,
+        handoffThreadId: null,
+        sourceThreadId: null,
         deletedAt: null,
       });
 

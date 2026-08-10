@@ -89,6 +89,7 @@ vi.mock("@t3tools/client-runtime", async (importOriginal) => {
       dispatchCommand: vi.fn(),
       getTurnDiff: vi.fn(),
       getFullThreadDiff: vi.fn(),
+      searchThreads: vi.fn(),
       getArchivedShellSnapshot: vi.fn(),
       subscribeShell: vi.fn(() => () => undefined),
       subscribeThread: mockSubscribeThread,
@@ -214,6 +215,8 @@ function makeThreadShellSnapshot(params: {
     updatedAt: "2026-04-13T00:00:00.000Z",
     threads: [
       {
+        handoffThreadId: null,
+        sourceThreadId: null,
         id: params.threadId,
         projectId,
         title: "Thread",
@@ -254,6 +257,7 @@ function makeThreadShellSnapshot(params: {
         latestUserMessageAt: null,
         hasPendingApprovals: params.hasPendingApprovals ?? false,
         hasPendingUserInput: params.hasPendingUserInput ?? false,
+        hasPendingFollowups: false,
         hasActionableProposedPlan: params.hasActionableProposedPlan ?? false,
       },
     ],

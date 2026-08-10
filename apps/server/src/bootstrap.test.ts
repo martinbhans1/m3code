@@ -74,10 +74,9 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
         `${yield* encodeTestEnvelopeSchema({ mode: "desktop" })}\n`,
       );
 
-      // Open without acquireRelease: the direct-stream fallback uses autoClose: true,
-      // so the stream owns the fd lifecycle and closes it asynchronously on end.
-      // Attempting to also close it synchronously in a finalizer races with the
-      // stream's async close and produces an uncaught EBADF.
+      // Open without acquireRelease: closing this fd synchronously in a finalizer
+      // races with the direct-stream fallback's async teardown and produces an
+      // uncaught EBADF. The fd is left to the process; the temp file is scoped.
       const fd = NFS.openSync(filePath, "r");
 
       openSyncInterceptor.failPath = `/proc/self/fd/${fd}`;

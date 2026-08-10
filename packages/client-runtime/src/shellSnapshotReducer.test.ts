@@ -24,6 +24,8 @@ const stubProject = {
 } as const;
 
 const stubThread = {
+  handoffThreadId: null,
+  sourceThreadId: null,
   id: ThreadId.make("thread-1"),
   projectId: ProjectId.make("project-1"),
   title: "Test Thread",
@@ -40,6 +42,7 @@ const stubThread = {
   latestUserMessageAt: null,
   hasPendingApprovals: false,
   hasPendingUserInput: false,
+  hasPendingFollowups: false,
   hasActionableProposedPlan: false,
   session: null,
 } as const;

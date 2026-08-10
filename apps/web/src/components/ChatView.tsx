@@ -54,6 +54,7 @@ import {
   deriveTimelineEntries,
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
+  deriveHandoffs,
   derivePendingFollowups,
   type FollowupState,
   findSidebarProposedPlan,
@@ -62,7 +63,8 @@ import {
   hasActionableProposedPlan,
   isLatestTurnSettled,
 } from "../session-logic";
-import { FollowupChips } from "./chat/FollowupChip";
+import { FollowupChipDeck, type FollowupProjectChoice } from "./chat/FollowupChipDeck";
+import { FollowupCustomStartDialog } from "./chat/FollowupCustomStartDialog";
 import { QuoteSelectionOverlay } from "./chat/QuoteSelectionOverlay";
 import { buildFollowupPrompt, buildFollowupThreadTitle } from "../followup";
 import { buildQuoteInsertion } from "../quoteSelection";
@@ -124,6 +126,7 @@ const EMPTY_PENDING_FILE_SURFACE_IDS: ReadonlySet<string> = new Set();
 import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
+import { OrchestratorBoardPanel } from "./OrchestratorBoardPanel";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { ChevronDownIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
 import { RightPanelTabs } from "./RightPanelTabs";
@@ -140,6 +143,7 @@ import {
 import { newCommandId, newDraftId, newMessageId, newThreadId } from "~/lib/utils";
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
 import { useSettings } from "../hooks/useSettings";
+import { useOrchestratorProjectId } from "../hooks/useOrchestratorConversation";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
 import {
@@ -233,6 +237,7 @@ const EMPTY_PROPOSED_PLANS: Thread["proposedPlans"] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
+const EMPTY_FOLLOWUP_PROJECT_CHOICES: FollowupProjectChoice[] = [];
 const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
   "input",
   "textarea",
@@ -1446,6 +1451,7 @@ function ChatViewContent(props: ChatViewProps) {
   // Compute the list of environments this logical project spans, used to
   // drive the environment picker in BranchToolbar.
   const allProjects = useStore(useShallow(selectProjectsAcrossEnvironments));
+  const orchestratorProjectId = useOrchestratorProjectId();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((s) => s.byId);
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((s) => s.byId);
@@ -1872,13 +1878,68 @@ function ChatViewContent(props: ChatViewProps) {
       },
     );
   }, [activeQueuedTurns, activeThreadKey, activeThreadRef, phase]);
+  /**
+   * Promote a queued message to a steer: dispatch it right now instead of
+   * waiting for the current turn to end. Enter queues by default while the
+   * agent runs, so this is the escape hatch when the intent was to steer.
+   * The command is already built, so this is the same dispatch the drain
+   * effect would eventually do — just not gated on the run finishing.
+   */
+  const sendQueuedTurnNow = useCallback(
+    (id: string) => {
+      if (!activeThreadRef) return;
+      const threadRef = activeThreadRef;
+      const turn = useQueuedTurnStore
+        .getState()
+        .byThreadKey[scopedThreadKey(threadRef)]?.find((entry) => entry.id === id);
+      if (!turn || turn.status === "sending") return;
+      const api = readEnvironmentApi(threadRef.environmentId);
+      if (!api) return;
+      useQueuedTurnStore.getState().markSending(threadRef, id);
+      void api.orchestration.dispatchCommand(turn.command).then(
+        () => useQueuedTurnStore.getState().remove(threadRef, id),
+        (error: unknown) =>
+          useQueuedTurnStore
+            .getState()
+            .markFailed(
+              threadRef,
+              id,
+              error instanceof Error ? error.message : "Failed to send queued message.",
+            ),
+      );
+    },
+    [activeThreadRef],
+  );
   const threadActivities = activeThread?.activities ?? EMPTY_ACTIVITIES;
   const workLogEntries = useMemo(() => deriveWorkLogEntries(threadActivities), [threadActivities]);
   const pendingFollowups = useMemo(
     () => derivePendingFollowups(threadActivities),
     [threadActivities],
   );
+  // Follow-ups raised in the orchestrator must land somewhere they can actually
+  // be worked. Spinning one off into the active project would put it back in
+  // the orchestrator project — a second meta conversation that is told not to
+  // touch code — so the deck asks which real project to start it in instead.
+  const isOrchestratorThread =
+    orchestratorProjectId !== null && activeProject?.id === orchestratorProjectId;
+  const followupProjectChoices = useMemo(
+    () =>
+      !isOrchestratorThread || !activeThread
+        ? EMPTY_FOLLOWUP_PROJECT_CHOICES
+        : allProjects
+            .filter(
+              (project) =>
+                project.environmentId === activeThread.environmentId &&
+                project.id !== orchestratorProjectId,
+            )
+            .map((project) => ({ id: project.id, name: project.name }))
+            .toSorted((left, right) => left.name.localeCompare(right.name)),
+    [activeThread, allProjects, isOrchestratorThread, orchestratorProjectId],
+  );
   const [followupBusyId, setFollowupBusyId] = useState<string | null>(null);
+  // The follow-up the "Start custom…" dialog is open for, held separately from
+  // the deck's own paging so the dialog keeps showing the task you opened it on.
+  const [customStartFollowup, setCustomStartFollowup] = useState<FollowupState | null>(null);
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -2225,10 +2286,45 @@ function ChatViewContent(props: ChatViewProps) {
     }
     return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
   }, [serverMessagesWithAssetUrls, attachmentPreviewHandoffByMessageId, optimisticUserMessages]);
+  // Navigation for the handoff links. Owned here so ChatHeader and
+  // MessagesTimeline stay router-free — MessagesTimeline in particular is
+  // imported by a static-render test that must not drag the router in.
+  const onOpenThread = useCallback(
+    (threadId: ThreadId) => {
+      if (!activeThread) {
+        return;
+      }
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: activeThread.environmentId, threadId },
+      });
+    },
+    [activeThread, navigate],
+  );
+
+  const threadHandoffs = useMemo(() => deriveHandoffs(threadActivities), [threadActivities]);
+  // The two directions render in different places. "Continued in" is an event in
+  // this conversation's history, so it belongs at the point in the transcript
+  // where the handoff happened. "Spun off from" is context for the whole thread
+  // rather than something that happened during it, so it sits in the header —
+  // otherwise it would land below the opening message it is meant to explain.
+  const continuedInHandoffs = useMemo(
+    () => threadHandoffs.filter((handoff) => handoff.direction === "continuedIn"),
+    [threadHandoffs],
+  );
+  const sourceHandoff = useMemo(
+    () => threadHandoffs.find((handoff) => handoff.direction === "spunOffFrom") ?? null,
+    [threadHandoffs],
+  );
   const timelineEntries = useMemo(
     () =>
-      deriveTimelineEntries(timelineMessages, activeThread?.proposedPlans ?? [], workLogEntries),
-    [activeThread?.proposedPlans, timelineMessages, workLogEntries],
+      deriveTimelineEntries(
+        timelineMessages,
+        activeThread?.proposedPlans ?? [],
+        workLogEntries,
+        continuedInHandoffs,
+      ),
+    [activeThread?.proposedPlans, timelineMessages, workLogEntries, continuedInHandoffs],
   );
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
@@ -2307,6 +2403,14 @@ function ChatViewContent(props: ChatViewProps) {
   const activeProjectCwd = activeProject?.cwd ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot = activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
+  // A file surface can carry its own root when the link pointed at another
+  // project's code — the orchestrator's conversations are full of those, and its
+  // own workspace is an empty state directory, so re-deriving the root from the
+  // active thread reads from the wrong place and fails. Surfaces opened the
+  // ordinary way, and any persisted from before this existed, have no root and
+  // fall back to the thread's own.
+  const filePreviewCwd = activeFileSurface?.workspaceRoot ?? activeWorkspaceRoot;
+
   const activeTerminalLaunchContext =
     terminalUiLaunchContext?.threadId === activeThreadId ? terminalUiLaunchContext : null;
   // Default true while loading to avoid toolbar flicker.
@@ -3091,6 +3195,10 @@ function ChatViewContent(props: ChatViewProps) {
   const togglePlanSidebar = useCallback(() => {
     if (!activeThreadRef) return;
     useRightPanelStore.getState().toggle(activeThreadRef, "plan");
+  }, [activeThreadRef]);
+  const toggleOrchestratorBoard = useCallback(() => {
+    if (!activeThreadRef) return;
+    useRightPanelStore.getState().toggle(activeThreadRef, "board");
   }, [activeThreadRef]);
   const closePlanSidebar = useCallback(() => {
     if (!activeThreadRef) return;
@@ -4747,8 +4855,21 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
 
+  // Spin a follow-up into its own thread. `worktree` cuts a fresh worktree off
+  // the current branch instead of inheriting the source thread's checkout, so
+  // the spun-off work cannot disturb what this conversation is doing.
   const onSpinOffFollowup = useCallback(
-    async (followup: FollowupState) => {
+    async (
+      followup: FollowupState,
+      options?: {
+        worktree?: boolean;
+        projectId?: ProjectId;
+        /** Free text from the "Start custom…" dialog, folded into the prompt. */
+        extraContext?: string;
+        /** Cross-link both threads and badge this one as handed off. */
+        markHandoff?: boolean;
+      },
+    ) => {
       const api = readEnvironmentApi(environmentId);
       if (
         !api ||
@@ -4766,6 +4887,22 @@ function ChatViewContent(props: ChatViewProps) {
       if (!sendCtx) {
         return;
       }
+      // An explicit target project means the follow-up is leaving this project
+      // (the orchestrator case). It gets a plain checkout of that project — the
+      // source thread's branch and worktree belong to a different repository.
+      const targetProject =
+        options?.projectId && options.projectId !== activeProject.id
+          ? (allProjects.find(
+              (project) =>
+                project.id === options.projectId &&
+                project.environmentId === activeThread.environmentId,
+            ) ?? null)
+          : activeProject;
+      if (!targetProject) {
+        setThreadError(activeThread.id, "That project is no longer available.");
+        return;
+      }
+      const crossProject = targetProject.id !== activeProject.id;
       const sourceThread = activeThread;
       const createdAt = new Date().toISOString();
       const nextThreadId = newThreadId();
@@ -4774,13 +4911,31 @@ function ChatViewContent(props: ChatViewProps) {
         model: sendCtx.selectedModel,
         models: sendCtx.selectedProviderModels,
         effort: sendCtx.selectedPromptEffort,
-        text: buildFollowupPrompt(followup),
+        text: buildFollowupPrompt(followup, options?.extraContext),
       });
       const nextThreadTitle = truncate(buildFollowupThreadTitle(followup));
+      // A worktree needs an explicit base branch; without one we would silently
+      // fall back to running in the source checkout, which is the opposite of
+      // what the caller asked for.
+      const worktreeBaseBranch =
+        options?.worktree && !crossProject && activeProject.cwd ? activeThreadBranch : null;
+      if (options?.worktree && !worktreeBaseBranch) {
+        // Three distinct causes land here; naming the wrong one sends you
+        // hunting for a branch picker that was never the problem.
+        setThreadError(
+          activeThread.id,
+          crossProject
+            ? "Starting in another project cannot use a worktree."
+            : !activeProject.cwd
+              ? "This project has no local checkout to cut a worktree from."
+              : "Select a base branch before starting in a worktree.",
+        );
+        return;
+      }
 
       setFollowupBusyId(followup.id);
       sendInFlightRef.current = true;
-      beginLocalDispatch({ preparingWorktree: false });
+      beginLocalDispatch({ preparingWorktree: Boolean(worktreeBaseBranch) });
       const finish = () => {
         sendInFlightRef.current = false;
         resetLocalDispatch();
@@ -4792,13 +4947,13 @@ function ChatViewContent(props: ChatViewProps) {
           type: "thread.create",
           commandId: newCommandId(),
           threadId: nextThreadId,
-          projectId: activeProject.id,
+          projectId: targetProject.id,
           title: nextThreadTitle,
           modelSelection: sendCtx.selectedModelSelection,
           runtimeMode,
           interactionMode: "default",
-          branch: activeThreadBranch,
-          worktreePath: sourceThread.worktreePath,
+          branch: crossProject ? null : activeThreadBranch,
+          worktreePath: crossProject || worktreeBaseBranch ? null : sourceThread.worktreePath,
           createdAt,
         })
         .then(() =>
@@ -4817,6 +4972,18 @@ function ChatViewContent(props: ChatViewProps) {
             runtimeMode,
             interactionMode: "default",
             createdAt,
+            ...(worktreeBaseBranch
+              ? {
+                  bootstrap: {
+                    prepareWorktree: {
+                      projectCwd: activeProject.cwd,
+                      baseBranch: worktreeBaseBranch,
+                      branch: buildTemporaryWorktreeBranchName(randomHex),
+                    },
+                    runSetupScript: true,
+                  },
+                }
+              : {}),
           }),
         )
         .then(() =>
@@ -4828,12 +4995,77 @@ function ChatViewContent(props: ChatViewProps) {
         .then(() =>
           waitForStartedServerThread(scopeThreadRef(sourceThread.environmentId, nextThreadId)),
         )
-        .then(() =>
-          navigate({
-            to: "/$environmentId/$threadId",
-            params: { environmentId: sourceThread.environmentId, threadId: nextThreadId },
-          }),
-        )
+        // Recorded only once the new thread is confirmed started. Writing it any
+        // earlier means a failure below deletes the new thread while leaving the
+        // source thread pointing at it — a permanent "Continued in…" card and
+        // sidebar badge linking to a conversation that no longer exists.
+        .then(async () => {
+          if (!options?.markHandoff) {
+            return;
+          }
+          // Both sides are written rather than one being derived from the other,
+          // because each thread's activity log is its own aggregate and a reader
+          // of either thread must not have to load the other one.
+          //
+          // Best effort by design: the work has already started and the thread
+          // exists, so failing to write a cross-link is not worth tearing that
+          // down. A half-landed pair still degrades cleanly — one side knows.
+          const handoffAt = new Date().toISOString();
+          await Promise.all([
+            api.orchestration.dispatchCommand({
+              type: "thread.handoff.record",
+              commandId: newCommandId(),
+              threadId: sourceThread.id,
+              handoff: {
+                direction: "continuedIn",
+                counterpartThreadId: nextThreadId,
+                counterpartTitle: nextThreadTitle,
+                followupId: followup.id,
+                createdAt: handoffAt,
+              },
+              createdAt: handoffAt,
+            }),
+            api.orchestration.dispatchCommand({
+              type: "thread.handoff.record",
+              commandId: newCommandId(),
+              threadId: nextThreadId,
+              handoff: {
+                direction: "spunOffFrom",
+                counterpartThreadId: sourceThread.id,
+                counterpartTitle: sourceThread.title,
+                followupId: followup.id,
+                createdAt: handoffAt,
+              },
+              createdAt: handoffAt,
+            }),
+          ]).catch(() => undefined);
+        })
+        .then(() => {
+          // Deliberately stay put. A follow-up is spun off precisely so it does
+          // not interrupt what this conversation is doing — yanking the window
+          // over to the new thread would undo that. The toast is the way in.
+          toastManager.add(
+            stackedThreadToast({
+              type: "success",
+              title: crossProject
+                ? `Follow-up started in ${targetProject.name}`
+                : "Follow-up started",
+              description: nextThreadTitle,
+              actionProps: {
+                children: "Open",
+                onClick: () => {
+                  void navigate({
+                    to: "/$environmentId/$threadId",
+                    params: {
+                      environmentId: sourceThread.environmentId,
+                      threadId: nextThreadId,
+                    },
+                  });
+                },
+              },
+            }),
+          );
+        })
         .catch(async (err: unknown) => {
           await api.orchestration
             .dispatchCommand({
@@ -4859,6 +5091,7 @@ function ChatViewContent(props: ChatViewProps) {
       activeProject,
       activeThreadBranch,
       activeThread,
+      allProjects,
       beginLocalDispatch,
       activeEnvironmentUnavailable,
       composerRef,
@@ -4869,6 +5102,7 @@ function ChatViewContent(props: ChatViewProps) {
       navigate,
       resetLocalDispatch,
       runtimeMode,
+      setThreadError,
       upsertFollowupStatus,
     ],
   );
@@ -5033,7 +5267,7 @@ function ChatViewContent(props: ChatViewProps) {
 
   // Empty state: no active thread
   if (!activeThread) {
-    return <NoActiveThreadState />;
+    return <NoActiveThreadState showRecentThreads />;
   }
 
   const panelToggleControls = (
@@ -5092,6 +5326,8 @@ function ChatViewContent(props: ChatViewProps) {
       <Suspense fallback={null}>
         <DiffPanel mode="embedded" composerDraftTarget={composerDraftTarget} />
       </Suspense>
+    ) : activeRightPanelSurface?.kind === "board" ? (
+      <OrchestratorBoardPanel mode="embedded" environmentId={environmentId} />
     ) : activeRightPanelSurface?.kind === "plan" ? (
       <PlanSidebar
         activePlan={activePlan}
@@ -5106,12 +5342,12 @@ function ChatViewContent(props: ChatViewProps) {
       />
     ) : (activeRightPanelSurface?.kind === "files" || activeRightPanelSurface?.kind === "file") &&
       activeProject &&
-      activeWorkspaceRoot ? (
+      filePreviewCwd ? (
       <Suspense fallback={null}>
         <FilePreviewPanel
-          key={`${activeProject.environmentId}:${activeWorkspaceRoot}`}
+          key={`${activeProject.environmentId}:${filePreviewCwd}`}
           environmentId={activeProject.environmentId}
-          cwd={activeWorkspaceRoot}
+          cwd={filePreviewCwd}
           projectName={activeProject.name}
           threadRef={activeThreadRef}
           composerDraftTarget={composerDraftTarget}
@@ -5171,6 +5407,15 @@ function ChatViewContent(props: ChatViewProps) {
             keybindings={keybindings}
             availableEditors={availableEditors}
             gitCwd={gitCwd}
+            sourceHandoff={
+              sourceHandoff
+                ? {
+                    counterpartThreadId: sourceHandoff.counterpartThreadId,
+                    counterpartTitle: sourceHandoff.counterpartTitle,
+                  }
+                : null
+            }
+            onOpenThread={onOpenThread}
             onRunProjectScript={runProjectScript}
             onAddProjectScript={saveProjectScript}
             onUpdateProjectScript={updateProjectScript}
@@ -5207,6 +5452,7 @@ function ChatViewContent(props: ChatViewProps) {
                   activeThreadEnvironmentId={activeThread.environmentId}
                   routeThreadKey={routeThreadKey}
                   onOpenTurnDiff={onOpenTurnDiff}
+                  onOpenThread={onOpenThread}
                   revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
                   onRevertUserMessage={onRevertUserMessage}
                   isRevertingCheckpoint={isRevertingCheckpoint}
@@ -5238,6 +5484,50 @@ function ChatViewContent(props: ChatViewProps) {
                   containerRef={messagesWrapperRef}
                   onQuote={onQuoteSelection}
                 />
+
+                {/* Suggested-task deck — floats over the top-right of the chat
+                    column so it costs no transcript space and shifts left with
+                    the column when the right panel opens. */}
+                {isServerThread && pendingFollowups.length > 0 ? (
+                  <FollowupChipDeck
+                    followups={pendingFollowups}
+                    busyId={followupBusyId}
+                    cwd={gitCwd}
+                    canStartInWorktree={isGitRepo && Boolean(activeThreadBranch)}
+                    projectChoices={followupProjectChoices}
+                    onStartLocally={(followup) => void onSpinOffFollowup(followup)}
+                    onStartInWorktree={(followup) =>
+                      void onSpinOffFollowup(followup, { worktree: true })
+                    }
+                    onStartInProject={(followup, projectId) =>
+                      void onSpinOffFollowup(followup, { projectId })
+                    }
+                    onFixInSession={(followup) => void onDoFollowupNow(followup)}
+                    onStartCustom={setCustomStartFollowup}
+                    onDismiss={onDismissFollowup}
+                  />
+                ) : null}
+
+                <FollowupCustomStartDialog
+                  followup={customStartFollowup}
+                  open={customStartFollowup !== null}
+                  onOpenChange={(open) => {
+                    if (!open) {
+                      setCustomStartFollowup(null);
+                    }
+                  }}
+                  canStartInWorktree={isGitRepo && Boolean(activeThreadBranch)}
+                  projectChoices={followupProjectChoices}
+                  onStart={(followup, options) => {
+                    setCustomStartFollowup(null);
+                    void onSpinOffFollowup(followup, {
+                      worktree: options.worktree,
+                      ...(options.projectId ? { projectId: options.projectId } : {}),
+                      extraContext: options.extraContext,
+                      markHandoff: options.markHandoff,
+                    });
+                  }}
+                />
               </div>
 
               {/* Input bar */}
@@ -5254,17 +5544,6 @@ function ChatViewContent(props: ChatViewProps) {
                 )}
               >
                 <div className="relative isolate">
-                  {isServerThread && pendingFollowups.length > 0 ? (
-                    <FollowupChips
-                      className="mb-2"
-                      followups={pendingFollowups}
-                      busyId={followupBusyId}
-                      cwd={gitCwd}
-                      onDoNow={(followup) => void onDoFollowupNow(followup)}
-                      onSpinOff={(followup) => void onSpinOffFollowup(followup)}
-                      onDismiss={onDismissFollowup}
-                    />
-                  ) : null}
                   {activeThreadRef ? (
                     <QueuedTurns
                       turns={activeQueuedTurns}
@@ -5273,6 +5552,7 @@ function ChatViewContent(props: ChatViewProps) {
                       }
                       onRemove={(id) => useQueuedTurnStore.getState().remove(activeThreadRef, id)}
                       onRetry={(id) => useQueuedTurnStore.getState().retry(activeThreadRef, id)}
+                      onSendNow={sendQueuedTurnNow}
                     />
                   ) : null}
                   <ComposerBannerStack className="relative z-0" items={composerBannerItems} />
@@ -5345,6 +5625,7 @@ function ChatViewContent(props: ChatViewProps) {
                       handleRuntimeModeChange={handleRuntimeModeChange}
                       handleInteractionModeChange={handleInteractionModeChange}
                       togglePlanSidebar={togglePlanSidebar}
+                      toggleOrchestratorBoard={toggleOrchestratorBoard}
                       focusComposer={focusComposer}
                       scheduleComposerFocus={scheduleComposerFocus}
                       setThreadError={setThreadError}

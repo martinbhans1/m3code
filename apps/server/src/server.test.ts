@@ -71,6 +71,10 @@ const TEST_EPOCH = DateTime.makeUnsafe("1970-01-01T00:00:00.000Z");
 
 import type { ServerConfigShape } from "./config.ts";
 import { deriveServerPaths, ServerConfig } from "./config.ts";
+import {
+  ConversationSearch,
+  type ConversationSearchShape,
+} from "./conversationSearch/ConversationSearch.ts";
 import { makeRoutesLayer } from "./server.ts";
 import {
   CheckpointDiffQuery,
@@ -199,6 +203,8 @@ const makeDefaultOrchestrationReadModel = () => {
         proposedPlans: [],
         checkpoints: [],
         deletedAt: null,
+        handoffThreadId: null,
+        sourceThreadId: null,
       },
     ],
   };
@@ -226,7 +232,10 @@ const makeDefaultOrchestrationThreadShell = (
     latestUserMessageAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
+    hasPendingFollowups: false,
     hasActionableProposedPlan: false,
+    handoffThreadId: null,
+    sourceThreadId: null,
     ...overrides,
   };
 };
@@ -369,6 +378,7 @@ const buildAppUnderTest = (options?: {
     cloudManagedEndpointRuntime?: Partial<CloudManagedEndpointRuntimeShape>;
     relayClient?: Partial<RelayClient.RelayClientShape>;
     cloudCliTokenManager?: Partial<CloudCliTokenManager.CloudCliTokenManagerShape>;
+    conversationSearch?: Partial<ConversationSearchShape>;
   };
 }) =>
   Effect.gen(function* () {
@@ -376,7 +386,7 @@ const buildAppUnderTest = (options?: {
     const tempBaseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-router-test-" });
     const baseDir = options?.config?.baseDir ?? tempBaseDir;
     const devUrl = options?.config?.devUrl;
-    const derivedPaths = yield* deriveServerPaths(baseDir, devUrl);
+    const derivedPaths = yield* deriveServerPaths(baseDir);
     const config: ServerConfigShape = {
       logLevel: "Info",
       traceMinLevel: "Info",
@@ -690,6 +700,10 @@ const buildAppUnderTest = (options?: {
             retain: Effect.void,
             registerTerminalProcesses: () => Effect.void,
             unregisterTerminal: () => Effect.void,
+          }),
+          Layer.mock(ConversationSearch)({
+            search: () => Effect.succeed({ results: [], semanticStatus: "unavailable" }),
+            ...options?.layers?.conversationSearch,
           }),
         ),
       ),
@@ -5327,6 +5341,8 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             proposedPlans: [],
             checkpoints: [],
             deletedAt: null,
+            handoffThreadId: null,
+            sourceThreadId: null,
           },
         ],
       };

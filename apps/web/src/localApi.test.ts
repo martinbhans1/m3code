@@ -330,6 +330,7 @@ const baseServerConfig: ServerConfig = {
     sessionCookieName: "t3_session",
   },
   cwd: "/tmp/workspace",
+  orchestratorWorkspaceRoot: "/state/orchestrator",
   keybindingsConfigPath: "/tmp/workspace/.config/keybindings.json",
   keybindings: [],
   issues: [],
@@ -674,6 +675,7 @@ describe("wsApi", () => {
       diffWordWrap: true,
       favorites: [],
       providerModelPreferences: {},
+      showThreadChangeRequestStatus: false,
       sidebarProjectGroupingMode: "repository_path" as const,
       sidebarProjectGroupingOverrides: {
         "environment-local:/tmp/project": "separate" as const,
@@ -738,6 +740,7 @@ describe("wsApi", () => {
       diffWordWrap: true,
       favorites: [],
       providerModelPreferences: {},
+      showThreadChangeRequestStatus: false,
       sidebarProjectGroupingMode: "repository_path" as const,
       sidebarProjectGroupingOverrides: {
         "environment-local:/tmp/project": "separate" as const,

@@ -3,6 +3,7 @@ import {
   type MessageId,
   type ScopedThreadRef,
   type ServerProviderSkill,
+  type ThreadId,
   type TurnId,
 } from "@t3tools/contracts";
 import { parseScopedThreadKey } from "@t3tools/client-runtime";
@@ -38,6 +39,7 @@ import {
 } from "../../lib/diffRendering";
 import ChatMarkdown from "../ChatMarkdown";
 import {
+  ArrowRightIcon,
   BotIcon,
   CheckIcon,
   ChevronDownIcon,
@@ -45,7 +47,9 @@ import {
   ChevronUpIcon,
   CircleAlertIcon,
   EyeIcon,
+  FileDiffIcon,
   FileTextIcon,
+  GitBranchIcon,
   GlobeIcon,
   HammerIcon,
   MessageCircleIcon,
@@ -128,6 +132,13 @@ interface TimelineRowSharedState {
   onImageExpand: (preview: ExpandedImagePreview) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onToggleTurnFold: (turnId: TurnId) => void;
+  /**
+   * Navigate to another thread. Passed in rather than calling `useNavigate`
+   * here on purpose: this module is pulled in by a `renderToStaticMarkup` test
+   * through a timed dynamic import, and importing the router would both bloat
+   * that graph and put a router hook in a tree that has no RouterProvider.
+   */
+  onOpenThread: (threadId: ThreadId) => void;
 }
 
 interface TimelineRowActivityState {
@@ -141,6 +152,9 @@ const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FOOTER = <div className="h-3 sm:h-4" />;
 const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">> = [];
+// Module-level so the default does not change identity per render and defeat
+// the sharedState memo.
+const NOOP_OPEN_THREAD = (): void => {};
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -156,6 +170,12 @@ interface MessagesTimelineProps {
   turnDiffSummaryByAssistantMessageId: Map<MessageId, TurnDiffSummary>;
   routeThreadKey: string;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
+  /**
+   * Navigate to another thread (the handoff link). Optional so the many
+   * render-only fixtures do not have to stub navigation they never exercise;
+   * ChatView, the only production caller, always passes it.
+   */
+  onOpenThread?: ((threadId: ThreadId) => void) | undefined;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
   isRevertingCheckpoint: boolean;
@@ -183,6 +203,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   turnDiffSummaryByAssistantMessageId,
   routeThreadKey,
   onOpenTurnDiff,
+  onOpenThread = NOOP_OPEN_THREAD,
   revertTurnCountByUserMessageId,
   onRevertUserMessage,
   isRevertingCheckpoint,
@@ -325,6 +346,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onImageExpand,
       onOpenTurnDiff,
       onToggleTurnFold,
+      onOpenThread,
     }),
     [
       timestampFormat,
@@ -338,6 +360,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onImageExpand,
       onOpenTurnDiff,
       onToggleTurnFold,
+      onOpenThread,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -382,9 +405,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
     return null;
   }, [rows]);
-  // The changed-files indicator now lives in its own collapsible mini-panel in
-  // the right gutter, so the top strip is only for the user-prompt navigator.
+  const [changedFilesHidden, setChangedFilesHidden] = useChangedFilesHidden();
   const showContextStrip = Boolean(selectedUserPrompt);
+  const hasChangedFiles = Boolean(latestChangedFilesSummary);
+  // The prompt navigator and the changed-files panel share a single overlay row,
+  // so they can never sit on top of each other. The row exists if either does.
+  const showOverlayRow = showContextStrip || hasChangedFiles;
 
   const scrollToTimelineRow = useCallback(
     (index: number) => {
@@ -433,25 +459,39 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     <TimelineRowCtx value={sharedState}>
       <TimelineRowActivityCtx value={activityState}>
         <div className="relative h-full min-h-0">
-          {showContextStrip ? (
-            <ConversationContextStrip
-              selectedUserPrompt={selectedUserPrompt}
-              selectedUserPromptIndex={selectedUserPromptIndex}
-              userPromptCount={userPromptRows.length}
-              onSelectUserPrompt={selectUserPrompt}
-              onJumpToSelectedUserPrompt={() => {
-                if (selectedUserPrompt) {
-                  scrollToTimelineRow(selectedUserPrompt.index);
-                }
-              }}
-            />
-          ) : null}
-          {latestChangedFilesSummary ? (
-            <ChangedFilesMiniPanel
-              summary={latestChangedFilesSummary}
-              resolvedTheme={resolvedTheme}
-              onOpenTurnDiff={onOpenTurnDiff}
-            />
+          {showOverlayRow ? (
+            <div className="pointer-events-none absolute inset-x-3 top-2 z-20 flex justify-center sm:inset-x-5">
+              <div className="flex w-full max-w-3xl items-start gap-2">
+                {showContextStrip ? (
+                  <ConversationContextStrip
+                    selectedUserPrompt={selectedUserPrompt}
+                    selectedUserPromptIndex={selectedUserPromptIndex}
+                    userPromptCount={userPromptRows.length}
+                    onSelectUserPrompt={selectUserPrompt}
+                    onJumpToSelectedUserPrompt={() => {
+                      if (selectedUserPrompt) {
+                        scrollToTimelineRow(selectedUserPrompt.index);
+                      }
+                    }}
+                  />
+                ) : null}
+                {latestChangedFilesSummary ? (
+                  changedFilesHidden ? (
+                    <ChangedFilesRestoreButton
+                      fileCount={latestChangedFilesSummary.files.length}
+                      onRestore={() => setChangedFilesHidden(false)}
+                    />
+                  ) : (
+                    <ChangedFilesMiniPanel
+                      summary={latestChangedFilesSummary}
+                      resolvedTheme={resolvedTheme}
+                      onOpenTurnDiff={onOpenTurnDiff}
+                      onHide={() => setChangedFilesHidden(true)}
+                    />
+                  )
+                ) : null}
+              </div>
+            </div>
           ) : null}
           <LegendList<MessagesTimelineRow>
             ref={listRef}
@@ -466,7 +506,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             onScroll={handleScroll}
             className="scrollbar-gutter-both h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
             ListHeaderComponent={
-              showContextStrip ? <div className="h-[4.75rem] sm:h-16" /> : TIMELINE_LIST_HEADER
+              showOverlayRow ? <div className="h-[4.75rem] sm:h-16" /> : TIMELINE_LIST_HEADER
             }
             ListFooterComponent={TIMELINE_LIST_FOOTER}
           />
@@ -505,62 +545,68 @@ const ConversationContextStrip = memo(function ConversationContextStrip(props: {
     : "";
   const promptLabel = visiblePromptText || "Empty prompt";
 
+  if (!selectedUserPrompt) return null;
+
   return (
-    <div className="pointer-events-none absolute inset-x-3 top-2 z-20 mx-auto flex max-w-3xl items-center gap-2 sm:inset-x-5">
-      {selectedUserPrompt ? (
-        <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-border/70 bg-background/92 px-2 py-1.5 shadow-sm backdrop-blur">
-          <Button
-            type="button"
-            size="icon-xs"
-            variant="ghost"
-            disabled={selectedUserPromptIndex <= 0}
-            aria-label="Previous prompt"
-            onClick={() => onSelectUserPrompt(selectedUserPromptIndex - 1)}
-          >
-            <ChevronUpIcon className="size-3.5" />
-          </Button>
-          <button
-            type="button"
-            className="min-w-0 flex-1 truncate text-left text-xs text-foreground/82 hover:text-foreground"
-            onClick={onJumpToSelectedUserPrompt}
-            title={promptLabel}
-          >
-            <span className="mr-1 text-muted-foreground/60">You:</span>
-            {promptLabel}
-          </button>
-          <Button
-            type="button"
-            size="icon-xs"
-            variant="ghost"
-            disabled={selectedUserPromptIndex >= userPromptCount - 1}
-            aria-label="Next prompt"
-            onClick={() => onSelectUserPrompt(selectedUserPromptIndex + 1)}
-          >
-            <ChevronDownIcon className="size-3.5" />
-          </Button>
-        </div>
-      ) : null}
+    <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-border/70 bg-background/92 px-2 py-1.5 shadow-sm backdrop-blur">
+      <Button
+        type="button"
+        size="icon-xs"
+        variant="ghost"
+        className="shrink-0"
+        disabled={selectedUserPromptIndex <= 0}
+        aria-label="Previous prompt"
+        onClick={() => onSelectUserPrompt(selectedUserPromptIndex - 1)}
+      >
+        <ChevronUpIcon className="size-3.5" />
+      </Button>
+      <button
+        type="button"
+        className="min-w-0 flex-1 truncate text-left text-xs text-foreground/82 hover:text-foreground"
+        onClick={onJumpToSelectedUserPrompt}
+        title={promptLabel}
+      >
+        <span className="mr-1 text-muted-foreground/60">You:</span>
+        {promptLabel}
+      </button>
+      <Button
+        type="button"
+        size="icon-xs"
+        variant="ghost"
+        className="shrink-0"
+        disabled={selectedUserPromptIndex >= userPromptCount - 1}
+        aria-label="Next prompt"
+        onClick={() => onSelectUserPrompt(selectedUserPromptIndex + 1)}
+      >
+        <ChevronDownIcon className="size-3.5" />
+      </Button>
     </div>
   );
 });
 
 /**
- * Collapsible "Changed files" indicator docked in the right gutter of the chat.
- * Minimized by default to a small chip; expands in place into a scrollable file
- * tree. Clicking a file (or "View diff") opens the full diff in the right panel.
+ * Collapsible "Changed files" indicator, sharing the chat's top overlay row with
+ * the prompt navigator. Minimized by default to a small chip; expands in place
+ * into a scrollable file tree. Clicking a file (or "View diff") opens the full
+ * diff in the right panel.
+ *
+ * It used to be absolutely positioned in the right gutter on its own, which put
+ * it on top of the prompt navigator on narrower windows and made the next-prompt
+ * button unclickable. Both now live in one flex row owned by the parent.
  */
 const ChangedFilesMiniPanel = memo(function ChangedFilesMiniPanel(props: {
   summary: TurnDiffSummary;
   resolvedTheme: "light" | "dark";
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
+  onHide: () => void;
 }) {
-  const { summary, resolvedTheme, onOpenTurnDiff } = props;
+  const { summary, resolvedTheme, onOpenTurnDiff, onHide } = props;
   const [expanded, setExpanded] = useState(false);
   const [allDirectoriesExpanded, setAllDirectoriesExpanded] = useState(false);
   const diffStats = summarizeTurnDiffStats(summary.files);
 
   return (
-    <div className="pointer-events-none absolute right-3 top-2 z-20 flex max-w-[min(20rem,calc(100%-1.5rem))] flex-col items-end sm:right-5">
+    <div className="pointer-events-none flex max-w-full shrink-0 flex-col items-end">
       {expanded ? (
         <div className="pointer-events-auto flex max-h-[min(60vh,32rem)] w-72 flex-col overflow-hidden rounded-lg border border-border/70 bg-background/95 shadow-md backdrop-blur">
           <div className="flex items-center justify-between gap-2 border-b border-border/60 px-2.5 py-1.5">
@@ -601,6 +647,16 @@ const ChangedFilesMiniPanel = memo(function ChangedFilesMiniPanel(props: {
               >
                 <MinusIcon className="size-3.5" />
               </Button>
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="ghost"
+                aria-label="Hide changed files"
+                title="Hide changed files"
+                onClick={onHide}
+              >
+                <XIcon className="size-3.5" />
+              </Button>
             </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1.5">
@@ -614,22 +670,84 @@ const ChangedFilesMiniPanel = memo(function ChangedFilesMiniPanel(props: {
           </div>
         </div>
       ) : (
-        <button
-          type="button"
-          className="pointer-events-auto flex shrink-0 items-center gap-1.5 rounded-lg border border-border/70 bg-background/92 px-2.5 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur hover:text-foreground"
-          onClick={() => setExpanded(true)}
-          title="Show changed files"
-        >
-          <span>Changed files ({summary.files.length})</span>
-          {hasNonZeroStat(diffStats) ? (
-            <DiffStatLabel additions={diffStats.additions} deletions={diffStats.deletions} />
-          ) : null}
-          <ChevronDownIcon className="size-3.5 opacity-70" />
-        </button>
+        <div className="pointer-events-auto flex min-w-0 items-center rounded-lg border border-border/70 bg-background/92 pr-1 text-xs text-muted-foreground shadow-sm backdrop-blur">
+          <button
+            type="button"
+            className="flex min-w-0 items-center gap-1.5 py-1.5 pl-2.5 hover:text-foreground"
+            onClick={() => setExpanded(true)}
+            title="Show changed files"
+          >
+            {/* Collapses to just the count on narrow windows so the prompt
+                navigator beside it keeps a usable width. */}
+            <span className="truncate">
+              <span className="max-sm:hidden">Changed files </span>({summary.files.length})
+            </span>
+            {hasNonZeroStat(diffStats) ? (
+              <DiffStatLabel additions={diffStats.additions} deletions={diffStats.deletions} />
+            ) : null}
+            <ChevronDownIcon className="size-3.5 shrink-0 opacity-70" />
+          </button>
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            className="ml-0.5 shrink-0"
+            aria-label="Hide changed files"
+            title="Hide changed files"
+            onClick={onHide}
+          >
+            <XIcon className="size-3.5" />
+          </Button>
+        </div>
       )}
     </div>
   );
 });
+
+/**
+ * Shown in place of the changed-files panel once it has been hidden, so the
+ * panel is always recoverable from the same spot it was dismissed from.
+ */
+const ChangedFilesRestoreButton = memo(function ChangedFilesRestoreButton(props: {
+  fileCount: number;
+  onRestore: () => void;
+}) {
+  const label = `Show changed files (${props.fileCount})`;
+  return (
+    <Button
+      type="button"
+      size="icon-xs"
+      variant="ghost"
+      className="pointer-events-auto shrink-0 rounded-lg border border-border/70 bg-background/92 text-muted-foreground shadow-sm backdrop-blur hover:text-foreground"
+      aria-label={label}
+      title={label}
+      onClick={props.onRestore}
+    >
+      <FileDiffIcon className="size-3.5" />
+    </Button>
+  );
+});
+
+const CHANGED_FILES_HIDDEN_STORAGE_KEY = "t3code:changed-files-hidden";
+
+/**
+ * Whether the changed-files panel is hidden. A preference rather than a
+ * per-thread dismissal — hiding it in one conversation keeps it hidden
+ * everywhere until it is explicitly brought back.
+ */
+function useChangedFilesHidden(): [boolean, (hidden: boolean) => void] {
+  const [hidden, setHidden] = useState(() => {
+    if (typeof localStorage === "undefined") return false;
+    return localStorage.getItem(CHANGED_FILES_HIDDEN_STORAGE_KEY) === "true";
+  });
+  const update = useCallback((next: boolean) => {
+    setHidden(next);
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(CHANGED_FILES_HIDDEN_STORAGE_KEY, next ? "true" : "false");
+    }
+  }, []);
+  return [hidden, update];
+}
 
 function summarizeUserPromptForContextStrip(prompt: string): string {
   const visibleText = deriveDisplayedUserMessageState(prompt).visibleText.trim();
@@ -678,6 +796,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
         <AssistantTimelineRow row={row} />
       ) : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
+      {row.kind === "handoff" ? <HandoffTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
     </div>
   );
@@ -832,6 +951,16 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
   const ctx = use(TimelineRowCtx);
   const Icon = row.expanded ? ChevronDownIcon : ChevronRightIcon;
 
+  // A stopped turn that never reached a tool call has nothing behind the row —
+  // show the label without a dead expander.
+  if (!row.expandable) {
+    return (
+      <div className="border-b border-border/60 pb-2 pt-1">
+        <p className="select-none px-1 text-xs text-muted-foreground tabular-nums">{row.label}</p>
+      </div>
+    );
+  }
+
   return (
     <div className="border-b border-border/60 pb-2 pt-1">
       <button
@@ -920,6 +1049,41 @@ function ProposedPlanTimelineRow({
         cwd={ctx.markdownCwd}
         workspaceRoot={ctx.workspaceRoot}
       />
+    </div>
+  );
+}
+
+/**
+ * The "this conversation was continued elsewhere" notice, and its mirror image
+ * on the thread that picked the work up.
+ *
+ * It is deliberately a full-width card rather than a work-log line: the point
+ * of the notice is the link, and the reason it exists at all is so that opening
+ * an old thread months later answers "what happened to this?" without having to
+ * reconstruct it. Archiving would hide the thread; this just labels it.
+ */
+function HandoffTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "handoff" }> }) {
+  const ctx = use(TimelineRowCtx);
+  const continued = row.handoff.direction === "continuedIn";
+
+  return (
+    <div className="min-w-0 px-1 py-0.5">
+      <button
+        type="button"
+        onClick={() => ctx.onOpenThread(row.handoff.counterpartThreadId)}
+        className="group flex w-full items-center gap-2.5 rounded-lg border border-border/70 bg-card/60 px-3 py-2 text-left transition-colors hover:border-border hover:bg-accent/50 hover:cursor-pointer"
+      >
+        <GitBranchIcon className="size-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1">
+          <span className="block text-[11px] font-medium text-muted-foreground">
+            {continued ? "Continued in a new conversation" : "Spun off from"}
+          </span>
+          <span className="block truncate text-sm text-foreground">
+            {row.handoff.counterpartTitle}
+          </span>
+        </span>
+        <ArrowRightIcon className="size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+      </button>
     </div>
   );
 }
@@ -1728,8 +1892,10 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const activity = use(TimelineRowActivityCtx);
   const [expanded, setExpanded] = useState(false);
   const iconConfig = workToneIcon(workEntry.tone);
+  // Runtime warnings are cautionary/informational (unknown SDK events, retries,
+  // stderr noise) — not failures. Keep the red X for actual errors/tool fails.
   const showWarningIndicator = workEntry.sourceActivityKind === "runtime.warning";
-  const entryIconName = showWarningIndicator ? "x" : workEntryIconName(workEntry);
+  const entryIconName = showWarningIndicator ? "circle-alert" : workEntryIconName(workEntry);
   const heading = toolWorkEntryHeading(workEntry);
   const rawPreview = workEntryPreview(workEntry, workspaceRoot);
   const preview =
@@ -1748,7 +1914,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const iconWrapperClass = cn(
     "flex size-5 shrink-0 items-center justify-center",
     showWarningIndicator
-      ? "text-destructive"
+      ? "text-warning"
       : showDestructiveRowStyle
         ? "text-destructive"
         : workEntry.tone === "tool" || showFailedIndicator

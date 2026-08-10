@@ -2,7 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
-import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
+import { ProjectId, ThreadId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { DatabaseConnectionConfig, DatabaseConnectionId } from "./database.ts";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model.ts";
 import { ModelSelection } from "./orchestration.ts";
@@ -89,6 +89,12 @@ export const ClientSettingsSchema = Schema.Struct({
       modelOrder: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     }),
   ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  // Whether to show the per-thread pull-request / change-request status icon in
+  // the sidebar. Defaults to hidden — projects that never open PRs would
+  // otherwise carry a permanent, meaningless indicator on every thread.
+  showThreadChangeRequestStatus: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE)),
   ),
@@ -382,6 +388,49 @@ export type ObservabilitySettings = typeof ObservabilitySettings.Type;
 
 export const DEFAULT_AUTOMATIC_GIT_FETCH_INTERVAL = Duration.seconds(30);
 
+/**
+ * How much of a conversation the orchestrator may touch.
+ *
+ * "none" is invisible to the orchestrator entirely, not merely unsendable.
+ * Absent from the per-thread map means "whatever `defaultOrchestratorThreadAccess`
+ * says", so the baseline is a setting and each conversation may override it in
+ * either direction — tighten a thread below a permissive default, or open one up
+ * above a closed one.
+ */
+export const OrchestratorThreadAccess = Schema.Literals(["none", "watch", "control"]);
+export type OrchestratorThreadAccess = typeof OrchestratorThreadAccess.Type;
+
+/**
+ * A blanket override of everything above, set from the orchestrator's own
+ * conversation rather than from the conversations being shared.
+ *
+ * The per-conversation model breaks down in the situation it exists for: you
+ * are away from your desk, you want the orchestrator to sweep everything you
+ * have going, and one of the conversations you care about was never shared —
+ * possibly the one you most wanted followed up. Reaching each thread
+ * individually from a phone is not a real option, and neither is
+ * `defaultOrchestratorThreadAccess`, because an explicit per-thread entry wins
+ * over it. This one wins over both, in either direction:
+ *
+ * - "per-conversation" — no override; each conversation's own setting decides.
+ * - "read-shared" — everything already shared becomes read-only.
+ * - "read-all" — every conversation is readable, none can be sent to.
+ * - "control-all" — every conversation is readable and steerable.
+ *
+ * Threads in the orchestrator's own project stay excluded under every value:
+ * they all hold the cross-thread tools, so opening them up would let two meta
+ * conversations drive each other with nothing to stop them.
+ */
+export const OrchestratorAccessOverride = Schema.Literals([
+  "per-conversation",
+  "read-shared",
+  "read-all",
+  "control-all",
+]);
+export type OrchestratorAccessOverride = typeof OrchestratorAccessOverride.Type;
+export const DEFAULT_ORCHESTRATOR_ACCESS_OVERRIDE =
+  "per-conversation" as const satisfies OrchestratorAccessOverride;
+
 export const ServerSettings = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   automaticGitFetchInterval: Schema.DurationFromMillis.pipe(
@@ -393,6 +442,55 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed("local" as const satisfies ThreadEnvMode)),
   ),
   addProjectBaseDirectory: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  // Designates one project as the "meta" project: threads inside it are the
+  // only ones granted the cross-thread orchestrator MCP tools (see
+  // McpSessionRegistry.issue). `null` — the default — means no thread anywhere
+  // can read or steer other threads, so this stays off until it is opted into
+  // from settings.
+  orchestratorProjectId: Schema.NullOr(ProjectId).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  // Baseline access for every conversation that has no entry in the map below.
+  // Defaults to "none" so the orchestrator stays opt-in per thread; raising it
+  // to "watch" or "control" flips the model to opt-out, which is what the
+  // per-conversation control in the composer overrides in either direction.
+  defaultOrchestratorThreadAccess: OrchestratorThreadAccess.pipe(
+    Schema.withDecodingDefault(Effect.succeed("none" as const satisfies OrchestratorThreadAccess)),
+  ),
+  // Per-thread override of `defaultOrchestratorThreadAccess`. Keyed by
+  // `ThreadId`; a missing entry means "follow the default". Written whole, like
+  // `databaseConnections` — the map is small because it only holds the threads
+  // the user deliberately moved off the default.
+  orchestratorThreadAccess: Schema.Record(ThreadId, OrchestratorThreadAccess).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  // Blanket override of the two settings above, set from the orchestrator's own
+  // composer. Defaults to "per-conversation", which changes nothing.
+  orchestratorAccessOverride: OrchestratorAccessOverride.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_ORCHESTRATOR_ACCESS_OVERRIDE)),
+  ),
+  // Models the orchestrator may pick from when it opens a new conversation.
+  // Empty — the default — means it cannot choose at all and new conversations
+  // inherit their project's default model, which is the safe starting point.
+  // Populating it is how you let the orchestrator route work to a cheaper or a
+  // stronger model, across providers, without letting it reach for anything you
+  // have not sanctioned.
+  orchestratorModelChoices: Schema.Array(ModelSelection).pipe(
+    Schema.withDecodingDefault(
+      Effect.succeed([
+        {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus-5",
+          options: [{ id: "effort", value: "medium" }],
+        },
+        {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.6",
+          options: [{ id: "reasoningEffort", value: "medium" }],
+        },
+      ]),
+    ),
+  ),
   textGenerationModelSelection: ModelSelection.pipe(
     Schema.withDecodingDefault(
       Effect.succeed({
@@ -507,6 +605,32 @@ export const ServerSettingsPatch = Schema.Struct({
   automaticGitFetchInterval: Schema.optionalKey(Schema.DurationFromMillis),
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   addProjectBaseDirectory: Schema.optionalKey(TrimmedString),
+  // Nullable so the settings UI can clear the designation; `deepMerge` assigns
+  // null through, and omitting the key leaves the current value alone.
+  orchestratorProjectId: Schema.optionalKey(Schema.NullOr(ProjectId)),
+  defaultOrchestratorThreadAccess: Schema.optionalKey(OrchestratorThreadAccess),
+  // Whole-map replacement, same rationale as `databaseConnections`: a partial
+  // patch cannot express "this thread went back to following the default",
+  // which is a deletion rather than a value.
+  orchestratorThreadAccess: Schema.optionalKey(Schema.Record(ThreadId, OrchestratorThreadAccess)),
+  // Single-entry form of the above, and the one every caller should prefer.
+  //
+  // Sharing is revoked by removing a key, so a whole-map write carries every
+  // *other* thread's setting as collateral: a caller that read the map, did
+  // something slow, and wrote it back would restore access the user revoked in
+  // the meantime. This applies one key under the settings write lock, so a
+  // stale read cannot resurrect a revocation. `access: null` deletes the entry,
+  // putting the thread back on the default.
+  orchestratorThreadAccessEntry: Schema.optionalKey(
+    Schema.Struct({
+      threadId: ThreadId,
+      access: Schema.NullOr(OrchestratorThreadAccess),
+    }),
+  ),
+  orchestratorAccessOverride: Schema.optionalKey(OrchestratorAccessOverride),
+  // Whole-list replacement: the UI always sends the complete curated set, and a
+  // merge could not express removing a model.
+  orchestratorModelChoices: Schema.optionalKey(Schema.Array(ModelSelection)),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   observability: Schema.optionalKey(
     Schema.Struct({
@@ -541,6 +665,7 @@ export const ClientSettingsPatch = Schema.Struct({
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
+  showThreadChangeRequestStatus: Schema.optionalKey(Schema.Boolean),
   diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
   diffWordWrap: Schema.optionalKey(Schema.Boolean),
   favorites: Schema.optionalKey(

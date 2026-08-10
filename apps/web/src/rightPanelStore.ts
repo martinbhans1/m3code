@@ -14,7 +14,15 @@ import { createJSONStorage, persist } from "zustand/middleware";
 
 import { resolveStorage } from "./lib/storage";
 
-export const RIGHT_PANEL_KINDS = ["plan", "diff", "files", "file", "preview", "terminal"] as const;
+export const RIGHT_PANEL_KINDS = [
+  "plan",
+  "board",
+  "diff",
+  "files",
+  "file",
+  "preview",
+  "terminal",
+] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
 export type RightPanelSurface =
@@ -34,10 +42,21 @@ export type RightPanelSurface =
       id: `file:${string}`;
       kind: "file";
       relativePath: string;
+      /**
+       * The workspace root `relativePath` is relative to, when it is not this
+       * thread's own. Set when a conversation links a file belonging to another
+       * project — omitted (and so falling back to the active thread's root) for
+       * every ordinary link, and absent from surfaces persisted before this
+       * existed.
+       */
+      workspaceRoot?: string;
       revealLine: number | null;
       revealRequestId: number;
     }
-  | { id: "plan"; kind: "plan" };
+  | { id: "plan"; kind: "plan" }
+  // The orchestrator's status board: every conversation it can see, and what
+  // each one is waiting on.
+  | { id: "board"; kind: "board" };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 const RIGHT_PANEL_STORAGE_VERSION = 7;
@@ -52,7 +71,12 @@ interface RightPanelStoreState {
   byThreadKey: Record<string, ThreadRightPanelState>;
   open: (ref: ScopedThreadRef, kind: Exclude<RightPanelKind, "file" | "terminal">) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
-  openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
+  openFile: (
+    ref: ScopedThreadRef,
+    relativePath: string,
+    line?: number,
+    workspaceRoot?: string,
+  ) => void;
   openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
   splitTerminal: (
     ref: ScopedThreadRef,
@@ -92,6 +116,8 @@ const singletonSurface = (
       return { id: "files", kind };
     case "plan":
       return { id: "plan", kind };
+    case "board":
+      return { id: "board", kind };
   }
 };
 
@@ -104,10 +130,15 @@ const fileSurface = (
   relativePath: string,
   revealLine: number | null,
   revealRequestId: number,
+  workspaceRoot?: string,
 ): RightPanelSurface => ({
-  id: `file:${relativePath}`,
+  // Keyed by root as well as path when there is one, so the same relative path
+  // in two different projects opens as two tabs rather than silently swapping
+  // which file the open tab is showing.
+  id: workspaceRoot ? `file:${workspaceRoot}::${relativePath}` : `file:${relativePath}`,
   kind: "file",
   relativePath,
+  ...(workspaceRoot ? { workspaceRoot } : {}),
   revealLine,
   revealRequestId,
 });
@@ -259,13 +290,15 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             return upsertSurface({ ...current, surfaces: withoutPlaceholder }, surface);
           }),
         })),
-      openFile: (ref, relativePath, line) =>
+      openFile: (ref, relativePath, line, workspaceRoot) =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
             const withoutStandaloneExplorer = current.surfaces.filter(
               (surface) => surface.kind !== "files",
             );
-            const surfaceId = `file:${relativePath}` as const;
+            const surfaceId = (
+              workspaceRoot ? `file:${workspaceRoot}::${relativePath}` : `file:${relativePath}`
+            ) as `file:${string}`;
             const existing = withoutStandaloneExplorer.find(
               (surface): surface is Extract<RightPanelSurface, { kind: "file" }> =>
                 surface.id === surfaceId && surface.kind === "file",
@@ -274,6 +307,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               relativePath,
               normalizeRevealLine(line),
               (existing?.revealRequestId ?? 0) + 1,
+              workspaceRoot,
             );
             return {
               isOpen: true,

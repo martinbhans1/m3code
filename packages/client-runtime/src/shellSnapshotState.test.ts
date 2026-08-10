@@ -35,6 +35,8 @@ const BASE_SNAPSHOT: OrchestrationShellSnapshot = {
   ],
   threads: [
     {
+      handoffThreadId: null,
+      sourceThreadId: null,
       id: ThreadId.make("thread-1"),
       projectId: ProjectId.make("project-1"),
       title: "Thread",
@@ -52,6 +54,7 @@ const BASE_SNAPSHOT: OrchestrationShellSnapshot = {
       latestUserMessageAt: null,
       hasPendingApprovals: false,
       hasPendingUserInput: false,
+      hasPendingFollowups: false,
       hasActionableProposedPlan: false,
     },
   ],

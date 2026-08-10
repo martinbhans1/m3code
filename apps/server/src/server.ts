@@ -1,6 +1,7 @@
 import { EnvironmentHttpApi } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import { FetchHttpClient, HttpRouter, HttpServer } from "effect/unstable/http";
 import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
@@ -49,6 +50,7 @@ import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRun
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor.ts";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
+import { TurnAutoResumeLive } from "./orchestration/Layers/TurnAutoResume.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
@@ -83,10 +85,13 @@ import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
+import { ConversationSearchLive } from "./conversationSearch/ConversationSearch.ts";
 import {
-  clearPersistedServerRuntimeState,
+  clearOwnPersistedServerRuntimeState,
+  isProcessAlive,
   makePersistedServerRuntimeState,
   persistServerRuntimeState,
+  readPersistedServerRuntimeState,
 } from "./serverRuntimeState.ts";
 import { orchestrationHttpApiLayer } from "./orchestration/http.ts";
 import * as NetService from "@t3tools/shared/Net";
@@ -311,7 +316,9 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // every provider's `account.rate-limits.updated`), read by the Claude/Codex
   // drivers' `enrichSnapshot`. Merged with the loggers rather than piped as
   // its own step because `.pipe()` tops out at 20 arguments.
-  Layer.provideMerge(Layer.mergeAll(ProviderEventLoggersLive, ProviderUsageRegistryLive)),
+  Layer.provideMerge(
+    Layer.mergeAll(ProviderEventLoggersLive, ProviderUsageRegistryLive, ConversationSearchLive),
+  ),
   // `OpenCodeDriver.create()` yields `OpenCodeRuntime`; previously the old
   // `ProviderRegistryLive` pulled `OpenCodeRuntimeLive` in for itself, but
   // the rewritten registry reads snapshots off the instance registry and
@@ -387,6 +394,18 @@ export const makeServerLayer = Layer.unwrap(
             return;
           }
 
+          // Dev and the installed app now share one state store, so it is
+          // possible to have two backends on the same state.sqlite. WAL keeps
+          // that safe on disk, but neither process sees the other's live
+          // writes, so say so loudly instead of leaving it to be discovered as
+          // "my new thread never showed up".
+          const existing = yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
+          if (Option.isSome(existing) && isProcessAlive(existing.value.pid)) {
+            yield* Effect.logWarning(
+              `Another M3 Code backend (pid ${existing.value.pid}, ${existing.value.origin}) is already using ${config.stateDir}. Both processes will read and write the same database without seeing each other's updates; close one, or start dev with --isolated-state.`,
+            );
+          }
+
           const state = yield* makePersistedServerRuntimeState({
             config,
             port: address.port,
@@ -396,7 +415,7 @@ export const makeServerLayer = Layer.unwrap(
             state,
           });
         }),
-        () => clearPersistedServerRuntimeState(config.serverRuntimeStatePath),
+        () => clearOwnPersistedServerRuntimeState(config.serverRuntimeStatePath),
       ),
     );
     const tailscaleServeLayer = config.tailscaleServeEnabled
@@ -480,6 +499,10 @@ export const makeServerLayer = Layer.unwrap(
       runtimeStateLayer,
       tailscaleServeLayer,
       cloudDesiredLinkReconcileLayer,
+      // Outermost on purpose: finalizers run in reverse build order, so the
+      // shutdown capture here runs before `ProviderService` stops the sessions
+      // whose active turns it needs to read.
+      TurnAutoResumeLive,
     );
 
     return serverApplicationLayer.pipe(

@@ -237,6 +237,64 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("work log");
   });
 
+  it("renders runtime warnings as cautionary rows, not red failure Xs", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-warning",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-warning",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Claude SDK message 'command_lifecycle' — state: started",
+              tone: "info",
+              sourceActivityKind: "runtime.warning",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Claude SDK message &#x27;command_lifecycle&#x27;");
+    expect(markup).toContain("lucide-circle-alert");
+    expect(markup).toContain("text-warning");
+    // Warning rows must not use the destructive failure X affordance.
+    expect(markup).not.toContain('aria-label="Tool call failed"');
+    expect(markup).not.toContain("text-destructive");
+  });
+
+  it("keeps the red failure affordance for runtime errors", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        timelineEntries={[
+          {
+            id: "entry-error",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-error",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Runtime error",
+              tone: "error",
+              detail: "Provider process crashed",
+              sourceActivityKind: "runtime.error",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Runtime error");
+    expect(markup).toContain('aria-label="Tool call failed"');
+    expect(markup).toContain("text-destructive");
+  });
+
   it("formats changed file paths from the workspace root", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

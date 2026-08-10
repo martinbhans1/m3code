@@ -60,7 +60,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     Effect.gen(function* () {
       const { join } = yield* Path.Path;
       const baseDir = join(NodeOS.tmpdir(), "t3-cli-config-env-base");
-      const derivedPaths = yield* deriveServerPaths(baseDir, new URL("http://127.0.0.1:5173"));
+      const derivedPaths = yield* deriveServerPaths(baseDir);
       const resolved = yield* resolveServerConfig(
         {
           mode: Option.none(),
@@ -126,7 +126,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
     Effect.gen(function* () {
       const { join } = yield* Path.Path;
       const baseDir = join(NodeOS.tmpdir(), "t3-cli-config-flags-base");
-      const derivedPaths = yield* deriveServerPaths(baseDir, new URL("http://127.0.0.1:4173"));
+      const derivedPaths = yield* deriveServerPaths(baseDir);
       const resolved = yield* resolveServerConfig(
         {
           mode: Option.some("web"),
@@ -199,7 +199,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServePort: 443,
         }),
       );
-      const derivedPaths = yield* deriveServerPaths(baseDir, new URL("http://127.0.0.1:4173"));
+      const derivedPaths = yield* deriveServerPaths(baseDir);
 
       const resolved = yield* resolveServerConfig(
         {
@@ -260,7 +260,10 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
   it.effect("uses bootstrap envelope values as fallbacks when flags and env are absent", () =>
     Effect.gen(function* () {
       const { join } = yield* Path.Path;
-      const baseDir = "/tmp/t3-bootstrap-home";
+      // `resolveServerConfig` runs the bootstrap `t3Home` through `path.resolve`,
+      // so a bare POSIX path would gain a drive letter on Windows and no longer
+      // match the expectations below. Start from an already-absolute host path.
+      const baseDir = join(NodeOS.tmpdir(), "t3-cli-config-bootstrap-home");
       const fd = yield* openBootstrapFd(
         makeDesktopBootstrap({
           port: 4888,
@@ -396,7 +399,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           tailscaleServePort: 443,
         }),
       );
-      const derivedPaths = yield* deriveServerPaths(baseDir, new URL("http://127.0.0.1:4173"));
+      const derivedPaths = yield* deriveServerPaths(baseDir);
 
       const resolved = yield* resolveServerConfig(
         {

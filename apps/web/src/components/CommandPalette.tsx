@@ -5,6 +5,9 @@ import {
   DEFAULT_MODEL,
   type EnvironmentId,
   type FilesystemBrowseResult,
+  type OrchestrationSemanticSearchStatus,
+  type OrchestrationSearchThreadsResult,
+  type OrchestrationThreadSearchResult,
   type ProjectId,
   ProviderInstanceId,
   type SourceControlDiscoveryResult,
@@ -103,6 +106,7 @@ import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "./Icons"
 import { ProjectFavicon } from "./ProjectFavicon";
 import { ThreadRowLeadingStatus, ThreadRowTrailingStatus } from "./ThreadStatusIndicators";
 import { useServerKeybindings } from "../rpc/serverState";
+import { formatRelativeTimeLabel } from "../timestampFormat";
 import { resolveShortcutCommand } from "../keybindings";
 import {
   Command,
@@ -121,6 +125,63 @@ import type { ChatComposerHandle } from "./chat/ChatComposer";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 const BROWSE_STALE_TIME_MS = 30_000;
+
+interface ScopedThreadSearchResult extends OrchestrationThreadSearchResult {
+  readonly environmentId: EnvironmentId;
+}
+
+interface ThreadSearchResponseState {
+  readonly query: string;
+  readonly results: ReadonlyArray<ScopedThreadSearchResult>;
+  readonly semanticStatus: OrchestrationSemanticSearchStatus;
+}
+
+async function searchThreadsAcrossEnvironments(input: {
+  readonly environmentIds: ReadonlyArray<EnvironmentId>;
+  readonly query: string;
+  readonly includeSemantic: boolean;
+}): Promise<ThreadSearchResponseState | null> {
+  const settled = await Promise.allSettled(
+    input.environmentIds.map(async (environmentId) => {
+      const api = readEnvironmentApi(environmentId);
+      if (!api) throw new Error(`Environment ${environmentId} is unavailable.`);
+      const response = await api.orchestration.searchThreads({
+        query: input.query,
+        limit: 30,
+        includeArchived: true,
+        includeSemantic: input.includeSemantic,
+      });
+      return { environmentId, response };
+    }),
+  );
+  const fulfilled = settled.filter(
+    (
+      entry,
+    ): entry is PromiseFulfilledResult<{
+      environmentId: EnvironmentId;
+      response: OrchestrationSearchThreadsResult;
+    }> => entry.status === "fulfilled",
+  );
+  if (fulfilled.length === 0) return null;
+
+  const semanticStatus = fulfilled.some((entry) => entry.value.response.semanticStatus === "ready")
+    ? "ready"
+    : fulfilled.some((entry) => entry.value.response.semanticStatus === "indexing")
+      ? "indexing"
+      : "unavailable";
+  const results = fulfilled
+    .flatMap((entry) =>
+      entry.value.response.results.map((result) => ({
+        ...result,
+        environmentId: entry.value.environmentId,
+      })),
+    )
+    .toSorted(
+      (left, right) => right.score - left.score || right.updatedAt.localeCompare(left.updatedAt),
+    )
+    .slice(0, 30);
+  return { query: input.query, results, semanticStatus };
+}
 
 function getLocalFileManagerName(platform: string): string {
   if (isMacPlatform(platform)) {
@@ -409,6 +470,8 @@ function OpenCommandPaletteDialog() {
   const keybindings = useServerKeybindings();
   const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
   const currentView = viewStack.at(-1) ?? null;
+  const [threadSearchResponse, setThreadSearchResponse] =
+    useState<ThreadSearchResponseState | null>(null);
   const [browseGeneration, setBrowseGeneration] = useState(0);
   const [addProjectEnvironmentId, setAddProjectEnvironmentId] = useState<EnvironmentId | null>(
     null,
@@ -421,6 +484,51 @@ function OpenCommandPaletteDialog() {
   const primaryEnvironmentLabel = readPrimaryEnvironmentDescriptor()?.label ?? null;
   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((state) => state.byId);
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
+
+  const searchableEnvironmentIds = useMemo(() => {
+    const environmentIds = new Set([...projects, ...threads].map((entry) => entry.environmentId));
+    if (primaryEnvironmentId) environmentIds.add(primaryEnvironmentId);
+    return [...environmentIds].toSorted((a, b) => a.localeCompare(b));
+  }, [primaryEnvironmentId, projects, threads]);
+
+  useEffect(() => {
+    const normalizedQuery = deferredQuery.trim();
+    if (
+      normalizedQuery.length < 2 ||
+      deferredQuery.startsWith(">") ||
+      currentView !== null ||
+      searchableEnvironmentIds.length === 0
+    ) {
+      setThreadSearchResponse(null);
+      return;
+    }
+
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      void (async () => {
+        const lexicalResponse = await searchThreadsAcrossEnvironments({
+          environmentIds: searchableEnvironmentIds,
+          query: normalizedQuery,
+          includeSemantic: false,
+        });
+        if (cancelled) return;
+        setThreadSearchResponse(lexicalResponse);
+        if (!lexicalResponse) return;
+
+        const hybridResponse = await searchThreadsAcrossEnvironments({
+          environmentIds: searchableEnvironmentIds,
+          query: normalizedQuery,
+          includeSemantic: true,
+        });
+        if (!cancelled && hybridResponse) setThreadSearchResponse(hybridResponse);
+      })();
+    }, 150);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [currentView, deferredQuery, searchableEnvironmentIds]);
 
   const addProjectEnvironmentOptions = useMemo(() => {
     const options: AddProjectEnvironmentOption[] = [];
@@ -697,6 +805,45 @@ function OpenCommandPaletteDialog() {
       }),
     [activeThreadId, navigate, projectTitleById, settings.sidebarThreadSortOrder, threads],
   );
+  const serverThreadSearchItems = useMemo<CommandPaletteActionItem[] | null>(() => {
+    const normalizedQuery = deferredQuery.trim();
+    if (!threadSearchResponse || threadSearchResponse.query !== normalizedQuery) return null;
+    const loadedThreadByKey = new Map(
+      threads.map((thread) => [`${thread.environmentId}:${thread.id}`, thread] as const),
+    );
+    return threadSearchResponse.results.map((result) => {
+      const loadedThread = loadedThreadByKey.get(`${result.environmentId}:${result.threadId}`);
+      const descriptionParts = [
+        result.projectTitle,
+        ...(result.branch ? [`#${result.branch}`] : []),
+        ...(result.archivedAt ? ["Archived"] : []),
+        ...(result.snippet
+          ? [`${result.matchedRole ? `${result.matchedRole}: ` : ""}${result.snippet}`]
+          : []),
+      ];
+      return {
+        kind: "action",
+        value: `thread-search:${result.environmentId}:${result.threadId}`,
+        searchTerms: [normalizedQuery],
+        title: result.title,
+        description: descriptionParts.join(" · "),
+        timestamp: formatRelativeTimeLabel(result.updatedAt),
+        icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
+        ...(loadedThread
+          ? {
+              titleLeadingContent: <ThreadRowLeadingStatus thread={loadedThread} />,
+              titleTrailingContent: <ThreadRowTrailingStatus thread={loadedThread} />,
+            }
+          : {}),
+        run: async () => {
+          await navigate({
+            to: "/$environmentId/$threadId",
+            params: buildThreadRouteParams(scopeThreadRef(result.environmentId, result.threadId)),
+          });
+        },
+      } satisfies CommandPaletteActionItem;
+    });
+  }, [deferredQuery, navigate, threadSearchResponse, threads]);
   const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
 
   function pushPaletteView(view: CommandPaletteView): void {
@@ -1056,7 +1203,7 @@ function OpenCommandPaletteDialog() {
     query: deferredQuery,
     isInSubmenu: currentView !== null,
     projectSearchItems: projectSearchItems,
-    threadSearchItems: allThreadItems,
+    threadSearchItems: serverThreadSearchItems ?? allThreadItems,
   });
 
   const handleAddProject = useCallback(

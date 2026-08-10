@@ -520,3 +520,98 @@ export function useSmoothCaret() {
 
   return { smoothCaret, setSmoothCaret } as const;
 }
+
+// ── Caret thickness ────────────────────────────────────────────────────────
+// Width (px) of the smooth caret overlay, mirroring VS Code's `cursorWidth`.
+// Applied as `--composer-caret-width`; only visible while the smooth caret is
+// on, since the native caret's width isn't ours to set.
+
+const CARET_THICKNESS_STORAGE_KEY = "t3code:caret-thickness";
+export const DEFAULT_CARET_THICKNESS = 2;
+
+export const CARET_THICKNESS_OPTIONS = [
+  { label: "Hairline (1px)", value: 1 },
+  { label: "Thin (1.5px)", value: 1.5 },
+  { label: "Default (2px)", value: DEFAULT_CARET_THICKNESS },
+  { label: "Thick (3px)", value: 3 },
+] as const;
+
+let caretThicknessListeners: Array<() => void> = [];
+
+function emitCaretThicknessChange() {
+  for (const listener of caretThicknessListeners) listener();
+}
+
+export function normalizeCaretThickness(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number.parseFloat(String(value ?? ""));
+  const match = CARET_THICKNESS_OPTIONS.find((option) => option.value === parsed);
+  return match ? match.value : DEFAULT_CARET_THICKNESS;
+}
+
+function getStoredCaretThickness(): number {
+  if (!hasThemeStorage()) return DEFAULT_CARET_THICKNESS;
+  return normalizeCaretThickness(localStorage.getItem(CARET_THICKNESS_STORAGE_KEY));
+}
+
+function applyCaretThickness(thickness: number) {
+  if (typeof document === "undefined") return;
+  const root = document.documentElement;
+  if (thickness === DEFAULT_CARET_THICKNESS) {
+    root.style.removeProperty("--composer-caret-width");
+  } else {
+    root.style.setProperty("--composer-caret-width", `${thickness}px`);
+  }
+}
+
+// Apply immediately on module load so the caret is the right width before paint.
+if (typeof document !== "undefined" && hasThemeStorage()) {
+  applyCaretThickness(getStoredCaretThickness());
+}
+
+function subscribeCaretThickness(listener: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  caretThicknessListeners.push(listener);
+
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key === CARET_THICKNESS_STORAGE_KEY) {
+      applyCaretThickness(getStoredCaretThickness());
+      emitCaretThicknessChange();
+    }
+  };
+  window.addEventListener("storage", handleStorage);
+
+  return () => {
+    caretThicknessListeners = caretThicknessListeners.filter((l) => l !== listener);
+    window.removeEventListener("storage", handleStorage);
+  };
+}
+
+function getCaretThicknessSnapshot(): number {
+  return getStoredCaretThickness();
+}
+
+function getCaretThicknessServerSnapshot(): number {
+  return DEFAULT_CARET_THICKNESS;
+}
+
+export function useCaretThickness() {
+  const caretThickness = useSyncExternalStore(
+    subscribeCaretThickness,
+    getCaretThicknessSnapshot,
+    getCaretThicknessServerSnapshot,
+  );
+
+  const setCaretThickness = useCallback((next: number) => {
+    if (!hasThemeStorage()) return;
+    const normalized = normalizeCaretThickness(next);
+    if (normalized === DEFAULT_CARET_THICKNESS) {
+      localStorage.removeItem(CARET_THICKNESS_STORAGE_KEY);
+    } else {
+      localStorage.setItem(CARET_THICKNESS_STORAGE_KEY, String(normalized));
+    }
+    applyCaretThickness(normalized);
+    emitCaretThicknessChange();
+  }, []);
+
+  return { caretThickness, setCaretThickness } as const;
+}

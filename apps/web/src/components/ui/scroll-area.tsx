@@ -11,12 +11,21 @@ function ScrollArea({
   scrollbarGutter = false,
   hideScrollbars = false,
   chainVerticalScroll = false,
+  axis = "both",
   ...props
 }: ScrollAreaPrimitive.Root.Props & {
   scrollFade?: boolean;
   scrollbarGutter?: boolean;
   hideScrollbars?: boolean;
   chainVerticalScroll?: boolean;
+  /**
+   * Constrain which axis can scroll. Defaults to "both". Use "vertical" for
+   * lists that must never pan sideways (e.g. the sidebar) — a row that's a hair
+   * wider than the viewport would otherwise make the whole surface draggable
+   * horizontally on touch. Both axes are set explicitly so neither gets
+   * auto-promoted to `auto` by the CSS overflow-x/y interaction rules.
+   */
+  axis?: "both" | "vertical" | "horizontal";
 }) {
   return (
     <ScrollAreaPrimitive.Root
@@ -25,7 +34,10 @@ function ScrollArea({
     >
       <ScrollAreaPrimitive.Viewport
         className={cn(
-          "h-full max-h-[inherit] overflow-auto overscroll-contain rounded-[inherit] outline-none transition-shadows focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background data-has-overflow-x:overscroll-x-contain",
+          "h-full max-h-[inherit] overscroll-contain rounded-[inherit] outline-none transition-shadows focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background data-has-overflow-x:overscroll-x-contain",
+          axis === "both" && "overflow-auto",
+          axis === "vertical" && "overflow-x-hidden overflow-y-auto",
+          axis === "horizontal" && "overflow-x-auto overflow-y-hidden",
           chainVerticalScroll && "overscroll-y-auto",
           scrollFade &&
             "mask-t-from-[calc(100%-min(var(--fade-size),var(--scroll-area-overflow-y-start)))] mask-b-from-[calc(100%-min(var(--fade-size),var(--scroll-area-overflow-y-end)))] mask-l-from-[calc(100%-min(var(--fade-size),var(--scroll-area-overflow-x-start)))] mask-r-from-[calc(100%-min(var(--fade-size),var(--scroll-area-overflow-x-end)))] [--fade-size:1.5rem]",

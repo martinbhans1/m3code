@@ -110,6 +110,7 @@ function createBaseServerConfig(): ServerConfig {
       sessionCookieName: "t3_session",
     },
     cwd: "/repo/project",
+    orchestratorWorkspaceRoot: "/state/orchestrator",
     keybindingsConfigPath: "/repo/project/.t3code-keybindings.json",
     keybindings: [],
     issues: [],
@@ -192,6 +193,8 @@ function createMinimalSnapshot(): OrchestrationReadModel {
     ],
     threads: [
       {
+        handoffThreadId: null,
+        sourceThreadId: null,
         id: THREAD_ID,
         projectId: PROJECT_ID,
         title: "Test thread",

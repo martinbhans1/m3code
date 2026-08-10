@@ -42,6 +42,11 @@ export const readBootstrapEnvelope = Effect.fn("readBootstrapEnvelope")(function
       stream.removeListener("error", handleError);
       input.removeListener("line", handleLine);
       input.removeListener("close", handleClose);
+      // Teardown races whoever owns the fd: a read queued before `destroy()` can
+      // still land after the owner closed the descriptor (EBADF). We no longer
+      // care about the result, but with `handleError` detached that would be an
+      // unhandled 'error' event and take the process down, so swallow it.
+      stream.on("error", () => {});
       input.close();
       stream.destroy();
     };
@@ -146,12 +151,20 @@ const makeBootstrapInputStream = (fd: number) =>
     });
   });
 
+/**
+ * Reads a fd we do NOT own, so `autoClose` stays off: the caller (the parent
+ * process that handed us the descriptor, or a test's scoped `fs.open`) closes
+ * it. The `/proc/self/fd` path above can afford `autoClose: true` because it
+ * opens its own descriptor; this path cannot. Windows always lands here —
+ * `resolveFdPath` has no fd path to duplicate through — so closing the borrowed
+ * fd there made the owner's later close fail with EBADF.
+ */
 const makeDirectBootstrapStream = (fd: number): Readable => {
   try {
     return NFS.createReadStream("", {
       fd,
       encoding: "utf8",
-      autoClose: true,
+      autoClose: false,
     });
   } catch {
     const stream = new Net.Socket({

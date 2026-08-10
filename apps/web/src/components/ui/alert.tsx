@@ -59,8 +59,14 @@ function Alert({
       action.push(child);
     } else if (slot === "alert-title" || slot === "alert-description") {
       content.push(child);
-    } else {
+    } else if (icon.length === 0) {
       icon.push(child);
+    } else {
+      // Only the first unrecognised child is the leading icon. Anything after it
+      // is content — the icon slot is a fixed 16px box, so misrouting a wrapped
+      // description into it squeezes the text down to a couple of characters per
+      // line while the rest of the alert sits empty.
+      content.push(child);
     }
   });
 

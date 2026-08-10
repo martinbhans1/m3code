@@ -3,7 +3,11 @@ import { PreviewAutomationUnavailableError } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 
-export type McpCapability = "preview";
+// `preview` is granted to every provider session. `orchestrator` is granted
+// only to threads inside the designated orchestrator project
+// (`ServerSettings.orchestratorProjectId`) and unlocks cross-thread reads and
+// dispatch, so it must never be handed out by default.
+export type McpCapability = "preview" | "orchestrator";
 
 export interface McpInvocationScope {
   readonly environmentId: EnvironmentId;

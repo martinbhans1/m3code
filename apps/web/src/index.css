@@ -178,6 +178,37 @@
     content: none;
   }
 
+  /* The canvas field is painted once and never repainted at rest — its drift is
+     this transform, which runs on the compositor and costs no main thread time.
+     The canvas is oversized on every side (DRIFT_PAD_RATIO in
+     StarfieldCanvas.tsx) so the translation can't pull a bare edge into view.
+
+     96s is deliberately 2x the gradient's `ambient-drift`, so the two stay
+     phase-locked and read as one scene moving together rather than two effects
+     running side by side. Slow enough that you have to look to be sure it's
+     moving; not so slow that it looks frozen. */
+  .app-starfield[data-drift="on"] {
+    animation: app-starfield-drift 96s ease-in-out infinite alternate;
+    will-change: transform;
+  }
+
+  /* Percentages (of the canvas's own box) rather than px, so the travel scales
+     with the display. The scale component never goes below 1 — it only grows
+     the element, so it cannot expose an edge — and because it magnifies about
+     the centre it makes stars near the edges travel further than stars near the
+     middle, which restores a little depth parallax for free. */
+  @keyframes app-starfield-drift {
+    0% {
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+    50% {
+      transform: translate3d(-2.1%, 1.5%, 0) scale(1.025);
+    }
+    100% {
+      transform: translate3d(1.4%, -1.2%, 0) scale(1.01);
+    }
+  }
+
   .app-ambient-shell > * {
     position: relative;
     z-index: 1;
@@ -955,22 +986,24 @@ label:has(> select#reasoning-effort) select {
   position: absolute;
   top: 0;
   left: 0;
-  width: 2px;
-  border-radius: 1px;
+  width: var(--composer-caret-width, 2px);
+  border-radius: calc(var(--composer-caret-width, 2px) / 2);
   background-color: currentColor;
   color: var(--foreground);
   pointer-events: none;
   opacity: 0;
-  will-change: transform, height;
+  will-change: transform, height, opacity;
   transform: translate(0, 0);
   transition:
     transform 95ms cubic-bezier(0.22, 1, 0.36, 1),
     height 95ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/* Idle blink fades rather than hard-toggling, matching VS Code's "smooth"
+   cursorBlinking: hold solid, ease out, hold off, ease back in. */
 .composer-smooth-caret[data-visible="true"] {
   opacity: 1;
-  animation: composer-smooth-caret-blink 1.1s steps(1, end) infinite;
+  animation: composer-smooth-caret-blink 1.2s ease-in-out infinite;
 }
 
 /* Re-triggered on every move so the caret is solid while gliding, then blinks. */
@@ -980,6 +1013,20 @@ label:has(> select#reasoning-effort) select {
 }
 
 @keyframes composer-smooth-caret-blink {
+  0%,
+  18% {
+    opacity: 1;
+  }
+  50%,
+  68% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes composer-smooth-caret-blink-hard {
   0%,
   55% {
     opacity: 1;
@@ -993,6 +1040,12 @@ label:has(> select#reasoning-effort) select {
 @media (prefers-reduced-motion: reduce) {
   .composer-smooth-caret {
     transition: none;
+  }
+
+  /* No fading under reduced motion — fall back to a plain on/off blink. The
+     :not() keeps a moving caret solid, since this rule outranks the one above. */
+  .composer-smooth-caret[data-visible="true"]:not([data-moving="true"]) {
+    animation: composer-smooth-caret-blink-hard 1.1s steps(1, end) infinite;
   }
 }
 

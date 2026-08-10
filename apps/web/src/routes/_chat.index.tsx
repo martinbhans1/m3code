@@ -19,7 +19,7 @@ function ChatIndexRouteView() {
     return <HostedStaticOnboardingState />;
   }
 
-  return <NoActiveThreadState />;
+  return <NoActiveThreadState showRecentThreads />;
 }
 
 export const Route = createFileRoute("/_chat/")({

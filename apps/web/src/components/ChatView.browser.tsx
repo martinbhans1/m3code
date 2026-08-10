@@ -209,6 +209,7 @@ function createBaseServerConfig(): ServerConfig {
       sessionCookieName: "t3_session",
     },
     cwd: "/repo/project",
+    orchestratorWorkspaceRoot: "/state/orchestrator",
     keybindingsConfigPath: "/repo/project/.t3code-keybindings.json",
     keybindings: [],
     issues: [],
@@ -276,6 +277,10 @@ function createMockEnvironmentApi(input: {
       getFullThreadDiff: (() => {
         throw new Error("Not implemented in browser test.");
       }) as EnvironmentApi["orchestration"]["getFullThreadDiff"],
+      searchThreads: vi.fn(async () => ({
+        results: [],
+        semanticStatus: "unavailable" as const,
+      })),
       getArchivedShellSnapshot: (() => {
         throw new Error("Not implemented in browser test.");
       }) as EnvironmentApi["orchestration"]["getArchivedShellSnapshot"],
@@ -426,6 +431,8 @@ function createSnapshotForTargetUser(options: {
     ],
     threads: [
       {
+        handoffThreadId: null,
+        sourceThreadId: null,
         id: THREAD_ID,
         projectId: PROJECT_ID,
         title: THREAD_TITLE,
@@ -493,6 +500,8 @@ function addThreadToSnapshot(
     threads: [
       ...snapshot.threads,
       {
+        handoffThreadId: null,
+        sourceThreadId: null,
         id: threadId,
         projectId: PROJECT_ID,
         title: "New thread",
@@ -832,6 +841,8 @@ function createSnapshotWithSecondaryProject(options?: {
   const secondaryThreads: OrchestrationReadModel["threads"] = includeSecondaryThread
     ? [
         {
+          handoffThreadId: null,
+          sourceThreadId: null,
           id: "thread-secondary-project" as ThreadId,
           projectId: SECOND_PROJECT_ID,
           title: "Release checklist",
@@ -865,6 +876,8 @@ function createSnapshotWithSecondaryProject(options?: {
   const archivedSecondaryThreads: OrchestrationReadModel["threads"] = includeArchivedSecondaryThread
     ? [
         {
+          handoffThreadId: null,
+          sourceThreadId: null,
           id: ARCHIVED_SECONDARY_THREAD_ID,
           projectId: SECOND_PROJECT_ID,
           title: "Archived Docs Notes",
@@ -6680,6 +6693,88 @@ describe("ChatView timeline estimator parity (full app)", () => {
         .element(palette.getByText("Release checklist", { exact: true }))
         .toBeInTheDocument();
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows conversation-content matches without waiting for semantic ranking", async () => {
+    const searchResult = {
+      results: [
+        {
+          threadId: "thread-secondary-project" as ThreadId,
+          projectId: SECOND_PROJECT_ID,
+          title: "Unify ERP Integration UI Shell",
+          projectTitle: "Docs Portal",
+          branch: "main",
+          archivedAt: null,
+          updatedAt: NOW_ISO,
+          snippet: "Please fix the Visma NXT sprint tasks in Deal Journey.",
+          matchedRole: "user" as const,
+          matchKind: "content" as const,
+          score: 805,
+        },
+      ],
+      semanticStatus: "ready" as const,
+    };
+    const hybridSearchDeferred: { resolve: (value: typeof searchResult) => void } = {
+      resolve: () => undefined,
+    };
+    const hybridSearch = new Promise<typeof searchResult>((resolve) => {
+      hybridSearchDeferred.resolve = resolve;
+    });
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotWithSecondaryProject(),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            {
+              command: "commandPalette.toggle",
+              shortcut: {
+                key: "k",
+                metaKey: false,
+                ctrlKey: false,
+                shiftKey: false,
+                altKey: false,
+                modKey: true,
+              },
+              whenAst: {
+                type: "not",
+                node: { type: "identifier", name: "terminalFocus" },
+              },
+            },
+          ],
+        };
+      },
+      resolveRpc: (body) => {
+        if (body._tag !== ORCHESTRATION_WS_METHODS.searchThreads) return undefined;
+        return body.includeSemantic === true ? hybridSearch : searchResult;
+      },
+    });
+
+    try {
+      await waitForServerConfigToApply();
+      await waitForCommandPaletteShortcutLabel();
+      const palette = page.getByTestId("command-palette");
+      await openCommandPaletteFromTrigger();
+      await page.getByPlaceholder("Search commands, projects, and threads...").fill("Visma");
+
+      await expect
+        .element(palette.getByText("Unify ERP Integration UI Shell", { exact: true }))
+        .toBeInTheDocument();
+      await expect
+        .element(palette.getByText(/Please fix the Visma NXT sprint tasks/))
+        .toBeInTheDocument();
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === ORCHESTRATION_WS_METHODS.searchThreads &&
+            request.includeSemantic === false,
+        ),
+      ).toBe(true);
+    } finally {
+      hybridSearchDeferred.resolve(searchResult);
       await mounted.cleanup();
     }
   });

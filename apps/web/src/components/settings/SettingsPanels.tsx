@@ -1,4 +1,4 @@
-import { ArchiveIcon, ArchiveX, LoaderIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
+import { ArchiveIcon, ArchiveX, LoaderIcon, PlusIcon, RefreshCwIcon, XIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -13,6 +13,13 @@ import {
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
+import {
+  ORCHESTRATOR_ACCESS_LABELS,
+  ORCHESTRATOR_ACCESS_ORDER,
+  ORCHESTRATOR_OVERRIDE_DESCRIPTIONS,
+  ORCHESTRATOR_OVERRIDE_LABELS,
+  ORCHESTRATOR_OVERRIDE_ORDER,
+} from "../../lib/orchestratorAccess";
 import { createModelSelection } from "@t3tools/shared/model";
 import * as Arr from "effect/Array";
 import * as Duration from "effect/Duration";
@@ -31,9 +38,12 @@ import { TraitsPicker } from "../chat/TraitsPicker";
 import { isElectron } from "../../env";
 import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hostedPairing";
 import {
+  CARET_THICKNESS_OPTIONS,
+  DEFAULT_CARET_THICKNESS,
   THEME_DEFINITIONS,
   isValidEnvironment,
   isValidTheme,
+  useCaretThickness,
   useChromeTint,
   useEnvironment,
   useSmoothCaret,
@@ -440,6 +450,14 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode
         ? ["New thread mode"]
         : []),
+      ...(settings.defaultOrchestratorThreadAccess !==
+      DEFAULT_UNIFIED_SETTINGS.defaultOrchestratorThreadAccess
+        ? ["Orchestrator access"]
+        : []),
+      ...(settings.orchestratorAccessOverride !==
+      DEFAULT_UNIFIED_SETTINGS.orchestratorAccessOverride
+        ? ["What the orchestrator can reach"]
+        : []),
       ...(settings.addProjectBaseDirectory !== DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory
         ? ["Add project base directory"]
         : []),
@@ -449,6 +467,10 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete
         ? ["Delete confirmation"]
         : []),
+      ...(settings.showThreadChangeRequestStatus !==
+      DEFAULT_UNIFIED_SETTINGS.showThreadChangeRequestStatus
+        ? ["Pull request status"]
+        : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
     ],
     [
@@ -456,8 +478,11 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.autoOpenPlanSidebar,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
+      settings.showThreadChangeRequestStatus,
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
+      settings.defaultOrchestratorThreadAccess,
+      settings.orchestratorAccessOverride,
       settings.diffIgnoreWhitespace,
       settings.diffWordWrap,
       settings.automaticGitFetchInterval,
@@ -490,9 +515,12 @@ export function useSettingsRestore(onRestored?: () => void) {
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
+      defaultOrchestratorThreadAccess: DEFAULT_UNIFIED_SETTINGS.defaultOrchestratorThreadAccess,
+      orchestratorAccessOverride: DEFAULT_UNIFIED_SETTINGS.orchestratorAccessOverride,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+      showThreadChangeRequestStatus: DEFAULT_UNIFIED_SETTINGS.showThreadChangeRequestStatus,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
     });
     onRestored?.();
@@ -509,6 +537,7 @@ export function GeneralSettingsPanel() {
   const { environment, setEnvironment, definitions: environmentDefinitions } = useEnvironment();
   const { chromeTint, setChromeTint } = useChromeTint();
   const { smoothCaret, setSmoothCaret } = useSmoothCaret();
+  const { caretThickness, setCaretThickness } = useCaretThickness();
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
   const observability = useServerObservability();
@@ -637,6 +666,41 @@ export function GeneralSettingsPanel() {
             />
           }
         />
+
+        {smoothCaret ? (
+          <SettingsRow
+            title="Caret thickness"
+            description="How wide the composer's smooth caret is drawn."
+            resetAction={
+              caretThickness !== DEFAULT_CARET_THICKNESS ? (
+                <SettingResetButton
+                  label="caret thickness"
+                  onClick={() => setCaretThickness(DEFAULT_CARET_THICKNESS)}
+                />
+              ) : null
+            }
+            control={
+              <Select
+                value={String(caretThickness)}
+                onValueChange={(value) => setCaretThickness(Number(value))}
+              >
+                <SelectTrigger className="w-full sm:w-40" aria-label="Caret thickness">
+                  <SelectValue>
+                    {CARET_THICKNESS_OPTIONS.find((option) => option.value === caretThickness)
+                      ?.label ?? `${caretThickness}px`}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {CARET_THICKNESS_OPTIONS.map((option) => (
+                    <SelectItem hideIndicator key={option.value} value={String(option.value)}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            }
+          />
+        ) : null}
 
         <SettingsRow
           title="Time format"
@@ -825,6 +889,165 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
+          title="What the orchestrator can reach"
+          description={`Overrides every per-conversation setting at once. ${ORCHESTRATOR_OVERRIDE_DESCRIPTIONS[settings.orchestratorAccessOverride]} Also on the orchestrator's own composer, next to its model picker.`}
+          resetAction={
+            settings.orchestratorAccessOverride !==
+            DEFAULT_UNIFIED_SETTINGS.orchestratorAccessOverride ? (
+              <SettingResetButton
+                label="orchestrator reach"
+                onClick={() =>
+                  updateSettings({
+                    orchestratorAccessOverride: DEFAULT_UNIFIED_SETTINGS.orchestratorAccessOverride,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.orchestratorAccessOverride}
+              onValueChange={(value) => {
+                if (!value) return;
+                updateSettings({
+                  orchestratorAccessOverride: value as typeof settings.orchestratorAccessOverride,
+                });
+              }}
+            >
+              <SelectTrigger
+                className="w-full sm:w-56"
+                aria-label="What the orchestrator can reach"
+              >
+                <SelectValue>
+                  {ORCHESTRATOR_OVERRIDE_LABELS[settings.orchestratorAccessOverride]}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {ORCHESTRATOR_OVERRIDE_ORDER.map((override) => (
+                  <SelectItem hideIndicator key={override} value={override}>
+                    {ORCHESTRATOR_OVERRIDE_LABELS[override]}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+
+        <SettingsRow
+          title="Orchestrator access"
+          description="How much of a conversation the orchestrator can see by default, for conversations you never set individually. Only consulted while the setting above is “Per conversation”."
+          resetAction={
+            settings.defaultOrchestratorThreadAccess !==
+            DEFAULT_UNIFIED_SETTINGS.defaultOrchestratorThreadAccess ? (
+              <SettingResetButton
+                label="orchestrator access"
+                onClick={() =>
+                  updateSettings({
+                    defaultOrchestratorThreadAccess:
+                      DEFAULT_UNIFIED_SETTINGS.defaultOrchestratorThreadAccess,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.defaultOrchestratorThreadAccess}
+              onValueChange={(value) => {
+                if (value === "none" || value === "watch" || value === "control") {
+                  updateSettings({ defaultOrchestratorThreadAccess: value });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-44" aria-label="Default orchestrator access">
+                <SelectValue>
+                  {ORCHESTRATOR_ACCESS_LABELS[settings.defaultOrchestratorThreadAccess]}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {ORCHESTRATOR_ACCESS_ORDER.map((access) => (
+                  <SelectItem hideIndicator key={access} value={access}>
+                    {ORCHESTRATOR_ACCESS_LABELS[access]}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+
+        <SettingsRow
+          title="Orchestrator model choices"
+          description="Models the orchestrator may pick from when it opens a new conversation. Opus 5 and GPT-5.6 are enabled by default; clear the list to always inherit each project's default."
+          resetAction={
+            settings.orchestratorModelChoices.length > 0 ? (
+              <SettingResetButton
+                label="orchestrator model choices"
+                onClick={() => updateSettings({ orchestratorModelChoices: [] })}
+              />
+            ) : null
+          }
+          control={
+            <div className="flex flex-col items-end gap-2">
+              {settings.orchestratorModelChoices.length > 0 ? (
+                <div className="flex flex-wrap items-center justify-end gap-1.5">
+                  {settings.orchestratorModelChoices.map((choice) => (
+                    <span
+                      key={`${choice.instanceId}:${choice.model}`}
+                      className="inline-flex items-center gap-1 rounded-md border bg-muted/40 py-0.5 pr-0.5 pl-2 text-xs"
+                    >
+                      {choice.model}
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        className="size-5 text-muted-foreground hover:text-foreground"
+                        aria-label={`Remove ${choice.model}`}
+                        onClick={() =>
+                          updateSettings({
+                            orchestratorModelChoices: settings.orchestratorModelChoices.filter(
+                              (entry) =>
+                                !(
+                                  entry.instanceId === choice.instanceId &&
+                                  entry.model === choice.model
+                                ),
+                            ),
+                          })
+                        }
+                      >
+                        <XIcon className="size-3" />
+                      </Button>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <ProviderModelPicker
+                activeInstanceId={textGenInstanceId}
+                model=""
+                lockedProvider={null}
+                instanceEntries={gitModelInstanceEntries}
+                modelOptionsByInstance={gitModelOptionsByInstance}
+                triggerVariant="outline"
+                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                onInstanceModelChange={(instanceId, model) => {
+                  // Adding, not selecting: the picker is being used as a menu of
+                  // everything available, and the row below it is the real value.
+                  const alreadyChosen = settings.orchestratorModelChoices.some(
+                    (entry) => entry.instanceId === instanceId && entry.model === model,
+                  );
+                  if (alreadyChosen) return;
+                  updateSettings({
+                    orchestratorModelChoices: [
+                      ...settings.orchestratorModelChoices,
+                      createModelSelection(instanceId, model),
+                    ],
+                  });
+                }}
+              />
+            </div>
+          }
+        />
+
+        <SettingsRow
           title="Add project starts in"
           description='Leave empty to use "~/" when the Add Project browser opens.'
           resetAction={
@@ -900,6 +1123,34 @@ export function GeneralSettingsPanel() {
                 updateSettings({ confirmThreadDelete: Boolean(checked) })
               }
               aria-label="Confirm thread deletion"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Pull request status on threads"
+          description="Show a per-thread icon in the sidebar reflecting the status of its pull/merge request. Off by default — hide it if your projects don't use pull requests."
+          resetAction={
+            settings.showThreadChangeRequestStatus !==
+            DEFAULT_UNIFIED_SETTINGS.showThreadChangeRequestStatus ? (
+              <SettingResetButton
+                label="pull request status"
+                onClick={() =>
+                  updateSettings({
+                    showThreadChangeRequestStatus:
+                      DEFAULT_UNIFIED_SETTINGS.showThreadChangeRequestStatus,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.showThreadChangeRequestStatus}
+              onCheckedChange={(checked) =>
+                updateSettings({ showThreadChangeRequestStatus: Boolean(checked) })
+              }
+              aria-label="Show pull request status on threads"
             />
           }
         />

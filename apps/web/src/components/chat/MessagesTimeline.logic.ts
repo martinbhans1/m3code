@@ -1,5 +1,10 @@
 import * as Equal from "effect/Equal";
-import { formatDuration, type TimelineEntry, type WorkLogEntry } from "../../session-logic";
+import {
+  formatDuration,
+  type HandoffState,
+  type TimelineEntry,
+  type WorkLogEntry,
+} from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type MessageId, type OrchestrationLatestTurn, type TurnId } from "@t3tools/contracts";
 
@@ -48,6 +53,8 @@ export type MessagesTimelineRow =
       turnId: TurnId;
       label: string;
       expanded: boolean;
+      /** False for a stopped turn that never reached a tool call — label only. */
+      expandable: boolean;
     }
   | {
       kind: "message";
@@ -66,6 +73,12 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       proposedPlan: ProposedPlan;
+    }
+  | {
+      kind: "handoff";
+      id: string;
+      createdAt: string;
+      handoff: HandoffState;
     }
   | { kind: "working"; id: string; createdAt: string | null };
 
@@ -147,6 +160,10 @@ interface TurnFold {
   label: string;
 }
 
+function isInterruptedTurn(latestTurn: TimelineLatestTurn | null, turnId: TurnId): boolean {
+  return latestTurn?.turnId === turnId && latestTurn.state === "interrupted";
+}
+
 /**
  * The latest turn counts as unsettled while it is still running (or has not
  * recorded a completion). This is deliberately keyed on the turn's own
@@ -163,9 +180,9 @@ function deriveUnsettledTurnId(latestTurn: TimelineLatestTurn | null): TurnId | 
 }
 
 /**
- * Settled turns fold their commentary and tool activity behind a
- * "Worked for ..." row anchored at the turn's first foldable entry; the
- * terminal assistant message stays visible below the fold.
+ * Settled turns fold their tool activity and reasoning behind a
+ * "Worked for ..." row anchored at the turn's first work entry; every
+ * assistant message the turn produced stays visible around the fold.
  */
 function deriveTurnFolds(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
@@ -235,24 +252,31 @@ function deriveTurnFolds(input: {
     if (group.hasStreamingMessage) {
       continue;
     }
+    // Only tool activity and reasoning fold away. Assistant prose — including
+    // commentary written between tool calls — is addressed to the user and
+    // always stays in the transcript.
     const hiddenEntryIds = new Set<string>();
     for (const entry of group.entries) {
-      if (entry.id !== group.terminalEntry?.id) {
+      if (entry.kind === "work") {
         hiddenEntryIds.add(entry.id);
       }
     }
-    if (hiddenEntryIds.size === 0) {
+    const isLatestInterruptedTurn = isInterruptedTurn(input.latestTurn ?? null, turnId);
+    // A turn with nothing to fold still needs a row when the user stopped it —
+    // the "You stopped ..." label is the only interrupt marker in the transcript.
+    if (hiddenEntryIds.size === 0 && !isLatestInterruptedTurn) {
       continue;
     }
 
     const firstEntry = group.entries[0];
     const lastEntry = group.entries.at(-1);
-    if (!firstEntry || !lastEntry) {
+    // The fold row sits where the folded work starts, so any prose ahead of the
+    // turn's first tool call keeps its place above it.
+    const anchorEntry = group.entries.find((entry) => hiddenEntryIds.has(entry.id)) ?? firstEntry;
+    if (!firstEntry || !lastEntry || !anchorEntry) {
       continue;
     }
 
-    const isLatestInterruptedTurn =
-      input.latestTurn?.turnId === turnId && input.latestTurn.state === "interrupted";
     // A turn cut short by a steer leaves trailing work entries behind its
     // terminal message — take whichever ended last.
     const lastEntryEnd =
@@ -278,10 +302,10 @@ function deriveTurnFolds(input: {
         ? `Worked for ${duration}`
         : "Worked";
 
-    foldsByAnchorEntryId.set(firstEntry.id, {
+    foldsByAnchorEntryId.set(anchorEntry.id, {
       turnId,
-      anchorEntryId: firstEntry.id,
-      createdAt: firstEntry.createdAt,
+      anchorEntryId: anchorEntry.id,
+      createdAt: anchorEntry.createdAt,
       hiddenEntryIds,
       label,
     });
@@ -334,6 +358,7 @@ export function deriveMessagesTimelineRows(input: {
         turnId: turnFold.turnId,
         label: turnFold.label,
         expanded: input.expandedTurnIds?.has(turnFold.turnId) ?? false,
+        expandable: turnFold.hiddenEntryIds.size > 0,
       });
     }
 
@@ -373,6 +398,16 @@ export function deriveMessagesTimelineRows(input: {
         id: timelineEntry.id,
         createdAt: timelineEntry.createdAt,
         proposedPlan: timelineEntry.proposedPlan,
+      });
+      continue;
+    }
+
+    if (timelineEntry.kind === "handoff") {
+      nextRows.push({
+        kind: "handoff",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        handoff: timelineEntry.handoff,
       });
       continue;
     }
@@ -454,11 +489,19 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
     case "turn-fold": {
       const bf = b as typeof a;
-      return a.createdAt === bf.createdAt && a.label === bf.label && a.expanded === bf.expanded;
+      return (
+        a.createdAt === bf.createdAt &&
+        a.label === bf.label &&
+        a.expanded === bf.expanded &&
+        a.expandable === bf.expandable
+      );
     }
 
     case "proposed-plan":
       return a.proposedPlan === (b as typeof a).proposedPlan;
+
+    case "handoff":
+      return a.handoff === (b as typeof a).handoff;
 
     case "work":
       return Equal.equals(a.groupedEntries, (b as typeof a).groupedEntries);

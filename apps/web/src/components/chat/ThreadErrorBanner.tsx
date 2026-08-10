@@ -19,14 +19,21 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
     <div className="pt-3 mx-auto w-full max-w-3xl px-3">
       <Alert variant="error">
         <CircleAlertIcon />
-        <Tooltip>
-          <TooltipTrigger render={<AlertDescription className="line-clamp-3" />}>
-            {error}
-          </TooltipTrigger>
-          <TooltipPopup side="top" className="max-w-96 whitespace-pre-wrap">
-            {error}
-          </TooltipPopup>
-        </Tooltip>
+        {/* AlertDescription has to be the direct child of Alert - that is how
+            Alert routes it into the full-width content column rather than the
+            icon slot. The tooltip goes inside it, not around it. */}
+        <AlertDescription>
+          <Tooltip>
+            <TooltipTrigger
+              render={<div className="line-clamp-3 min-w-0 break-words whitespace-pre-wrap" />}
+            >
+              {error}
+            </TooltipTrigger>
+            <TooltipPopup side="top" className="max-w-96 whitespace-pre-wrap">
+              {error}
+            </TooltipPopup>
+          </Tooltip>
+        </AlertDescription>
         <AlertAction>
           <Tooltip>
             <TooltipTrigger

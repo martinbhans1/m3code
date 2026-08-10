@@ -2,6 +2,7 @@ import {
   INLINE_TERMINAL_CONTEXT_PLACEHOLDER,
   type TerminalContextDraft,
 } from "./lib/terminalContext";
+import { findQuoteBlocks } from "./quoteSelection";
 import {
   collectComposerInlineTokens,
   type ComposerInlineToken,
@@ -24,6 +25,13 @@ export type ComposerPromptSegment =
   | {
       type: "terminal-context";
       context: TerminalContextDraft | null;
+    }
+  | {
+      type: "quote";
+      /** The quoted text, tags stripped — what the quote card renders. */
+      body: string;
+      /** The full `<quote>…</quote>` source as it lives in the prompt. */
+      source: string;
     };
 
 function rangeIncludesIndex(start: number, end: number, index: number): boolean {
@@ -125,6 +133,30 @@ function forEachMentionMatch(
 }
 
 function splitPromptTextIntoComposerSegments(text: string): ComposerPromptSegment[] {
+  const segments: ComposerPromptSegment[] = [];
+  if (!text) {
+    return segments;
+  }
+
+  // Quote blocks win over mention/skill tokens: quoted text is verbatim, so an
+  // "@path" or "$skill" that happens to sit inside a quote must not become a
+  // chip. Everything outside the quotes still goes through token splitting.
+  let cursor = 0;
+  for (const quote of findQuoteBlocks(text)) {
+    if (quote.start > cursor) {
+      segments.push(...splitTokenTextIntoComposerSegments(text.slice(cursor, quote.start)));
+    }
+    segments.push({ type: "quote", body: quote.body, source: quote.source });
+    cursor = quote.end;
+  }
+  if (cursor < text.length) {
+    segments.push(...splitTokenTextIntoComposerSegments(text.slice(cursor)));
+  }
+
+  return segments;
+}
+
+function splitTokenTextIntoComposerSegments(text: string): ComposerPromptSegment[] {
   const segments: ComposerPromptSegment[] = [];
   if (!text) {
     return segments;

@@ -7,6 +7,7 @@ import {
   peekPairingTokenFromUrl,
   stripPairingTokenFromUrl,
   submitServerAuthCredential,
+  submitServerPasswordCredential,
 } from "../../environments/primary";
 import { readHostedPairingRequest } from "../../hostedPairing";
 import { Button } from "../ui/button";
@@ -47,6 +48,7 @@ export function PairingRouteSurface({
 }) {
   const autoPairTokenRef = useRef<string | null>(peekPairingTokenFromUrl());
   const [credential, setCredential] = useState(() => autoPairTokenRef.current ?? "");
+  const [password, setPassword] = useState("");
   const [errorMessage, setErrorMessage] = useState(initialErrorMessage ?? "");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const autoSubmitAttemptedRef = useRef(false);
@@ -83,6 +85,31 @@ export function PairingRouteSurface({
     [submitCredential, credential],
   );
 
+  const handlePasswordSubmit = useCallback(
+    async (event?: React.SubmitEvent<HTMLFormElement>) => {
+      event?.preventDefault();
+      setIsSubmitting(true);
+      setErrorMessage("");
+
+      const submitError = await submitServerPasswordCredential(password).then(
+        () => null,
+        (error) => errorMessageFromUnknown(error),
+      );
+
+      setIsSubmitting(false);
+
+      if (submitError) {
+        setErrorMessage(submitError);
+        return;
+      }
+
+      startTransition(() => {
+        onAuthenticated();
+      });
+    },
+    [onAuthenticated, password],
+  );
+
   useEffect(() => {
     const token = autoPairTokenRef.current;
     if (!token || autoSubmitAttemptedRef.current) {
@@ -113,6 +140,43 @@ export function PairingRouteSurface({
           {describeAuthGate(auth.bootstrapMethods)}
         </p>
 
+        {errorMessage ? (
+          <div className="mt-6 rounded-lg border border-destructive/30 bg-destructive/6 px-3 py-2 text-sm text-destructive">
+            {errorMessage}
+          </div>
+        ) : null}
+
+        <form className="mt-6 space-y-4" onSubmit={(event) => void handlePasswordSubmit(event)}>
+          <div className="space-y-2">
+            <label className="text-sm font-medium" htmlFor="access-password">
+              Password
+            </label>
+            <Input
+              id="access-password"
+              autoCapitalize="none"
+              autoComplete="current-password"
+              autoCorrect="off"
+              disabled={isSubmitting}
+              nativeInput
+              onChange={(event) => setPassword(event.currentTarget.value)}
+              placeholder="Your remote access password"
+              spellCheck={false}
+              type="password"
+              value={password}
+            />
+          </div>
+
+          <Button disabled={isSubmitting || password.trim().length === 0} size="sm" type="submit">
+            {isSubmitting ? "Signing in..." : "Sign in"}
+          </Button>
+        </form>
+
+        <div className="mt-6 flex items-center gap-3">
+          <span className="h-px flex-1 bg-border/70" />
+          <span className="text-[11px] tracking-wide text-muted-foreground uppercase">or</span>
+          <span className="h-px flex-1 bg-border/70" />
+        </div>
+
         <form className="mt-6 space-y-4" onSubmit={(event) => void handleSubmit(event)}>
           <div className="space-y-2">
             <label className="text-sm font-medium" htmlFor="pairing-token">
@@ -131,12 +195,6 @@ export function PairingRouteSurface({
               value={credential}
             />
           </div>
-
-          {errorMessage ? (
-            <div className="rounded-lg border border-destructive/30 bg-destructive/6 px-3 py-2 text-sm text-destructive">
-              {errorMessage}
-            </div>
-          ) : null}
 
           <div className="flex flex-wrap gap-2">
             <Button disabled={isSubmitting} size="sm" type="submit">

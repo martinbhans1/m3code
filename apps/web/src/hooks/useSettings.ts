@@ -124,14 +124,27 @@ function persistClientSettings(settings: ClientSettings): void {
 
 const SERVER_SETTINGS_KEYS = new Set<string>(Struct.keys(ServerSettings.fields));
 
-function splitPatch(patch: Partial<UnifiedSettings>): {
+/**
+ * Server keys that exist in `ServerSettingsPatch` but not in `ServerSettings`,
+ * because they describe an edit rather than a value — e.g. "set this one
+ * thread's orchestrator access", which the server applies under its write lock
+ * so a stale client copy cannot clobber the rest of the map. They have to be
+ * routed server-side explicitly, since they are absent from `ServerSettings.fields`.
+ */
+const SERVER_PATCH_ONLY_KEYS = new Set<string>(["orchestratorThreadAccessEntry"]);
+
+/** What callers may pass to `updateSettings`: whole values, plus patch-only edits. */
+export type SettingsUpdate = Partial<UnifiedSettings> &
+  Pick<Partial<ServerSettingsPatch>, "orchestratorThreadAccessEntry">;
+
+function splitPatch(patch: SettingsUpdate): {
   serverPatch: ServerSettingsPatch;
   clientPatch: ClientSettingsPatch;
 } {
   const serverPatch: Record<string, unknown> = {};
   const clientPatch: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(patch)) {
-    if (SERVER_SETTINGS_KEYS.has(key)) {
+    if (SERVER_SETTINGS_KEYS.has(key) || SERVER_PATCH_ONLY_KEYS.has(key)) {
       serverPatch[key] = value;
     } else {
       clientPatch[key] = value;
@@ -193,7 +206,7 @@ export function useSettings<T = UnifiedSettings>(selector?: (s: UnifiedSettings)
  * persisted via RPC. Client keys go through client persistence.
  */
 export function useUpdateSettings() {
-  const updateSettings = useCallback((patch: Partial<UnifiedSettings>) => {
+  const updateSettings = useCallback((patch: SettingsUpdate) => {
     const { serverPatch, clientPatch } = splitPatch(patch);
 
     if (Object.keys(serverPatch).length > 0) {

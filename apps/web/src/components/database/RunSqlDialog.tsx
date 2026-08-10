@@ -88,6 +88,25 @@ function toRunSqlError(cause: unknown): RunSqlError {
   };
 }
 
+/**
+ * The only route from the run dialog to the saved credentials. Without it a
+ * linked project is a dead end: the connection chip is not itself interactive,
+ * so a stale or wrong connection string cannot be corrected from here — which
+ * is exactly when you most want to change it.
+ */
+function EditConnectionButton({ onNavigate }: { onNavigate: () => void }) {
+  return (
+    <Button
+      size="xs"
+      variant="ghost"
+      className="ml-auto shrink-0 text-[11px] text-muted-foreground"
+      onClick={onNavigate}
+    >
+      Edit
+    </Button>
+  );
+}
+
 export function RunSqlDialog({
   open,
   onOpenChange,
@@ -163,6 +182,11 @@ export function RunSqlDialog({
     setLinkDraft("");
   };
 
+  const goToDatabaseSettings = () => {
+    onOpenChange(false);
+    void navigate({ to: "/settings/database" });
+  };
+
   const handleRun = async () => {
     if (!connectionId || running) return;
     setRunning(true);
@@ -218,7 +242,7 @@ export function RunSqlDialog({
                 onKeyDown={(event) => {
                   if (event.key === "Enter") handleLink();
                 }}
-                placeholder="postgresql://postgres:[PASSWORD]@db.[REF].supabase.co:5432/postgres"
+                placeholder="postgresql://postgres.[REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres"
                 spellCheck={false}
                 autoComplete="off"
                 aria-label={`Postgres connection string for ${projectName}`}
@@ -229,10 +253,7 @@ export function RunSqlDialog({
                   size="sm"
                   variant="ghost"
                   className="text-xs text-muted-foreground"
-                  onClick={() => {
-                    onOpenChange(false);
-                    void navigate({ to: "/settings/database" });
-                  }}
+                  onClick={goToDatabaseSettings}
                 >
                   Manage in settings
                 </Button>
@@ -257,10 +278,14 @@ export function RunSqlDialog({
                   {describeConnection(connections[0]!)}
                 </span>
               ) : null}
+              <EditConnectionButton onNavigate={goToDatabaseSettings} />
             </div>
           ) : (
             <div className="grid gap-2">
-              <span className="text-xs font-medium text-foreground">Connection</span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-foreground">Connection</span>
+                <EditConnectionButton onNavigate={goToDatabaseSettings} />
+              </div>
               <Select
                 value={connectionId ?? ""}
                 onValueChange={(value) => setConnectionId(String(value))}

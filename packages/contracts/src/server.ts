@@ -467,6 +467,11 @@ export const ServerConfig = Schema.Struct({
   auth: ServerAuthDescriptor,
   cwd: TrimmedNonEmptyString,
   keybindingsConfigPath: TrimmedNonEmptyString,
+  // Workspace root for the auto-created orchestrator project. Lives in the
+  // server's own state directory, never in the user's code, because the
+  // orchestrator is not supposed to touch a repository. Sent to the client so
+  // it can create the project on first use without guessing server paths.
+  orchestratorWorkspaceRoot: TrimmedNonEmptyString,
   keybindings: ResolvedKeybindingsConfig,
   issues: ServerConfigIssues,
   providers: ServerProviders,

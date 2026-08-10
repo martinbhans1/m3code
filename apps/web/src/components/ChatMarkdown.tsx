@@ -13,6 +13,7 @@ import React, {
   Children,
   Suspense,
   type ClipboardEvent as ReactClipboardEvent,
+  type ComponentProps,
   type MouseEvent as ReactMouseEvent,
   isValidElement,
   use,
@@ -54,8 +55,15 @@ import {
 import {
   normalizeMarkdownLinkDestination,
   resolveMarkdownFileLinkMeta,
+  resolveMarkdownFileLinkTarget,
+  resolveOwningWorkspaceRoot,
   rewriteMarkdownFileUriHref,
 } from "../markdown-links";
+import {
+  selectProjectsAcrossEnvironments,
+  selectThreadShellsAcrossEnvironments,
+  useStore,
+} from "../store";
 import { readLocalApi } from "../localApi";
 import { cn } from "../lib/utils";
 import { useRightPanelStore } from "../rightPanelStore";
@@ -126,6 +134,9 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
     ...defaultSchema.attributes,
     "*": (defaultSchema.attributes?.["*"] ?? []).filter((attribute) => attribute !== "title"),
     code: [...(defaultSchema.attributes?.code ?? []), "dataCodeMeta"],
+    // Where a workspace file href is kept so the sanitizer does not eat it —
+    // see `rehypePreserveFileHrefs`.
+    a: [...(defaultSchema.attributes?.a ?? []), "dataFileHref"],
   },
   protocols: {
     ...defaultSchema.protocols,
@@ -194,6 +205,40 @@ function remarkPreserveCodeMeta() {
       node.children?.forEach(visit);
     };
 
+    visit(tree);
+  };
+}
+
+/**
+ * Copy a workspace-file href onto `data-file-href` before the sanitizer runs.
+ *
+ * `rehypeSanitize` enforces a protocol allow-list on `href`, and it decides
+ * something has a protocol by finding a colon before the first slash. That is
+ * true of two shapes we very much want to keep: `notes.sql:7` (it reads
+ * `notes.sql:` as the scheme) and `C:/repo/file.ts` (it reads `C:`). Both get
+ * their href stripped, the link then renders as an external one, and on desktop
+ * an `<a target="_blank">` is handed to the system browser.
+ *
+ * Rather than widen the allow-list — which would also admit `javascript:` and
+ * friends — the href is stashed on an attribute the schema permits, and only
+ * for values we have already recognised as a file path. Mirrors how fence meta
+ * survives as `dataCodeMeta`.
+ */
+function rehypePreserveFileHrefs(cwd: string | undefined) {
+  return () => (tree: MarkdownAstNode) => {
+    const visit = (node: MarkdownAstNode) => {
+      const element = node as MarkdownAstNode & {
+        tagName?: string;
+        properties?: Record<string, unknown>;
+      };
+      if (element.tagName === "a") {
+        const href = element.properties?.href;
+        if (typeof href === "string" && resolveMarkdownFileLinkTarget(href, cwd) !== null) {
+          element.properties = { ...element.properties, dataFileHref: href };
+        }
+      }
+      node.children?.forEach(visit);
+    };
     visit(tree);
   };
 }
@@ -1025,12 +1070,31 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   }, [targetPath]);
 
   const handleOpenInFilePreview = useCallback(() => {
-    if (!threadRef || !workspaceRelativePath) {
+    if (!threadRef) {
       handleOpenInEditor();
       return;
     }
-    useRightPanelStore.getState().openFile(threadRef, workspaceRelativePath, line);
-  }, [handleOpenInEditor, line, threadRef, workspaceRelativePath]);
+    if (workspaceRelativePath) {
+      useRightPanelStore.getState().openFile(threadRef, workspaceRelativePath, line);
+      return;
+    }
+    // The path sits outside this conversation's own workspace, which is normal
+    // whenever a conversation discusses another project's code. Find the
+    // project that actually owns it and read from there, rather than shelling
+    // out to an external editor as if the file were unreachable.
+    const state = useStore.getState();
+    const owning = resolveOwningWorkspaceRoot(targetPath, [
+      ...selectProjectsAcrossEnvironments(state).map((project) => project.cwd),
+      ...selectThreadShellsAcrossEnvironments(state).map((thread) => thread.worktreePath),
+    ]);
+    if (owning) {
+      useRightPanelStore
+        .getState()
+        .openFile(threadRef, owning.relativePath, line, owning.workspaceRoot);
+      return;
+    }
+    handleOpenInEditor();
+  }, [handleOpenInEditor, line, targetPath, threadRef, workspaceRelativePath]);
 
   const handleOpenInBrowser = useCallback(() => {
     if (!threadRef) return;
@@ -1212,9 +1276,34 @@ function ChatMarkdown({
     const filePaths = [...markdownFileLinkMetaByHref.values()].map((meta) => meta.filePath);
     return buildFileLinkParentSuffixByPath(filePaths);
   }, [markdownFileLinkMetaByHref]);
-  const markdownUrlTransform = useCallback((href: string) => {
-    return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
-  }, []);
+  const rehypePlugins = useMemo<ComponentProps<typeof ReactMarkdown>["rehypePlugins"]>(
+    // The stash must run before the sanitizer, which is what strips the href.
+    () => [
+      rehypeRaw,
+      rehypePreserveFileHrefs(cwd),
+      [rehypeSanitize, CHAT_MARKDOWN_SANITIZE_SCHEMA],
+    ],
+    [cwd],
+  );
+  const markdownUrlTransform = useCallback(
+    (href: string) => {
+      const rewritten = rewriteMarkdownFileUriHref(href);
+      if (rewritten !== null) return rewritten;
+      // A Windows drive path — `C:/repo/src/foo.ts` — trips react-markdown's
+      // protocol allowlist, which reads the `C:` as a scheme it does not
+      // recognise and blanks the href to "". An empty href then falls through
+      // to the external-link branch below, and on desktop an `<a target=_blank>`
+      // is handed straight to the system browser. Keep any href we have already
+      // resolved to a workspace file so it stays a file link.
+      //
+      // Keyed identically to the lookup below, so the two cannot disagree.
+      if (markdownFileLinkMetaByHref.has(normalizeMarkdownLinkHrefKey(href))) {
+        return href;
+      }
+      return defaultUrlTransform(href);
+    },
+    [markdownFileLinkMetaByHref],
+  );
   // Re-emit highlighted content as markdown so copying out of the rendered
   // view keeps links, emphasis, lists, and code fences intact.
   const handleCopy = useCallback((event: ReactClipboardEvent<HTMLDivElement>) => {
@@ -1271,7 +1360,12 @@ function ChatMarkdown({
         );
       },
       a({ node, href, children, ...props }) {
-        const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
+        // The sanitizer blanks hrefs whose colon it mistook for a scheme, so the
+        // real one may only survive on the stash attribute.
+        const stashedHref = (node as { properties?: { dataFileHref?: unknown } } | undefined)
+          ?.properties?.dataFileHref;
+        const effectiveHref = typeof stashedHref === "string" && stashedHref ? stashedHref : href;
+        const normalizedHref = effectiveHref ? normalizeMarkdownLinkHrefKey(effectiveHref) : "";
         const fileLinkMeta = normalizedHref ? markdownFileLinkMetaByHref.get(normalizedHref) : null;
         if (!fileLinkMeta) {
           const faviconHost = resolveExternalLinkHost(href);
@@ -1405,7 +1499,7 @@ function ChatMarkdown({
             ? [remarkGfm, remarkBreaks, remarkPreserveCodeMeta]
             : [remarkGfm, remarkPreserveCodeMeta]
         }
-        rehypePlugins={[rehypeRaw, [rehypeSanitize, CHAT_MARKDOWN_SANITIZE_SCHEMA]]}
+        rehypePlugins={rehypePlugins}
         components={markdownComponents}
         urlTransform={markdownUrlTransform}
       >

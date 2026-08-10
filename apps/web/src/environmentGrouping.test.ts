@@ -61,6 +61,7 @@ function makeSidebarThreadSummary(
     Pick<SidebarThreadSummary, "id" | "environmentId" | "projectId" | "title">,
 ): SidebarThreadSummary {
   return {
+    handoffThreadId: null,
     interactionMode: DEFAULT_INTERACTION_MODE,
     session: null,
     createdAt: "2026-01-01T00:00:00.000Z",
@@ -73,6 +74,7 @@ function makeSidebarThreadSummary(
     latestUserMessageAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
+    hasPendingFollowups: false,
     hasActionableProposedPlan: false,
     ...overrides,
   };

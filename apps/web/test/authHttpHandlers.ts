@@ -77,6 +77,20 @@ export function createAuthenticatedSessionHandlers(getAuthDescriptor: () => Serv
           expiresAt: TEST_SESSION_EXPIRES_AT,
         }),
       )
+      .handle("passwordSession", () =>
+        Effect.succeed({
+          authenticated: true,
+          scopes: [
+            "orchestration:read",
+            "orchestration:operate",
+            "terminal:operate",
+            "review:write",
+            "relay:read",
+          ],
+          sessionMethod: "browser-session-cookie",
+          expiresAt: TEST_SESSION_EXPIRES_AT,
+        }),
+      )
       .handle("token", () => unexpectedEndpoint("auth.token"))
       .handle("webSocketTicket", () => unexpectedEndpoint("auth.webSocketTicket"))
       .handle("pairingCredential", () => unexpectedEndpoint("auth.pairingCredential"))

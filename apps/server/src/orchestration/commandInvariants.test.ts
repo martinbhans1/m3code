@@ -77,6 +77,8 @@ const readModel: OrchestrationReadModel = {
       proposedPlans: [],
       checkpoints: [],
       deletedAt: null,
+      handoffThreadId: null,
+      sourceThreadId: null,
     },
     {
       id: ThreadId.make("thread-2"),
@@ -101,6 +103,8 @@ const readModel: OrchestrationReadModel = {
       proposedPlans: [],
       checkpoints: [],
       deletedAt: null,
+      handoffThreadId: null,
+      sourceThreadId: null,
     },
   ],
 };

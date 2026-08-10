@@ -4,6 +4,7 @@ import {
   DEFAULT_MODEL,
   EnvironmentId,
   EventId,
+  FOLLOWUP_ACTIVITY_KIND,
   MessageId,
   ProjectId,
   ProviderInstanceId,
@@ -17,6 +18,7 @@ import {
   applyOrchestrationEvent,
   applyOrchestrationEvents,
   applyShellEvent,
+  MAX_THREAD_ACTIVITIES,
   removeEnvironmentState,
   selectEnvironmentState,
   selectProjectsAcrossEnvironments,
@@ -220,6 +222,35 @@ function projectsOf(state: AppState) {
 
 function threadsOf(state: AppState) {
   return selectThreadsAcrossEnvironments(state);
+}
+
+function makeStepActivity(input: { turn: string; index: number; createdAt: string }) {
+  return {
+    id: EventId.make(`${input.turn}-step-${input.index}`),
+    tone: "info" as const,
+    kind: "step",
+    summary: `step ${input.index}`,
+    payload: {},
+    turnId: TurnId.make(input.turn),
+    createdAt: input.createdAt,
+  };
+}
+
+/** `count` transcript rows for one turn, timestamped in order on `day`. */
+function makeStepActivities(input: { turn: string; count: number; day?: number }) {
+  const day = String(input.day ?? 1).padStart(2, "0");
+  return Array.from({ length: input.count }, (_, index) => {
+    const clock = [
+      String(Math.floor(index / 3600)).padStart(2, "0"),
+      String(Math.floor((index % 3600) / 60)).padStart(2, "0"),
+      String(index % 60).padStart(2, "0"),
+    ].join(":");
+    return makeStepActivity({
+      turn: input.turn,
+      index,
+      createdAt: `2026-03-${day}T${clock}.000Z`,
+    });
+  });
 }
 
 function makeEvent<T extends OrchestrationEvent["type"]>(
@@ -618,6 +649,8 @@ describe("incremental orchestration updates", () => {
         ],
         threads: [
           {
+            handoffThreadId: null,
+            sourceThreadId: null,
             id: originalThreadId,
             projectId: originalProjectId,
             title: "Original thread",
@@ -638,9 +671,12 @@ describe("incremental orchestration updates", () => {
             latestUserMessageAt: null,
             hasPendingApprovals: false,
             hasPendingUserInput: false,
+            hasPendingFollowups: false,
             hasActionableProposedPlan: false,
           },
           {
+            handoffThreadId: null,
+            sourceThreadId: null,
             id: recreatedThreadId,
             projectId: recreatedProjectId,
             title: "Recreated thread",
@@ -661,6 +697,7 @@ describe("incremental orchestration updates", () => {
             latestUserMessageAt: null,
             hasPendingApprovals: false,
             hasPendingUserInput: false,
+            hasPendingFollowups: false,
             hasActionableProposedPlan: false,
           },
         ],
@@ -1152,6 +1189,143 @@ describe("incremental orchestration updates", () => {
     expect(threadsOf(next)[0]?.turnDiffSummaries.map((summary) => summary.turnId)).toEqual([
       TurnId.make("turn-1"),
     ]);
+  });
+
+  it("leaves a long thread's history alone when an activity streams in", () => {
+    // The bug this covers: a thread hydrated with its full history, then the
+    // first streamed activity trimmed it to a small window and the transcript
+    // shrank while the user was reading it.
+    const thread = makeThread({
+      activities: makeStepActivities({ turn: "turn-1", count: 2_400 }),
+    });
+
+    const next = applyOrchestrationEvent(
+      makeState(thread),
+      makeEvent("thread.activity-appended", {
+        threadId: thread.id,
+        activity: makeStepActivity({
+          turn: "turn-2",
+          index: 0,
+          createdAt: "2026-03-02T00:00:00.000Z",
+        }),
+      }),
+      localEnvironmentId,
+    );
+
+    expect(threadsOf(next)[0]?.activities).toHaveLength(2_401);
+  });
+
+  it("drops whole turns, never half of one, once a thread exceeds the cap", () => {
+    // Each turn is a fifth of the budget, so the oldest turns have to go — but
+    // a surviving turn must survive intact, or the top of the transcript is a
+    // tool result whose tool call was trimmed away.
+    const turnSize = MAX_THREAD_ACTIVITIES / 5;
+    const activities = Array.from({ length: 8 }, (_, turn) =>
+      makeStepActivities({ turn: `turn-${turn}`, count: turnSize, day: turn + 1 }),
+    ).flat();
+
+    const thread = makeThread({ activities });
+    const next = applyOrchestrationEvent(
+      makeState(thread),
+      makeEvent("thread.activity-appended", {
+        threadId: thread.id,
+        activity: makeStepActivity({
+          turn: "turn-8",
+          index: 0,
+          createdAt: "2026-03-09T00:00:00.000Z",
+        }),
+      }),
+      localEnvironmentId,
+    );
+
+    const kept = threadsOf(next)[0]?.activities ?? [];
+    expect(kept.length).toBeLessThanOrEqual(MAX_THREAD_ACTIVITIES);
+    const countByTurn = new Map<string, number>();
+    for (const activity of kept) {
+      const key = activity.turnId ?? "none";
+      countByTurn.set(key, (countByTurn.get(key) ?? 0) + 1);
+    }
+    // Every retained turn is whole (the newest one holds the single new row).
+    for (const [turn, count] of countByTurn) {
+      expect(count).toBe(turn === "turn-8" ? 1 : turnSize);
+    }
+    // The newest turns are the ones kept.
+    expect(countByTurn.has("turn-7")).toBe(true);
+    expect(countByTurn.has("turn-0")).toBe(false);
+  });
+
+  it("keeps older follow-up activities when the cap trims a long thread", () => {
+    // Chips are live state, not transcript: a pending follow-up raised early in
+    // a long conversation must survive the turns around it being trimmed.
+    const followupActivity = (
+      id: string,
+      followupId: string,
+      status: string,
+      createdAt: string,
+    ) => ({
+      id: EventId.make(id),
+      tone: "info" as const,
+      kind: FOLLOWUP_ACTIVITY_KIND,
+      summary: followupId,
+      payload: {
+        followup: {
+          id: followupId,
+          turnId: TurnId.make("turn-0"),
+          title: followupId,
+          detail: null,
+          rationale: null,
+          status,
+          implementationThreadId: null,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      },
+      turnId: TurnId.make("turn-0"),
+      createdAt,
+    });
+
+    const thread = makeThread({
+      activities: [
+        followupActivity("followup-a", "followup-a", "pending", "2026-02-27T00:00:00.000Z"),
+        followupActivity("followup-b", "followup-b", "pending", "2026-02-27T00:00:01.000Z"),
+        // Two turns of filler, together past the cap, so turn-0 is trimmed.
+        ...makeStepActivities({ turn: "turn-1", count: MAX_THREAD_ACTIVITIES * 0.6, day: 2 }),
+        ...makeStepActivities({ turn: "turn-2", count: MAX_THREAD_ACTIVITIES * 0.6, day: 3 }),
+      ],
+    });
+
+    // Starting follow-up A appends its status change — the append that used to
+    // evict follow-up B.
+    const next = applyOrchestrationEvent(
+      makeState(thread),
+      makeEvent("thread.activity-appended", {
+        threadId: thread.id,
+        activity: followupActivity(
+          "followup-a-done",
+          "followup-a",
+          "spunOff",
+          "2026-04-01T00:00:00.000Z",
+        ),
+      }),
+      localEnvironmentId,
+    );
+
+    const activities = threadsOf(next)[0]?.activities ?? [];
+    const followups = activities
+      .filter((activity) => activity.kind === FOLLOWUP_ACTIVITY_KIND)
+      .map((activity) => {
+        const { id, status } = (activity.payload as { followup: { id: string; status: string } })
+          .followup;
+        return { id, status };
+      });
+    expect(followups).toEqual([
+      { id: "followup-a", status: "pending" },
+      { id: "followup-b", status: "pending" },
+      { id: "followup-a", status: "spunOff" },
+    ]);
+    // The oldest filler turn was trimmed; the follow-ups beside it were not.
+    expect(activities.some((activity) => activity.turnId === TurnId.make("turn-1"))).toBe(false);
+    expect(activities.some((activity) => activity.turnId === TurnId.make("turn-2"))).toBe(true);
   });
 
   it("clears pending source proposed plans after revert before a new session-set event", () => {

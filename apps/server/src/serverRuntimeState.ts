@@ -59,6 +59,37 @@ export const clearPersistedServerRuntimeState = (path: string) =>
     yield* fs.remove(path, { force: true }).pipe(Effect.ignore({ log: true }));
   });
 
+/**
+ * Two backends can share one state dir (dev alongside the installed app), and
+ * the later starter overwrites this file. Only the process the file currently
+ * names may delete it, otherwise the first backend to exit leaves the other
+ * one invisible to `t3 connect` while it is still serving.
+ */
+export const clearOwnPersistedServerRuntimeState = (path: string) =>
+  Effect.gen(function* () {
+    const existing = yield* readPersistedServerRuntimeState(path);
+    if (Option.isSome(existing) && existing.value.pid !== process.pid) {
+      return;
+    }
+
+    yield* clearPersistedServerRuntimeState(path);
+  });
+
+/**
+ * `kill(pid, 0)` performs the permission/existence check without delivering a
+ * signal, which is enough to tell a live sibling backend from a stale runtime
+ * file left behind by a crash.
+ */
+export const isProcessAlive = (pid: number): boolean => {
+  if (pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
 export const readPersistedServerRuntimeState = (path: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;

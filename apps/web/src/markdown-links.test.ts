@@ -127,3 +127,20 @@ describe("resolveMarkdownFileLinkTarget", () => {
     expect(resolveMarkdownFileLinkTarget("/chat/settings")).toBeNull();
   });
 });
+
+describe("hrefs that look like URL schemes", () => {
+  // react-markdown blanks these unless we intervene; the resolver must at least
+  // recognise them, or there is nothing to intervene with.
+  it("resolves a relative path carrying a line suffix", () => {
+    const meta = resolveMarkdownFileLinkMeta("notes.sql:7", "/repo/project");
+    expect(meta).not.toBeNull();
+    expect(meta?.workspaceRelativePath).toBe("notes.sql");
+    expect(meta?.line).toBe(7);
+  });
+
+  it("resolves a Windows absolute path", () => {
+    const meta = resolveMarkdownFileLinkMeta("C:/repo/project/notes.sql", "C:/repo/project");
+    expect(meta).not.toBeNull();
+    expect(meta?.workspaceRelativePath).toBe("notes.sql");
+  });
+});

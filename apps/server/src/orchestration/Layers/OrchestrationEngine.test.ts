@@ -155,6 +155,8 @@ describe("OrchestrationEngine", () => {
           activities: [],
           checkpoints: [],
           session: null,
+          handoffThreadId: null,
+          sourceThreadId: null,
         },
       ],
     };
@@ -203,6 +205,8 @@ describe("OrchestrationEngine", () => {
           getFullThreadDiffContext: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          getThreadMessagesTail: () => Effect.succeed([]),
+          listThreadActivitiesByKinds: () => Effect.succeed([]),
         }),
       ),
       Layer.provide(
@@ -288,6 +292,8 @@ describe("OrchestrationEngine", () => {
       activities: [],
       checkpoints: [],
       session: null,
+      handoffThreadId: null,
+      sourceThreadId: null,
     };
 
     // Boot sees an empty projection; the other process commits the thread
@@ -345,6 +351,8 @@ describe("OrchestrationEngine", () => {
           getFullThreadDiffContext: () => Effect.succeed(Option.none()),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
+          getThreadMessagesTail: () => Effect.succeed([]),
+          listThreadActivitiesByKinds: () => Effect.succeed([]),
         }),
       ),
       Layer.provide(

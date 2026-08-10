@@ -98,6 +98,10 @@ export function applyThreadDetailEvent(
           activities: [],
           checkpoints: [],
           session: null,
+          // A freshly created thread has no handoff yet; if it was spun off with
+          // one, the recording activity arrives as its own event right after.
+          handoffThreadId: null,
+          sourceThreadId: null,
         },
       };
 

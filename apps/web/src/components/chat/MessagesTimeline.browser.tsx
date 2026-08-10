@@ -401,7 +401,7 @@ describe("MessagesTimeline", () => {
     }
   });
 
-  it("folds settled-turn work behind a Worked-for row and expands it on click", async () => {
+  it("folds settled-turn work behind a Worked-for row, keeping prose visible", async () => {
     const screen = await render(
       <MessagesTimeline
         {...buildProps()}
@@ -457,7 +457,8 @@ describe("MessagesTimeline", () => {
       await expect.element(foldButton).toHaveAttribute("aria-expanded", "false");
 
       expect(document.body.textContent).toContain("All done.");
-      expect(document.body.textContent).not.toContain("Let me look around first.");
+      // Commentary between tool calls is written for the user — never folded.
+      expect(document.body.textContent).toContain("Let me look around first.");
       expect(document.body.textContent).not.toContain("Inspecting repository state");
 
       await foldButton.click();

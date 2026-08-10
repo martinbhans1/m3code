@@ -4,10 +4,13 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import { HttpServer } from "effect/unstable/http";
 
 import { ServerEnvironment } from "../environment/Services/ServerEnvironment.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpProviderSession from "./McpProviderSession.ts";
 
@@ -52,8 +55,36 @@ export interface McpSessionRegistryOptions {
   readonly now?: () => number;
 }
 
-const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1_000;
-const DEFAULT_MAXIMUM_LIFETIME_MS = 8 * 60 * 60 * 1_000;
+/** Route the shared toolkits (preview, follow-ups) are served from. */
+export const MCP_PATH = "/mcp";
+/**
+ * Route the cross-thread orchestrator toolkit is served from. Kept as a
+ * sibling rather than a `/mcp/...` child so it cannot be reached by prefix
+ * matching on the shared route, and so its tools are absent from the shared
+ * server's `tools/list` — MCP can only filter that list by client identity,
+ * which is the same for every thread.
+ */
+export const MCP_ORCHESTRATOR_PATH = "/mcp-orchestrator";
+
+/**
+ * Credential lifetimes.
+ *
+ * These were 30 minutes idle / 8 hours absolute, which produced a steady drip
+ * of "token expired" failures mid-conversation. The token is minted once when a
+ * provider session starts and baked into the CLI process's MCP server config at
+ * spawn (`mcpServers["t3-code"].headers.Authorization`), so it can never be
+ * rotated while that session lives: the moment it lapses, every t3-code tool
+ * call fails until the whole provider session restarts. And the idle clock ran
+ * on MCP *tool calls*, not on user activity — a half hour of ordinary coding
+ * without touching a t3-code tool was enough to kill it.
+ *
+ * Expiry was buying very little here. The credential is thread-scoped, bound to
+ * a 127.0.0.1 endpoint, held only in memory (so every server restart mints
+ * fresh ones), and explicitly revoked when the thread's session stops or is
+ * replaced. A month is effectively "as long as this server process lives".
+ */
+const DEFAULT_IDLE_TIMEOUT_MS = 30 * 24 * 60 * 60 * 1_000;
+const DEFAULT_MAXIMUM_LIFETIME_MS = 30 * 24 * 60 * 60 * 1_000;
 
 const bytesToHex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -67,14 +98,41 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
   const environment = yield* ServerEnvironment;
   const environmentId = yield* environment.getEnvironmentId;
   const httpServer = yield* HttpServer.HttpServer;
+  const serverSettings = yield* ServerSettingsService;
+  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const state = yield* SynchronizedRef.make<RegistryState>({ records: new Map() });
   const currentTimeMillis = options.now ? Effect.sync(options.now) : Clock.currentTimeMillis;
   const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
   const maximumLifetimeMs = options.maximumLifetimeMs ?? DEFAULT_MAXIMUM_LIFETIME_MS;
-  const endpoint =
+  const origin =
     httpServer.address._tag === "TcpAddress"
-      ? `http://127.0.0.1:${httpServer.address.port}/mcp`
-      : "http://127.0.0.1/mcp";
+      ? `http://127.0.0.1:${httpServer.address.port}`
+      : "http://127.0.0.1";
+  const endpoint = `${origin}${MCP_PATH}`;
+  const orchestratorEndpoint = `${origin}${MCP_ORCHESTRATOR_PATH}`;
+
+  // A thread only gets cross-thread powers when it lives in the project the
+  // user designated as the orchestrator project. Both lookups fall back to
+  // "not the orchestrator project" on failure: a settings read error or a
+  // missing thread row must never widen a credential's scope.
+  const resolveCapabilities = Effect.fn("McpSessionRegistry.resolveCapabilities")(function* (
+    threadId: ThreadId,
+  ) {
+    const capabilities = new Set<McpInvocationContext.McpCapability>(["preview"]);
+    const orchestratorProjectId = yield* serverSettings.getSettings.pipe(
+      Effect.map((settings) => settings.orchestratorProjectId),
+      Effect.orElseSucceed(() => null),
+    );
+    if (orchestratorProjectId === null) return capabilities;
+
+    const thread = yield* projectionSnapshotQuery
+      .getThreadShellById(threadId)
+      .pipe(Effect.orElseSucceed(() => Option.none()));
+    if (Option.isSome(thread) && thread.value.projectId === orchestratorProjectId) {
+      capabilities.add("orchestrator");
+    }
+    return capabilities;
+  });
 
   const hashToken = (token: string) =>
     crypto
@@ -98,12 +156,13 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
       const rawToken = yield* crypto.randomBytes(32).pipe(Effect.map(tokenFromBytes), Effect.orDie);
       const tokenHash = yield* hashToken(rawToken);
       const expiresAt = issuedAt + maximumLifetimeMs;
+      const capabilities = yield* resolveCapabilities(request.threadId);
       const scope: McpInvocationContext.McpInvocationScope = {
         environmentId,
         threadId: ThreadId.make(request.threadId),
         providerSessionId,
         providerInstanceId: ProviderInstanceId.make(request.providerInstanceId),
-        capabilities: new Set(["preview"]),
+        capabilities,
         issuedAt,
         expiresAt,
       };
@@ -119,6 +178,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           providerSessionId,
           providerInstanceId: scope.providerInstanceId,
           endpoint,
+          orchestratorEndpoint: capabilities.has("orchestrator") ? orchestratorEndpoint : null,
           authorizationHeader: `Bearer ${rawToken}`,
         },
         expiresAt,
@@ -183,7 +243,11 @@ const make = Effect.acquireRelease(
 export const layer: Layer.Layer<
   McpSessionRegistry,
   never,
-  Crypto.Crypto | ServerEnvironment | HttpServer.HttpServer
+  | Crypto.Crypto
+  | ServerEnvironment
+  | HttpServer.HttpServer
+  | ServerSettingsService
+  | ProjectionSnapshotQuery
 > = Layer.effect(McpSessionRegistry, make);
 
 export const issueActiveMcpCredential = (
@@ -204,4 +268,6 @@ export const revokeAllActiveMcpCredentials = (): Effect.Effect<void> =>
 /** Exposed for tests. */
 export const __testing = {
   make: makeWithOptions,
+  defaultIdleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS,
+  defaultMaximumLifetimeMs: DEFAULT_MAXIMUM_LIFETIME_MS,
 };

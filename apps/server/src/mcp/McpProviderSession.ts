@@ -6,6 +6,11 @@ export interface McpProviderSessionConfig {
   readonly providerSessionId: string;
   readonly providerInstanceId: ProviderInstanceId;
   readonly endpoint: string;
+  // Set only when the session's thread holds the `orchestrator` capability.
+  // Adapters mount this as a second MCP server so cross-thread tools stay out
+  // of every other thread's tool list entirely, rather than being listed and
+  // then rejected at call time.
+  readonly orchestratorEndpoint: string | null;
   readonly authorizationHeader: string;
 }
 

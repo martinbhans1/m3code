@@ -37,6 +37,7 @@ import {
   type NodeKey,
   type Spread,
 } from "lexical";
+import { TextQuoteIcon } from "lucide-react";
 import {
   createContext,
   use,
@@ -118,6 +119,16 @@ type SerializedComposerTerminalContextNode = Spread<
   {
     context: TerminalContextDraft;
     type: "composer-terminal-context";
+    version: 1;
+  },
+  SerializedLexicalNode
+>;
+
+type SerializedComposerQuoteNode = Spread<
+  {
+    body: string;
+    source: string;
+    type: "composer-quote";
     version: 1;
   },
   SerializedLexicalNode
@@ -419,16 +430,102 @@ function $createComposerTerminalContextNode(
   return $applyNodeReplacement(new ComposerTerminalContextNode(context));
 }
 
+/**
+ * Select-to-quote drops `<quote>…</quote>` into the prompt. Showing those tags
+ * raw reads as markup noise, so the composer renders the block as an atomic
+ * quote card: one caret position, exactly like a mention chip, which also keeps
+ * the caret free to sit before or after it and start a new line there.
+ */
+function ComposerQuoteDecorator(props: { body: string }) {
+  return (
+    <span
+      className="my-0.5 flex w-full items-start gap-2 rounded-r-sm border-muted-foreground/35 border-l-2 bg-muted/30 py-1 pr-2 pl-2.5 text-[13px] text-muted-foreground leading-relaxed"
+      contentEditable={false}
+      spellCheck={false}
+      data-composer-quote-block="true"
+    >
+      <TextQuoteIcon className="mt-1 size-3.5 shrink-0 opacity-70" aria-hidden="true" />
+      <span className="min-w-0 flex-1 whitespace-pre-wrap wrap-break-word">{props.body}</span>
+    </span>
+  );
+}
+
+class ComposerQuoteNode extends DecoratorNode<React.ReactElement> {
+  __body: string;
+  __source: string;
+
+  static override getType(): string {
+    return "composer-quote";
+  }
+
+  static override clone(node: ComposerQuoteNode): ComposerQuoteNode {
+    return new ComposerQuoteNode(node.__body, node.__source, node.__key);
+  }
+
+  static override importJSON(serializedNode: SerializedComposerQuoteNode): ComposerQuoteNode {
+    return $createComposerQuoteNode(serializedNode.body, serializedNode.source).updateFromJSON(
+      serializedNode,
+    );
+  }
+
+  constructor(body: string, source: string, key?: NodeKey) {
+    super(key);
+    this.__body = body;
+    this.__source = source;
+  }
+
+  override exportJSON(): SerializedComposerQuoteNode {
+    return {
+      ...super.exportJSON(),
+      body: this.__body,
+      source: this.__source,
+      type: "composer-quote",
+      version: 1,
+    };
+  }
+
+  override createDOM(): HTMLElement {
+    // inline-block, not block: a block box here would sit outside the inline
+    // flow and Chrome then refuses to insert typed text at the caret position
+    // immediately before it. Full width still puts the card on its own line.
+    const dom = document.createElement("span");
+    dom.className = "inline-block w-full align-top";
+    return dom;
+  }
+
+  override updateDOM(): false {
+    return false;
+  }
+
+  override getTextContent(): string {
+    return this.__source;
+  }
+
+  override isInline(): true {
+    return true;
+  }
+
+  override decorate(): React.ReactElement {
+    return <ComposerQuoteDecorator body={this.__body} />;
+  }
+}
+
+function $createComposerQuoteNode(body: string, source: string): ComposerQuoteNode {
+  return $applyNodeReplacement(new ComposerQuoteNode(body, source));
+}
+
 type ComposerInlineTokenNode =
   | ComposerMentionNode
   | ComposerSkillNode
-  | ComposerTerminalContextNode;
+  | ComposerTerminalContextNode
+  | ComposerQuoteNode;
 
 function isComposerInlineTokenNode(candidate: unknown): candidate is ComposerInlineTokenNode {
   return (
     candidate instanceof ComposerMentionNode ||
     candidate instanceof ComposerSkillNode ||
-    candidate instanceof ComposerTerminalContextNode
+    candidate instanceof ComposerTerminalContextNode ||
+    candidate instanceof ComposerQuoteNode
   );
 }
 
@@ -843,6 +940,10 @@ function $setComposerEditorPrompt(
       if (segment.context) {
         paragraph.append($createComposerTerminalContextNode(segment.context));
       }
+      continue;
+    }
+    if (segment.type === "quote") {
+      paragraph.append($createComposerQuoteNode(segment.body, segment.source));
       continue;
     }
     $appendTextWithLineBreaks(paragraph, segment.text);
@@ -1393,6 +1494,132 @@ function composerCaretFallbackHeight(root: HTMLElement): number {
   return Number.isFinite(fontSize) && fontSize > 0 ? fontSize * 1.5 : 18;
 }
 
+/** Viewport-space box the smooth caret should occupy. */
+interface CaretMetrics {
+  left: number;
+  top: number;
+  height: number;
+}
+
+function composerContentLeft(root: HTMLElement): number {
+  const style = getComputedStyle(root);
+  return root.getBoundingClientRect().left + (parseFloat(style.paddingLeft) || 0);
+}
+
+function rectOfNode(node: Node): DOMRect | null {
+  const range = document.createRange();
+  try {
+    range.selectNode(node);
+    const rect = range.getBoundingClientRect();
+    return rect.height > 0 ? rect : null;
+  } catch {
+    return null;
+  } finally {
+    range.detach?.();
+  }
+}
+
+function rectOfCharacter(text: Text, index: number): DOMRect | null {
+  if (index < 0 || index >= text.length) return null;
+  const range = document.createRange();
+  try {
+    range.setStart(text, index);
+    range.setEnd(text, index + 1);
+    const rect = range.getBoundingClientRect();
+    return rect.height > 0 ? rect : null;
+  } catch {
+    return null;
+  } finally {
+    range.detach?.();
+  }
+}
+
+/**
+ * Caret boxes for positions the browser refuses to measure: an empty line (the
+ * caret sits between two <br>s) and the boundary next to an atomic chip or
+ * quote card both yield a zero-sized range rect. Falling back to "editor start"
+ * there parks the caret in the top-left corner while the real one is lines
+ * below, which reads as the caret refusing to move. Derive the box from the
+ * node on either side instead.
+ */
+function caretMetricsFromNeighbours(range: Range, root: HTMLElement): CaretMetrics | null {
+  const lineHeight = composerCaretFallbackHeight(root);
+  const container = range.startContainer;
+
+  if (container.nodeType === Node.TEXT_NODE) {
+    const text = container as Text;
+    const before = rectOfCharacter(text, range.startOffset - 1);
+    if (before) {
+      return { left: before.right, top: before.top, height: before.height };
+    }
+    const after = rectOfCharacter(text, range.startOffset);
+    if (after) {
+      return { left: after.left, top: after.top, height: after.height };
+    }
+    return null;
+  }
+
+  if (!(container instanceof Element)) {
+    return null;
+  }
+
+  const children = container.childNodes;
+  const previous = range.startOffset > 0 ? (children[range.startOffset - 1] ?? null) : null;
+  const next = children[range.startOffset] ?? null;
+
+  if (previous) {
+    if (previous.nodeType === Node.TEXT_NODE) {
+      const rect = rectOfCharacter(previous as Text, (previous as Text).length - 1);
+      if (rect) {
+        return { left: rect.right, top: rect.top, height: rect.height };
+      }
+    } else if (previous.nodeName === "BR") {
+      // A line break before the caret means the caret opens the next line.
+      const rect = rectOfNode(previous);
+      if (rect) {
+        return { left: composerContentLeft(root), top: rect.bottom, height: rect.height };
+      }
+    } else {
+      const rect = rectOfNode(previous);
+      if (rect) {
+        // Tall boxes (a quote card) put the caret on their last line.
+        const height = Math.min(rect.height, lineHeight);
+        return { left: rect.right, top: rect.bottom - height, height };
+      }
+    }
+  }
+
+  if (next) {
+    if (next.nodeType === Node.TEXT_NODE) {
+      const rect = rectOfCharacter(next as Text, 0);
+      if (rect) {
+        return { left: rect.left, top: rect.top, height: rect.height };
+      }
+    } else {
+      const rect = rectOfNode(next);
+      if (rect) {
+        const height = next.nodeName === "BR" ? rect.height : Math.min(rect.height, lineHeight);
+        return { left: rect.left, top: rect.top, height };
+      }
+    }
+  }
+
+  return null;
+}
+
+function collapsedCaretMetrics(range: Range, root: HTMLElement): CaretMetrics | null {
+  const bounding = range.getBoundingClientRect();
+  if (bounding.height > 0) {
+    return { left: bounding.left, top: bounding.top, height: bounding.height };
+  }
+  const rects = range.getClientRects();
+  const lastRect = rects.length > 0 ? rects[rects.length - 1] : null;
+  if (lastRect && lastRect.height > 0) {
+    return { left: lastRect.left, top: lastRect.top, height: lastRect.height };
+  }
+  return caretMetricsFromNeighbours(range, root);
+}
+
 /**
  * Custom smooth caret. Native contenteditable carets can't be animated, so when
  * the preference is on we hide the native caret (via CSS keyed on
@@ -1432,15 +1659,12 @@ function ComposerSmoothCaretPlugin() {
       let top: number;
       let height: number;
 
-      const bounding = range.getBoundingClientRect();
-      const rects = range.getClientRects();
-      const rect =
-        bounding.height > 0 ? bounding : rects.length > 0 ? rects[rects.length - 1] : null;
+      const metrics = collapsedCaretMetrics(range, root);
 
-      if (rect && rect.height > 0) {
-        left = rect.left - parentRect.left;
-        top = rect.top - parentRect.top;
-        height = rect.height;
+      if (metrics) {
+        left = metrics.left - parentRect.left;
+        top = metrics.top - parentRect.top;
+        height = metrics.height;
       } else {
         // Empty line / boundary — anchor to the editor's text start.
         const style = getComputedStyle(root);
@@ -1810,7 +2034,12 @@ export function ComposerPromptEditor({
     () => ({
       namespace: "t3tools-composer-editor",
       editable: true,
-      nodes: [ComposerMentionNode, ComposerSkillNode, ComposerTerminalContextNode],
+      nodes: [
+        ComposerMentionNode,
+        ComposerSkillNode,
+        ComposerTerminalContextNode,
+        ComposerQuoteNode,
+      ],
       editorState: () => {
         $setComposerEditorPrompt(
           initialValueRef.current,

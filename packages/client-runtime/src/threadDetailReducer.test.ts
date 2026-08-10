@@ -22,6 +22,8 @@ const baseEventFields = {
 } as const;
 
 const baseThread: OrchestrationThread = {
+  handoffThreadId: null,
+  sourceThreadId: null,
   id: ThreadId.make("thread-1"),
   projectId: ProjectId.make("project-1"),
   title: "Test Thread",
