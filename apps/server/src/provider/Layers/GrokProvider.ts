@@ -18,6 +18,7 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 
 import {
+  buildSelectOptionDescriptor,
   buildServerProvider,
   detailFromResult,
   isCommandMissingCause,
@@ -30,7 +31,13 @@ import {
   enrichProviderSnapshotWithVersionAdvisory,
   type ProviderMaintenanceCapabilities,
 } from "../providerMaintenance.ts";
-import { makeGrokAcpRuntime, resolveGrokAcpBaseModelId } from "../acp/GrokAcpSupport.ts";
+import {
+  GROK_DEFAULT_REASONING_EFFORT,
+  GROK_REASONING_EFFORT_OPTION_ID,
+  GROK_REASONING_EFFORT_VALUES,
+  makeGrokAcpRuntime,
+  resolveGrokAcpBaseModelId,
+} from "../acp/GrokAcpSupport.ts";
 
 const GROK_PRESENTATION = {
   displayName: "Grok",
@@ -39,9 +46,33 @@ const GROK_PRESENTATION = {
   requiresNewThreadForModelChange: true,
 } as const;
 const PROVIDER = ProviderDriverKind.make("grok");
-const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
-  optionDescriptors: [],
-});
+
+const REASONING_EFFORT_LABELS: Readonly<
+  Record<(typeof GROK_REASONING_EFFORT_VALUES)[number], string>
+> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+};
+
+/** Grok 4.5 reasoning depth — applied via `grok agent --reasoning-effort` at spawn. */
+export function buildGrokModelCapabilities(): ModelCapabilities {
+  return createModelCapabilities({
+    optionDescriptors: [
+      buildSelectOptionDescriptor({
+        id: GROK_REASONING_EFFORT_OPTION_ID,
+        label: "Reasoning",
+        options: GROK_REASONING_EFFORT_VALUES.map((value) => ({
+          value,
+          label: REASONING_EFFORT_LABELS[value],
+          ...(value === GROK_DEFAULT_REASONING_EFFORT ? { isDefault: true } : {}),
+        })),
+      }),
+    ],
+  });
+}
+
+const GROK_MODEL_CAPABILITIES: ModelCapabilities = buildGrokModelCapabilities();
 
 const VERSION_PROBE_TIMEOUT_MS = 4_000;
 const GROK_ACP_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
@@ -51,7 +82,7 @@ const GROK_BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
     slug: "grok-build",
     name: "Grok Build",
     isCustom: false,
-    capabilities: EMPTY_CAPABILITIES,
+    capabilities: GROK_MODEL_CAPABILITIES,
   },
 ];
 
@@ -102,7 +133,7 @@ function grokModelsFromSettings(
     builtInModels,
     PROVIDER,
     customModels ?? [],
-    EMPTY_CAPABILITIES,
+    GROK_MODEL_CAPABILITIES,
   );
 }
 
@@ -124,7 +155,7 @@ function buildGrokDiscoveredModelsFromSessionModelState(
         slug,
         name: model.name.trim() || slug,
         isCustom: false,
-        capabilities: EMPTY_CAPABILITIES,
+        capabilities: GROK_MODEL_CAPABILITIES,
       };
     })
     .filter((model): model is ServerProviderModel => model !== undefined);

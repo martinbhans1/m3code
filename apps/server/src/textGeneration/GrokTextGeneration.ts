@@ -27,6 +27,7 @@ import {
   currentGrokModelIdFromSessionSetup,
   makeGrokAcpRuntime,
   resolveGrokAcpBaseModelId,
+  resolveGrokReasoningEffort,
 } from "../provider/acp/GrokAcpSupport.ts";
 
 const GROK_TIMEOUT_MS = 180_000;
@@ -81,12 +82,14 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
   }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
     Effect.gen(function* () {
       const resolvedModel = resolveGrokAcpBaseModelId(modelSelection.model);
+      const reasoningEffort = resolveGrokReasoningEffort(modelSelection.options);
       const outputRef = yield* Ref.make("");
       const runtime = yield* makeGrokAcpRuntime({
         grokSettings,
         environment,
         childProcessSpawner: commandSpawner,
         cwd,
+        reasoningEffort,
         clientInfo: { name: "t3-code-git-text", version: "0.0.0" },
       });
 

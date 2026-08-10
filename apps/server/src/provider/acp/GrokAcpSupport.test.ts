@@ -6,6 +6,7 @@ import {
   applyGrokAcpModelSelection,
   buildGrokAcpSpawnInput,
   resolveGrokAcpBaseModelId,
+  resolveGrokReasoningEffort,
 } from "./GrokAcpSupport.ts";
 
 describe("resolveGrokAcpBaseModelId", () => {
@@ -16,8 +17,23 @@ describe("resolveGrokAcpBaseModelId", () => {
   });
 });
 
+describe("resolveGrokReasoningEffort", () => {
+  it("defaults to high when unset or invalid", () => {
+    expect(resolveGrokReasoningEffort(undefined)).toBe("high");
+    expect(resolveGrokReasoningEffort([])).toBe("high");
+    expect(resolveGrokReasoningEffort([{ id: "reasoningEffort", value: "max" }])).toBe("high");
+    expect(resolveGrokReasoningEffort([{ id: "effort", value: "low" }])).toBe("high");
+  });
+
+  it("accepts low, medium, and high (case-insensitive)", () => {
+    expect(resolveGrokReasoningEffort([{ id: "reasoningEffort", value: "low" }])).toBe("low");
+    expect(resolveGrokReasoningEffort([{ id: "reasoningEffort", value: "medium" }])).toBe("medium");
+    expect(resolveGrokReasoningEffort([{ id: "reasoningEffort", value: "HIGH" }])).toBe("high");
+  });
+});
+
 describe("buildGrokAcpSpawnInput", () => {
-  it("passes the T3 Code referrer through Grok OAuth env", () => {
+  it("passes the T3 Code referrer through Grok OAuth env and defaults reasoning effort", () => {
     const spawn = buildGrokAcpSpawnInput({ binaryPath: "/usr/local/bin/grok" }, "/tmp/project", {
       XAI_API_KEY: "secret",
       GROK_OAUTH2_REFERRER: "other-client",
@@ -25,13 +41,23 @@ describe("buildGrokAcpSpawnInput", () => {
 
     expect(spawn).toEqual({
       command: "/usr/local/bin/grok",
-      args: ["agent", "stdio"],
+      args: ["agent", "--reasoning-effort", "high", "stdio"],
       cwd: "/tmp/project",
       env: {
         XAI_API_KEY: "secret",
         GROK_OAUTH2_REFERRER: "t3code",
       },
     });
+  });
+
+  it("forwards an explicit reasoning effort before the stdio subcommand", () => {
+    const spawn = buildGrokAcpSpawnInput(
+      { binaryPath: "/usr/local/bin/grok" },
+      "/tmp/project",
+      undefined,
+      "low",
+    );
+    expect(spawn.args).toEqual(["agent", "--reasoning-effort", "low", "stdio"]);
   });
 });
 

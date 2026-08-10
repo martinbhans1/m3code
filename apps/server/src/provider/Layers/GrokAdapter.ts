@@ -57,6 +57,7 @@ import {
   currentGrokModelIdFromSessionSetup,
   makeGrokAcpRuntime,
   resolveGrokAcpBaseModelId,
+  resolveGrokReasoningEffort,
 } from "../acp/GrokAcpSupport.ts";
 import {
   extractXAiAskUserQuestions,
@@ -361,6 +362,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           const cwd = path.resolve(input.cwd.trim());
           const grokModelSelection =
             input.modelSelection?.instanceId === boundInstanceId ? input.modelSelection : undefined;
+          const reasoningEffort = resolveGrokReasoningEffort(grokModelSelection?.options);
           const existing = sessions.get(input.threadId);
           if (existing && !existing.stopped) {
             yield* stopSessionInternal(existing);
@@ -387,6 +389,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             ...(options?.environment ? { environment: options.environment } : {}),
             childProcessSpawner,
             cwd,
+            reasoningEffort,
             ...(resumeSessionId ? { resumeSessionId } : {}),
             clientInfo: { name: "t3-code", version: "0.0.0" },
             ...(mcpSession

@@ -6,9 +6,33 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { GrokSettings } from "@t3tools/contracts";
 
-import { buildInitialGrokProviderSnapshot, checkGrokProviderStatus } from "./GrokProvider.ts";
+import {
+  buildGrokModelCapabilities,
+  buildInitialGrokProviderSnapshot,
+  checkGrokProviderStatus,
+} from "./GrokProvider.ts";
+import { GROK_REASONING_EFFORT_OPTION_ID } from "../acp/GrokAcpSupport.ts";
 
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
+
+describe("buildGrokModelCapabilities", () => {
+  it("advertises reasoningEffort low/medium/high with high as default", () => {
+    const capabilities = buildGrokModelCapabilities();
+    const descriptors = capabilities.optionDescriptors ?? [];
+    const reasoning = descriptors.find(
+      (descriptor) => descriptor.id === GROK_REASONING_EFFORT_OPTION_ID,
+    );
+    expect(reasoning).toMatchObject({
+      id: "reasoningEffort",
+      label: "Reasoning",
+      type: "select",
+      currentValue: "high",
+    });
+    expect(
+      reasoning?.type === "select" ? reasoning.options.map((option) => option.id) : [],
+    ).toEqual(["low", "medium", "high"]);
+  });
+});
 
 describe("buildInitialGrokProviderSnapshot", () => {
   it.effect("returns a disabled snapshot when settings.enabled is false", () =>
@@ -23,7 +47,7 @@ describe("buildInitialGrokProviderSnapshot", () => {
     }),
   );
 
-  it.effect("returns a pending snapshot by default", () =>
+  it.effect("returns a pending snapshot by default with reasoning capabilities", () =>
     Effect.gen(function* () {
       const snapshot = yield* buildInitialGrokProviderSnapshot(decodeGrokSettings({}));
       expect(snapshot.enabled).toBe(true);
@@ -32,6 +56,11 @@ describe("buildInitialGrokProviderSnapshot", () => {
       expect(snapshot.version).toBeNull();
       expect(snapshot.message).toContain("Checking Grok");
       expect(snapshot.requiresNewThreadForModelChange).toBe(true);
+      const model = snapshot.models.find((entry) => entry.slug === "grok-build");
+      const optionDescriptors = model?.capabilities?.optionDescriptors ?? [];
+      expect(
+        optionDescriptors.some((descriptor) => descriptor.id === GROK_REASONING_EFFORT_OPTION_ID),
+      ).toBe(true);
     }),
   );
 });
