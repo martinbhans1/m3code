@@ -2479,15 +2479,18 @@ const SidebarProjectListRow = memo(function SidebarProjectListRow(props: Sidebar
 });
 
 function M3Wordmark() {
-  // Text-based wordmark placeholder until a proper logo image is dropped in.
-  // "M" in the foreground, "3" tinted with the accent so the brand reads at a glance.
   return (
-    <span
-      aria-label="M3"
-      className="select-none text-sm font-bold leading-none tracking-tight text-foreground"
-    >
-      M<span className="text-primary">3</span>
-    </span>
+    <svg aria-label="M3" viewBox="0 0 80 47" className="h-3.5 w-auto shrink-0 text-foreground">
+      <path
+        d="M0 45.5V0H10.56L21.12 26L31.68 0H42.24V45.5H31.68V19.5L21.12 39.8L10.56 19.5V45.5H0Z"
+        fill="currentColor"
+      />
+      <path
+        className="text-primary"
+        d="M59.515 46.28C56.352 46.28 53.21 45.868 50.09 45.045C46.97 44.178 44.327 42.965 42.16 41.405L46.255 33.345C47.988 34.602 50.003 35.598 52.3 36.335C54.597 37.072 56.915 37.44 59.255 37.44C61.898 37.44 63.978 36.92 65.495 35.88C67.012 34.84 67.77 33.41 67.77 31.59C67.77 29.857 67.098 28.492 65.755 27.495C64.412 26.498 62.245 26 59.255 26H54.445V19.045L67.12 4.68L68.29 8.45H44.435V0H76.285V6.825L63.675 21.19L58.345 18.135H61.4C66.99 18.135 71.215 19.392 74.075 21.905C76.935 24.418 78.365 27.647 78.365 31.59C78.365 34.147 77.693 36.552 76.35 38.805C75.007 41.015 72.948 42.813 70.175 44.2C67.402 45.587 63.848 46.28 59.515 46.28Z"
+        fill="currentColor"
+      />
+    </svg>
   );
 }
 

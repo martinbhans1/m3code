@@ -23,21 +23,21 @@ const VARIANT_CONFIG: Record<
   }
 > = {
   development: {
-    appName: "T3 Code Dev",
+    appName: "M3 Code Dev",
     scheme: "t3code-dev",
     iosIcon: "./assets/icon-composer-dev.icon",
     iosBundleIdentifier: "no.leep.m3code.dev",
     androidPackage: "no.leep.m3code.dev",
   },
   preview: {
-    appName: "T3 Code Preview",
+    appName: "M3 Code Preview",
     scheme: "t3code-preview",
     iosIcon: "./assets/icon-composer-prod.icon",
     iosBundleIdentifier: "no.leep.m3code.preview",
     androidPackage: "no.leep.m3code.preview",
   },
   production: {
-    appName: "T3 Code",
+    appName: "M3 Code",
     scheme: "t3code",
     iosIcon: "./assets/icon-composer-prod.icon",
     iosBundleIdentifier: "no.leep.m3code",
@@ -85,7 +85,7 @@ const config: ExpoConfig = {
         NSAllowsArbitraryLoads: true,
       },
       NSLocalNetworkUsageDescription:
-        "Allow T3 Code to connect to T3 Code servers on your local network or tailnet.",
+        "Allow M3 Code to connect to M3 Code servers on your local network or tailnet.",
       ITSAppUsesNonExemptEncryption: false,
     },
   },
@@ -112,7 +112,7 @@ const config: ExpoConfig = {
     [
       "expo-camera",
       {
-        cameraPermission: "Allow T3 Code to access your camera so you can scan pairing QR codes.",
+        cameraPermission: "Allow M3 Code to access your camera so you can scan pairing QR codes.",
         barcodeScannerEnabled: true,
       },
     ],
@@ -147,7 +147,7 @@ const config: ExpoConfig = {
           {
             name: "AgentActivity",
             displayName: "Agent Activity",
-            description: "Shows the current state of active T3 Code agents.",
+            description: "Shows the current state of active M3 Code agents.",
             supportedFamilies: ["systemSmall", "systemMedium", "accessoryRectangular"],
           },
         ],
