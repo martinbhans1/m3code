@@ -31,6 +31,7 @@ import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -191,6 +192,7 @@ const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
   const providerService = yield* ProviderService;
+  const providerSessionDirectory = yield* ProviderSessionDirectory;
   const providerRegistry = yield* ProviderRegistry;
   const gitWorkflow = yield* GitWorkflowService;
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
@@ -589,7 +591,58 @@ const make = Effect.gen(function* () {
       return restartedSession.threadId;
     }
 
-    const startedSession = yield* startProviderSession(undefined);
+    // Cold start: the thread has no *live* provider session, so the restart
+    // branch above never ran. The persisted runtime row still carries the
+    // resume cursor from the session that died — app restart, provider
+    // reconfiguration (which re-creates every instance of a driver), or a
+    // turn that errored out. Without this the cursor is silently dropped and
+    // the thread restarts empty, which is exactly the failure mode when an
+    // account is rate-limited and the user switches to a second instance
+    // after a restart.
+    //
+    // Best-effort by construction: any failure to read or validate the cursor
+    // falls back to a fresh session rather than blocking the turn.
+    const coldStartResumeCursor: unknown = yield* Effect.gen(function* () {
+      const binding = Option.getOrUndefined(yield* providerSessionDirectory.getBinding(threadId));
+      if (binding === undefined) return undefined;
+      const persistedCursor = binding.resumeCursor;
+      if (persistedCursor === undefined || persistedCursor === null) return undefined;
+      // Same guards as the live instance switch above: never carry a cursor
+      // across driver kinds, or between instances whose resume state lives in
+      // different stores (a Claude instance reading a different
+      // CLAUDE_CONFIG_DIR cannot see the other's transcripts). A legacy row
+      // with no instance id can't be checked, so it doesn't get reused.
+      if (binding.provider !== desiredDriverKind) return undefined;
+      const persistedInstanceId = binding.providerInstanceId;
+      if (persistedInstanceId === undefined) return undefined;
+      if (persistedInstanceId !== desiredInstanceId) {
+        const persistedInfo = yield* providerService.getInstanceInfo(persistedInstanceId);
+        if (
+          persistedInfo.continuationIdentity.continuationKey !==
+          desiredInfo.continuationIdentity.continuationKey
+        ) {
+          return undefined;
+        }
+      }
+      return persistedCursor;
+    }).pipe(
+      Effect.catchCause((cause: Cause.Cause<unknown>) =>
+        Effect.logWarning("provider command reactor could not reuse persisted resume cursor", {
+          threadId,
+          desiredInstanceId,
+          cause,
+        }).pipe(Effect.as(undefined)),
+      ),
+    );
+    yield* Effect.logInfo("provider command reactor starting provider session", {
+      threadId,
+      desiredInstanceId,
+      desiredProvider: desiredDriverKind,
+      hasResumeCursor: coldStartResumeCursor !== undefined,
+    });
+    const startedSession = yield* startProviderSession(
+      coldStartResumeCursor !== undefined ? { resumeCursor: coldStartResumeCursor } : undefined,
+    );
     yield* bindSessionToThread(startedSession);
     return startedSession.threadId;
   });
