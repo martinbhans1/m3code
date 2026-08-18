@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { isTransportConnectionErrorMessage, sanitizeThreadErrorMessage } from "./transportError.ts";
+import {
+  isInterruptError,
+  isInterruptErrorMessage,
+  isTransportConnectionErrorMessage,
+  sanitizeThreadErrorMessage,
+  TransportInterruptedError,
+} from "./transportError.ts";
 
 describe("isTransportConnectionErrorMessage", () => {
   it("returns true for SocketCloseError", () => {
@@ -29,6 +35,11 @@ describe("isTransportConnectionErrorMessage", () => {
     expect(isTransportConnectionErrorMessage("ping timeout")).toBe(true);
   });
 
+  it("does not treat a cancelled Effect fiber as a connection failure", () => {
+    expect(isTransportConnectionErrorMessage("All fibers interrupted without error")).toBe(false);
+    expect(isTransportConnectionErrorMessage("Transport request interrupted")).toBe(false);
+  });
+
   it("returns false for business logic errors", () => {
     expect(isTransportConnectionErrorMessage("Thread not found")).toBe(false);
     expect(isTransportConnectionErrorMessage("Invalid model selection")).toBe(false);
@@ -42,9 +53,40 @@ describe("isTransportConnectionErrorMessage", () => {
   });
 });
 
+describe("isInterruptError", () => {
+  it("returns true for TransportInterruptedError", () => {
+    expect(isInterruptError(new TransportInterruptedError())).toBe(true);
+  });
+
+  it("returns true for Effect's InterruptError name", () => {
+    const error = new Error("All fibers interrupted without error");
+    error.name = "InterruptError";
+    expect(isInterruptError(error)).toBe(true);
+  });
+
+  it("returns true for Cause.squash's interrupt-only message", () => {
+    expect(isInterruptError(new Error("All fibers interrupted without error"))).toBe(true);
+    expect(isInterruptError("All fibers interrupted without error")).toBe(true);
+    expect(isInterruptErrorMessage("InterruptError: All fibers interrupted without error")).toBe(
+      true,
+    );
+  });
+
+  it("returns false for connection and business errors", () => {
+    expect(isInterruptError(new Error("SocketCloseError: connection reset"))).toBe(false);
+    expect(isInterruptError(new Error("Thread not found"))).toBe(false);
+    expect(isInterruptError(null)).toBe(false);
+  });
+});
+
 describe("sanitizeThreadErrorMessage", () => {
   it("strips transport errors", () => {
     expect(sanitizeThreadErrorMessage("SocketCloseError: oops")).toBeNull();
+  });
+
+  it("strips cancelled-fiber interrupts so they never reach the thread banner", () => {
+    expect(sanitizeThreadErrorMessage("All fibers interrupted without error")).toBeNull();
+    expect(sanitizeThreadErrorMessage("Transport request interrupted")).toBeNull();
   });
 
   it("preserves non-transport errors", () => {

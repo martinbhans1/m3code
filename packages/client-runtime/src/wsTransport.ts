@@ -8,7 +8,11 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { RpcClient } from "effect/unstable/rpc";
 
-import { isTransportConnectionErrorMessage } from "./transportError.ts";
+import {
+  isInterruptError,
+  isTransportConnectionErrorMessage,
+  TransportInterruptedError,
+} from "./transportError.ts";
 import {
   createWsRpcProtocolLayer,
   makeWsRpcProtocolClient,
@@ -61,6 +65,14 @@ function formatErrorMessage(error: unknown): string {
   return String(error);
 }
 
+function isSessionInterruptCause(cause: Cause.Cause<unknown>): boolean {
+  return Cause.hasInterruptsOnly(cause) || isInterruptError(Cause.squash(cause));
+}
+
+function rejectSessionCause(cause: Cause.Cause<unknown>): unknown {
+  return isSessionInterruptCause(cause) ? new TransportInterruptedError() : Cause.squash(cause);
+}
+
 export class WsTransport {
   private readonly url: WsRpcProtocolSocketUrlProvider;
   private readonly lifecycleHandlers: WsProtocolLifecycleHandlers | undefined;
@@ -91,34 +103,36 @@ export class WsTransport {
   async request<TSuccess>(
     execute: (client: WsRpcProtocolClient) => Effect.Effect<TSuccess, Error, never>,
   ): Promise<TSuccess> {
-    if (this.disposed) {
-      throw new Error("Transport disposed");
-    }
-
-    const session = this.session;
-    const client = await session.clientPromise;
-    return await session.runtime.runPromise(Effect.suspend(() => execute(client)));
+    return await this.runWithReconnectRetry((session) =>
+      this.runEffectOnSession(
+        session,
+        this.sessionClientEffect(session).pipe(
+          Effect.flatMap((client) => Effect.suspend(() => execute(client))),
+        ),
+      ),
+    );
   }
 
   async requestStream<TValue>(
     connect: (client: WsRpcProtocolClient) => Stream.Stream<TValue, Error, never>,
     listener: (value: TValue) => void,
   ): Promise<void> {
-    if (this.disposed) {
-      throw new Error("Transport disposed");
-    }
-
-    const session = this.session;
-    const client = await session.clientPromise;
-    await session.runtime.runPromise(
-      Stream.runForEach(connect(client), (value) =>
-        Effect.sync(() => {
-          try {
-            listener(value);
-          } catch {
-            // Ignore listener errors so the stream can finish cleanly.
-          }
-        }),
+    return await this.runWithReconnectRetry((session) =>
+      this.runEffectOnSession(
+        session,
+        this.sessionClientEffect(session).pipe(
+          Effect.flatMap((client) =>
+            Stream.runForEach(connect(client), (value) =>
+              Effect.sync(() => {
+                try {
+                  listener(value);
+                } catch {
+                  // Ignore listener errors so the stream can finish cleanly.
+                }
+              }),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -195,7 +209,7 @@ export class WsTransport {
           }
 
           const formattedError = formatErrorMessage(error);
-          if (!isTransportConnectionErrorMessage(formattedError)) {
+          if (!isInterruptError(error) && !isTransportConnectionErrorMessage(formattedError)) {
             this.logWarning("WebSocket RPC subscription failed", { error: formattedError });
             return;
           }
@@ -362,7 +376,7 @@ export class WsTransport {
       rejectCompleted = reject;
     });
     const cancel = session.runtime.runCallback(
-      Effect.promise(() => session.clientPromise).pipe(
+      this.sessionClientEffect(session).pipe(
         Effect.flatMap((client) =>
           Stream.runForEach(connect(client), (value) =>
             Effect.sync(() => {
@@ -387,7 +401,7 @@ export class WsTransport {
             return;
           }
 
-          rejectCompleted(Cause.squash(exit.cause));
+          rejectCompleted(rejectSessionCause(exit.cause));
         },
       },
     );
@@ -396,6 +410,52 @@ export class WsTransport {
       cancel,
       completed,
     };
+  }
+
+  private sessionClientEffect(session: TransportSession): Effect.Effect<WsRpcProtocolClient> {
+    return Effect.promise(() => session.clientPromise);
+  }
+
+  private runEffectOnSession<TSuccess>(
+    session: TransportSession,
+    effect: Effect.Effect<TSuccess, Error>,
+  ): Promise<TSuccess> {
+    return new Promise((resolve, reject) => {
+      session.runtime.runCallback(effect, {
+        onExit: (exit) => {
+          if (Exit.isSuccess(exit)) {
+            resolve(exit.value);
+            return;
+          }
+
+          reject(rejectSessionCause(exit.cause));
+        },
+      });
+    });
+  }
+
+  private async runWithReconnectRetry<T>(
+    run: (session: TransportSession) => Promise<T>,
+  ): Promise<T> {
+    if (this.disposed) {
+      throw new Error("Transport disposed");
+    }
+
+    let session = this.session;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await run(session);
+      } catch (error) {
+        if (this.disposed) {
+          throw new Error("Transport disposed", { cause: error });
+        }
+        if (error instanceof TransportInterruptedError && this.session !== session && attempt < 2) {
+          session = this.session;
+          continue;
+        }
+        throw error;
+      }
+    }
   }
 }
 

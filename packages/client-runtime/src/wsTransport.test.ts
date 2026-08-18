@@ -756,6 +756,162 @@ describe("WsTransport", () => {
     await transport.dispose();
   });
 
+  it("retries an in-flight unary request on the replacement session", async () => {
+    const transport = createTransport("ws://localhost:3020");
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+
+    const firstSocket = getSocket();
+    firstSocket.open();
+
+    const requestPromise = transport.request((client) =>
+      client[WS_METHODS.serverUpsertKeybinding]({
+        command: "terminal.toggle",
+        key: "ctrl+k",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(firstSocket.sent).toHaveLength(1);
+    });
+
+    await transport.reconnect();
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(2);
+    });
+
+    const secondSocket = getSocket();
+    secondSocket.open();
+
+    await waitFor(() => {
+      expect(secondSocket.sent).toHaveLength(1);
+    });
+
+    const requestMessage = JSON.parse(secondSocket.sent[0] ?? "{}") as { id: string };
+    secondSocket.serverMessage(
+      JSON.stringify({
+        _tag: "Exit",
+        requestId: requestMessage.id,
+        exit: {
+          _tag: "Success",
+          value: {
+            keybindings: [],
+            issues: [],
+          },
+        },
+      }),
+    );
+
+    await expect(requestPromise).resolves.toEqual({
+      keybindings: [],
+      issues: [],
+    });
+
+    await transport.dispose();
+  });
+
+  it("does not treat a reconnect interrupt as a subscription failure", async () => {
+    const warnSpy = vi.fn();
+    const transport = createTransport("ws://localhost:3020", undefined, { logWarning: warnSpy });
+
+    const unsubscribe = transport.subscribe(
+      (client) => client[WS_METHODS.subscribeServerLifecycle]({}),
+      vi.fn(),
+    );
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+
+    const firstSocket = getSocket();
+    firstSocket.open();
+
+    await waitFor(() => {
+      expect(firstSocket.sent).toHaveLength(1);
+    });
+
+    await transport.reconnect();
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(2);
+    });
+
+    getSocket().open();
+
+    await waitFor(() => {
+      expect(getSocket().sent).toHaveLength(1);
+    });
+
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    unsubscribe();
+    await transport.dispose();
+  });
+
+  it("retries stream subscriptions after a same-session fiber interrupt", async () => {
+    const warnSpy = vi.fn();
+    const transport = createTransport("ws://localhost:3020", undefined, { logWarning: warnSpy });
+    let attempts = 0;
+
+    const unsubscribe = transport.subscribe(
+      () =>
+        Stream.suspend(() => {
+          attempts += 1;
+          return Stream.fromEffect(Effect.interrupt);
+        }),
+      vi.fn(),
+      { retryDelay: 10 },
+    );
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+
+    getSocket().open();
+
+    await waitFor(() => {
+      expect(attempts).toBeGreaterThanOrEqual(2);
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith("WebSocket RPC subscription disconnected", {
+      error: "Transport request interrupted",
+    });
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      "WebSocket RPC subscription failed",
+      expect.anything(),
+    );
+
+    unsubscribe();
+    await transport.dispose();
+  });
+
+  it("throws Transport disposed when the transport is disposed during a request", async () => {
+    const transport = createTransport("ws://localhost:3020");
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    });
+    getSocket().open();
+
+    const requestPromise = transport.request((client) =>
+      client[WS_METHODS.serverUpsertKeybinding]({
+        command: "terminal.toggle",
+        key: "ctrl+k",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(getSocket().sent).toHaveLength(1);
+    });
+
+    await transport.dispose();
+
+    await expect(requestPromise).rejects.toThrow("Transport disposed");
+  });
+
   it("does not fire onResubscribe when the first stream attempt exits before any value", async () => {
     const transport = createTransport("ws://localhost:3020");
     const listener = vi.fn();
