@@ -5,7 +5,10 @@ import {
   buildConversationSearchChunks,
   buildFtsQuery,
   mergeHybridThreadSearchResults,
+  MAX_SEMANTIC_THREADS,
+  MIN_SEMANTIC_SIMILARITY,
   relaxFtsQuery,
+  semanticSimilarityFloor,
   THREAD_SEARCH_BAND,
   toOrderedThreadSearchResults,
   type BandedThreadSearchResult,
@@ -156,6 +159,25 @@ describe("conversation search logic", () => {
       ThreadId.make("semantic"),
     ]);
     expect(merged[0]?.matchKind).toBe("hybrid");
+  });
+
+  it("cuts semantic matches against the best one the query found, not a fixed number", () => {
+    // Measured against a 595-thread archive: a well-aimed query peaks at 0.85
+    // and a vague one at 0.70, so a fixed floor that keeps the vague query
+    // honest either admits four hundred threads or throws the aimed one away.
+    expect(semanticSimilarityFloor(0.85)).toBeCloseTo(0.765, 5);
+    expect(semanticSimilarityFloor(0.7)).toBeCloseTo(0.63, 5);
+
+    // The best match always survives its own cut, whatever it scored.
+    for (const best of [0.53, 0.7, 0.85, 1]) {
+      expect(best).toBeGreaterThanOrEqual(semanticSimilarityFloor(best));
+    }
+
+    // A weak best match cannot drag the floor below the point where the model
+    // is only producing noise — unrelated queries peak at 0.47 to 0.51.
+    expect(semanticSimilarityFloor(0.4)).toBe(MIN_SEMANTIC_SIMILARITY);
+    expect(semanticSimilarityFloor(0)).toBe(MIN_SEMANTIC_SIMILARITY);
+    expect(MAX_SEMANTIC_THREADS).toBeGreaterThan(0);
   });
 
   it("reads in date order inside a band, without letting a fresh guess pass a certain hit", () => {

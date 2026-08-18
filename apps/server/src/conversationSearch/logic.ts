@@ -267,6 +267,58 @@ export function relaxFtsQuery(ftsQuery: string): string | null {
     : null;
 }
 
+/**
+ * The absolute floor, below which a chunk is not about the query at all.
+ *
+ * Measured against a 595-thread archive: queries with no subject matter in it —
+ * sourdough, Patagonia, the 1994 World Cup — peak at 0.47 to 0.51 against every
+ * chunk stored, so this sits just above the noise the model produces for
+ * unrelated text. It is a floor on *relevance existing*, not on relevance being
+ * good, and it is deliberately not raised past that: the one control query that
+ * crossed it turned out to have a genuine topical match in the archive.
+ */
+export const MIN_SEMANTIC_SIMILARITY = 0.52;
+
+/**
+ * The floor that actually decides the result list: a fraction of the best match
+ * this particular query found.
+ *
+ * The absolute floor cannot do this job. Similarity is not comparable between
+ * queries — a well-aimed one peaks at 0.85 while a vague one peaks at 0.70, and
+ * for the vague one *four hundred* of 595 threads still clear 0.52. Scoring
+ * relative to the query's own best match is what separates "this thread is one
+ * of the answers" from "this thread is in the same universe of discourse".
+ *
+ * Measured over the same archive, 0.90 of the best match returns 1 thread for
+ * "invoice push stuck for one customer", 2 for "bahnhof bot memory usage" and
+ * 24 for the deliberately vague "the one where we were fixing the email
+ * templates" — against 158, 216 and 482 on the absolute floor alone. In every
+ * probe the intended thread was the top match, and the top match survives this
+ * cut by construction.
+ */
+export const SEMANTIC_RELATIVE_FLOOR = 0.9;
+
+/**
+ * How many threads the semantic pass may contribute at most.
+ *
+ * The relative floor still returns two dozen threads when the query is vague
+ * and the archive answers it flatly, which is the case where the extra results
+ * are least likely to be the one wanted. Semantic matches read below every
+ * keyword match, so this cap trims a tail nobody scrolls to rather than
+ * displacing anything.
+ */
+export const MAX_SEMANTIC_THREADS = 8;
+
+/**
+ * The similarity a chunk must reach, given the best one this query found.
+ *
+ * `bestSimilarity` of 0 or less means nothing was scored, in which case the
+ * absolute floor answers alone.
+ */
+export function semanticSimilarityFloor(bestSimilarity: number): number {
+  return Math.max(MIN_SEMANTIC_SIMILARITY, bestSimilarity * SEMANTIC_RELATIVE_FLOOR);
+}
+
 export function dotProduct(left: Float32Array, right: Float32Array): number {
   let total = 0;
   const length = Math.min(left.length, right.length);

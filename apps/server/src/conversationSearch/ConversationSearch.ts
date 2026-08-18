@@ -20,8 +20,10 @@ import {
   CONVERSATION_SEARCH_MODEL,
   dotProduct,
   fromEmbeddingBytes,
+  MAX_SEMANTIC_THREADS,
   mergeHybridThreadSearchResults,
   relaxFtsQuery,
+  semanticSimilarityFloor,
   THREAD_SEARCH_BAND,
   toEmbeddingBytes,
   toOrderedThreadSearchResults,
@@ -35,7 +37,6 @@ const DEFAULT_SEARCH_RESULTS = 20;
 const SEMANTIC_BATCH_SIZE = 32;
 const SEMANTIC_DIRTY_THREAD_BATCH_SIZE = 50;
 const SEMANTIC_CANDIDATE_MULTIPLIER = 4;
-const MIN_SEMANTIC_SIMILARITY = 0.52;
 /** A thread containing every search term outranks anything found another way. */
 const STRICT_CONTENT_BASE_SCORE = 700;
 /**
@@ -685,14 +686,19 @@ const makeConversationSearch = Effect.gen(function* () {
         AND (${includeArchived ? 1 : 0} = 1 OR thread.archived_at IS NULL)
     `;
     const metadataByThreadId = new Map(threadRows.map((row) => [row.threadId, row] as const));
-    const rankedChunks = semanticChunks
+    const scoredChunks = semanticChunks
       .map((chunk) => ({ chunk, similarity: dotProduct(queryEmbedding, chunk.embedding) }))
-      .filter((entry) => entry.similarity >= MIN_SEMANTIC_SIMILARITY)
       .toSorted((left, right) => right.similarity - left.similarity);
+    // Scored before it is filtered: the cut-off is a fraction of the best match
+    // this query found, so there is nothing to compare against until it is.
+    const floor = semanticSimilarityFloor(scoredChunks[0]?.similarity ?? 0);
+    const rankedChunks = scoredChunks.filter((entry) => entry.similarity >= floor);
+    const threadLimit = Math.min(candidateLimit, MAX_SEMANTIC_THREADS);
     const seenThreadIds = new Set<string>();
     const results: BandedThreadSearchResult[] = [];
     for (const entry of rankedChunks) {
-      if (results.length >= candidateLimit || seenThreadIds.has(entry.chunk.threadId)) continue;
+      if (results.length >= threadLimit) break;
+      if (seenThreadIds.has(entry.chunk.threadId)) continue;
       const metadata = metadataByThreadId.get(entry.chunk.threadId);
       if (!metadata) continue;
       seenThreadIds.add(entry.chunk.threadId);
