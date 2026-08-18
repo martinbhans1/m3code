@@ -40,6 +40,19 @@ export function isTransportConnectionErrorMessage(message: string | null | undef
   return TRANSPORT_ERROR_PATTERNS.some((pattern) => pattern.test(normalizedMessage));
 }
 
+/**
+ * True when a rejected transport call failed because the connection was down,
+ * rather than because the server rejected the request. Callers use this to
+ * decide between "retry once we are back" and "surface this to the user".
+ */
+export function isTransportConnectionError(error: unknown): boolean {
+  if (error instanceof Error) {
+    return isTransportConnectionErrorMessage(error.message);
+  }
+
+  return typeof error === "string" && isTransportConnectionErrorMessage(error);
+}
+
 export function isInterruptErrorMessage(message: string | null | undefined): boolean {
   if (typeof message !== "string") {
     return false;

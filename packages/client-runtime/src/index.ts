@@ -1,6 +1,7 @@
 export * from "./advertisedEndpoint.ts";
 export * from "./knownEnvironment.ts";
 export * from "./reconnectBackoff.ts";
+export * from "./connectionHeartbeat.ts";
 export * from "./scoped.ts";
 export * from "./projectPaths.ts";
 export * from "./addProject.ts";

@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import type { WsConnectionStatus } from "../rpc/wsConnectionState";
-import { shouldAutoReconnect, shouldRestartStalledReconnect } from "./WebSocketConnectionSurface";
+import {
+  getConnectionNoticeDelayMs,
+  getConnectionNoticeRemainingMs,
+  OFFLINE_NOTICE_GRACE_MS,
+  RECONNECT_NOTICE_GRACE_MS,
+  shouldAutoReconnect,
+  shouldRestartStalledReconnect,
+} from "./WebSocketConnectionSurface";
 
 function makeStatus(overrides: Partial<WsConnectionStatus> = {}): WsConnectionStatus {
   return {
@@ -18,7 +25,7 @@ function makeStatus(overrides: Partial<WsConnectionStatus> = {}): WsConnectionSt
     online: true,
     phase: "idle",
     reconnectAttemptCount: 0,
-    reconnectMaxAttempts: 8,
+    reconnectMaxAttempts: null,
     reconnectPhase: "idle",
     socketUrl: null,
     ...overrides,
@@ -110,5 +117,63 @@ describe("WebSocketConnectionSurface.logic", () => {
         "2026-04-03T20:00:01.000Z",
       ),
     ).toBe(false);
+  });
+});
+
+describe("connection notice grace period", () => {
+  const disconnectedAt = "2026-04-03T20:00:00.000Z";
+  const disconnectedAtMs = new Date(disconnectedAt).getTime();
+
+  it("announces nothing while connected", () => {
+    expect(getConnectionNoticeDelayMs(makeStatus({ phase: "connected" }))).toBeNull();
+  });
+
+  it("holds a reconnect back until the gap outlives the grace window", () => {
+    const status = makeStatus({
+      disconnectedAt,
+      hasConnected: true,
+      phase: "disconnected",
+      reconnectAttemptCount: 1,
+      reconnectPhase: "waiting",
+    });
+
+    expect(getConnectionNoticeDelayMs(status)).toBe(RECONNECT_NOTICE_GRACE_MS);
+    expect(getConnectionNoticeRemainingMs(status, disconnectedAtMs + 1_000)).toBe(
+      RECONNECT_NOTICE_GRACE_MS - 1_000,
+    );
+    expect(
+      getConnectionNoticeRemainingMs(status, disconnectedAtMs + RECONNECT_NOTICE_GRACE_MS),
+    ).toBe(0);
+  });
+
+  it("uses a shorter window for a dropped network than a dropped socket", () => {
+    const status = makeStatus({
+      disconnectedAt,
+      hasConnected: true,
+      online: false,
+      phase: "disconnected",
+    });
+
+    expect(getConnectionNoticeDelayMs(status)).toBe(OFFLINE_NOTICE_GRACE_MS);
+    expect(OFFLINE_NOTICE_GRACE_MS).toBeLessThan(RECONNECT_NOTICE_GRACE_MS);
+  });
+
+  it("announces terminal states immediately", () => {
+    expect(
+      getConnectionNoticeDelayMs(
+        makeStatus({ disconnectedAt, hasConnected: false, phase: "disconnected" }),
+      ),
+    ).toBe(0);
+
+    expect(
+      getConnectionNoticeDelayMs(
+        makeStatus({
+          disconnectedAt,
+          hasConnected: true,
+          phase: "disconnected",
+          reconnectPhase: "exhausted",
+        }),
+      ),
+    ).toBe(0);
   });
 });

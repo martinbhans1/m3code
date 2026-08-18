@@ -14,7 +14,14 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import { getPrimaryEnvironmentConnection } from "../environments/runtime";
 
 const FORCED_WS_RECONNECT_DEBOUNCE_MS = 5_000;
-type WsAutoReconnectTrigger = "focus" | "online";
+/**
+ * `visible` covers the case `focus` misses: a phone browser suspends a
+ * background tab, the socket dies unnoticed, and returning to the app fires
+ * `visibilitychange` (and on bfcache restores, `pageshow`) but not always a
+ * window `focus`. Without it the user stares at a stale UI until the backoff
+ * timer happens to come round.
+ */
+type WsAutoReconnectTrigger = "focus" | "online" | "visible";
 
 const connectionTimeFormatter = new Intl.DateTimeFormat(undefined, {
   day: "numeric",
@@ -42,11 +49,16 @@ function describeOfflineToast(): string {
 }
 
 function formatReconnectAttemptLabel(status: WsConnectionStatus): string {
+  const maxAttempts = status.reconnectMaxAttempts ?? WS_RECONNECT_MAX_ATTEMPTS;
   const reconnectAttempt = Math.max(
     1,
-    Math.min(status.reconnectAttemptCount, WS_RECONNECT_MAX_ATTEMPTS),
+    maxAttempts === null
+      ? status.reconnectAttemptCount
+      : Math.min(status.reconnectAttemptCount, maxAttempts),
   );
-  return `Attempt ${reconnectAttempt}/${status.reconnectMaxAttempts}`;
+  return maxAttempts === null
+    ? `Attempt ${reconnectAttempt}`
+    : `Attempt ${reconnectAttempt}/${maxAttempts}`;
 }
 
 function describeExhaustedToast(): string {
@@ -111,6 +123,64 @@ function SlowRpcAckRequestDetails({ requests }: { requests: ReadonlyArray<SlowRp
   );
 }
 
+/**
+ * How long a connection gap has to last before it is worth telling the user
+ * about.
+ *
+ * Nearly every drop recovers on the first retry a second or two later, and a
+ * toast for those is pure noise: it trains the user to dismiss the surface
+ * reflexively, so the one outage that actually needs attention gets dismissed
+ * too. Nothing is shown until the gap outlives the window in which the client
+ * would have quietly fixed it by itself.
+ */
+export const RECONNECT_NOTICE_GRACE_MS = 6_000;
+
+/**
+ * Losing the network is a slower, more visible failure than a dropped socket,
+ * but mobile radios flap constantly while switching cells or waking, so the
+ * offline surface gets a shorter grace window rather than none at all.
+ */
+export const OFFLINE_NOTICE_GRACE_MS = 3_000;
+
+/**
+ * Delay before the connection surface is allowed to appear, or `null` when
+ * there is nothing to announce.
+ */
+export function getConnectionNoticeDelayMs(status: WsConnectionStatus): number | null {
+  const uiState = getWsConnectionUiState(status);
+
+  if (uiState === "connected" || uiState === "connecting") {
+    return null;
+  }
+
+  // Never having connected at all, or having given up retrying, are terminal
+  // states the user has to act on — those surface immediately.
+  if (uiState === "error" || status.reconnectPhase === "exhausted") {
+    return 0;
+  }
+
+  return uiState === "offline" ? OFFLINE_NOTICE_GRACE_MS : RECONNECT_NOTICE_GRACE_MS;
+}
+
+/**
+ * Milliseconds left before the surface may be shown for the current gap.
+ * Returns `null` when there is nothing to announce, and `0` when it is due.
+ */
+export function getConnectionNoticeRemainingMs(
+  status: WsConnectionStatus,
+  nowMs: number,
+): number | null {
+  const delayMs = getConnectionNoticeDelayMs(status);
+  if (delayMs === null) {
+    return null;
+  }
+
+  const startedAtMs =
+    status.disconnectedAt === null ? nowMs : new Date(status.disconnectedAt).getTime();
+
+  return Math.max(0, startedAtMs + delayMs - nowMs);
+}
+
 export function shouldAutoReconnect(
   status: WsConnectionStatus,
   trigger: WsAutoReconnectTrigger,
@@ -133,6 +203,11 @@ export function shouldAutoReconnect(
   );
 }
 
+/** Waking a suspended tab is only a reconnect signal once it is actually visible. */
+export function isDocumentWakeTrigger(visibilityState: DocumentVisibilityState): boolean {
+  return visibilityState === "visible";
+}
+
 export function shouldRestartStalledReconnect(
   status: WsConnectionStatus,
   expectedNextRetryAt: string,
@@ -153,6 +228,11 @@ export function WebSocketConnectionCoordinator() {
   const toastResetTimerRef = useRef<number | null>(null);
   const previousUiStateRef = useRef<WsConnectionUiState>(getWsConnectionUiState(status));
   const previousDisconnectedAtRef = useRef<string | null>(status.disconnectedAt);
+  // Whether the current gap has outlived its grace window. Recovery toasts are
+  // gated on this too: announcing a reconnect the user was never told about is
+  // just as noisy as announcing the drop.
+  const [noticeArmed, setNoticeArmed] = useState(false);
+  const announcedLossRef = useRef(false);
 
   const runReconnect = useEffectEvent((showFailureToast: boolean) => {
     if (toastResetTimerRef.current !== null) {
@@ -208,15 +288,29 @@ export function WebSocketConnectionCoordinator() {
     const handleFocus = () => {
       triggerAutoReconnect("focus");
     };
+    const handleVisibilityChange = () => {
+      if (!isDocumentWakeTrigger(document.visibilityState)) {
+        return;
+      }
+      syncBrowserOnlineStatus();
+      triggerAutoReconnect("visible");
+    };
+    const handlePageShow = () => {
+      handleVisibilityChange();
+    };
 
     syncBrowserOnlineStatus();
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", syncBrowserOnlineStatus);
     window.addEventListener("focus", handleFocus);
+    window.addEventListener("pageshow", handlePageShow);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", syncBrowserOnlineStatus);
       window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("pageshow", handlePageShow);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
 
@@ -268,12 +362,37 @@ export function WebSocketConnectionCoordinator() {
   ]);
 
   useEffect(() => {
+    const remainingMs = getConnectionNoticeRemainingMs(status, Date.now());
+
+    if (remainingMs === null) {
+      setNoticeArmed(false);
+      return;
+    }
+
+    if (remainingMs === 0) {
+      setNoticeArmed(true);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setNoticeArmed(true);
+    }, remainingMs);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [status]);
+
+  useEffect(() => {
     const uiState = getWsConnectionUiState(status);
     const previousUiState = previousUiStateRef.current;
     const previousDisconnectedAt = previousDisconnectedAtRef.current;
-    const shouldShowReconnectToast = status.hasConnected && uiState === "reconnecting";
-    const shouldShowOfflineToast = uiState === "offline" && status.disconnectedAt !== null;
-    const shouldShowExhaustedToast = status.hasConnected && status.reconnectPhase === "exhausted";
+    const shouldShowReconnectToast =
+      noticeArmed && status.hasConnected && uiState === "reconnecting";
+    const shouldShowOfflineToast =
+      noticeArmed && uiState === "offline" && status.disconnectedAt !== null;
+    const shouldShowExhaustedToast =
+      noticeArmed && status.hasConnected && status.reconnectPhase === "exhausted";
 
     if (
       toastResetTimerRef.current !== null &&
@@ -337,6 +456,7 @@ export function WebSocketConnectionCoordinator() {
 
     if (
       uiState === "connected" &&
+      announcedLossRef.current &&
       (previousUiState === "offline" || previousUiState === "reconnecting") &&
       previousDisconnectedAt !== null
     ) {
@@ -363,9 +483,16 @@ export function WebSocketConnectionCoordinator() {
       }, 8_250);
     }
 
+    announcedLossRef.current =
+      uiState === "connected"
+        ? false
+        : announcedLossRef.current ||
+          shouldShowReconnectToast ||
+          shouldShowOfflineToast ||
+          shouldShowExhaustedToast;
     previousUiStateRef.current = uiState;
     previousDisconnectedAtRef.current = status.disconnectedAt;
-  }, [nowMs, status]);
+  }, [noticeArmed, nowMs, status]);
 
   useEffect(() => {
     return () => {

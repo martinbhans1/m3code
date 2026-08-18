@@ -179,7 +179,8 @@ import { appendPreviewAnnotationPrompt } from "../lib/previewAnnotation";
 import { appendReviewCommentsToPrompt, type ReviewCommentContext } from "../reviewCommentContext";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { QueuedTurns } from "./chat/QueuedTurns";
-import { selectQueuedTurns, useQueuedTurnStore } from "../queuedTurnStore";
+import { type QueuedTurn, selectQueuedTurns, useQueuedTurnStore } from "../queuedTurnStore";
+import { getWsConnectionUiState, useWsConnectionStatus } from "../rpc/wsConnectionState";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
@@ -219,7 +220,7 @@ import {
   useServerConfig,
   useServerKeybindings,
 } from "~/rpc/serverState";
-import { sanitizeThreadErrorMessage } from "~/rpc/transportError";
+import { isTransportConnectionError, sanitizeThreadErrorMessage } from "~/rpc/transportError";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
 import { RightPanelSheet } from "./RightPanelSheet";
 import { Button } from "./ui/button";
@@ -1455,6 +1456,7 @@ function ChatViewContent(props: ChatViewProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((s) => s.byId);
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((s) => s.byId);
+  const wsConnectionStatus = useWsConnectionStatus();
   const activeSavedEnvironmentRecord =
     activeThread && activeThread.environmentId !== primaryEnvironmentId
       ? (savedEnvironmentRegistry[activeThread.environmentId] ?? null)
@@ -1467,6 +1469,13 @@ function ChatViewContent(props: ChatViewProps) {
     : "connected";
   const activeEnvironmentUnavailable =
     activeSavedEnvironmentRecord !== null && activeSavedEnvironmentConnectionState !== "connected";
+  // Whether commands for the active thread can actually reach a server right
+  // now. Saved environments track their own connection; everything else rides
+  // the primary WebSocket.
+  const isTransportConnected =
+    activeSavedEnvironmentRecord !== null
+      ? activeSavedEnvironmentConnectionState === "connected"
+      : getWsConnectionUiState(wsConnectionStatus) === "connected";
   const activeSavedEnvironmentId = activeSavedEnvironmentRecord?.environmentId ?? null;
   const activeEnvironmentUnavailableLabel = activeSavedEnvironmentRecord
     ? resolveEnvironmentOptionLabel({
@@ -1845,6 +1854,10 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const phase = derivePhase(activeThread?.session ?? null);
+  // Drains the per-thread queue: one turn at a time, only while the agent is
+  // idle and the socket is actually up. The connection gate matters as much as
+  // the phase gate — dispatching into a dead socket just burns the queued turn
+  // on an error the user never caused, so it waits for the reconnect instead.
   useEffect(() => {
     if (phase === "running") {
       queuedDispatchAwaitingRunRef.current = null;
@@ -1853,6 +1866,7 @@ function ChatViewContent(props: ChatViewProps) {
     if (
       phase !== "ready" ||
       !activeThreadRef ||
+      !isTransportConnected ||
       queuedDispatchAwaitingRunRef.current === activeThreadKey
     )
       return;
@@ -1868,6 +1882,13 @@ function ChatViewContent(props: ChatViewProps) {
       () => useQueuedTurnStore.getState().remove(activeThreadRef, nextTurn.id),
       (error: unknown) => {
         queuedDispatchAwaitingRunRef.current = null;
+        // Losing the connection mid-dispatch is not a failed message, just a
+        // failed attempt: put it back in line for the next reconnect. Anything
+        // else is a real rejection the user has to see and act on.
+        if (isTransportConnectionError(error)) {
+          useQueuedTurnStore.getState().retry(activeThreadRef, nextTurn.id);
+          return;
+        }
         useQueuedTurnStore
           .getState()
           .markFailed(
@@ -1877,7 +1898,7 @@ function ChatViewContent(props: ChatViewProps) {
           );
       },
     );
-  }, [activeQueuedTurns, activeThreadKey, activeThreadRef, phase]);
+  }, [activeQueuedTurns, activeThreadKey, activeThreadRef, isTransportConnected, phase]);
   /**
    * Promote a queued message to a steer: dispatch it right now instead of
    * waiting for the current turn to end. Enter queues by default while the
@@ -4124,6 +4145,9 @@ function ChatViewContent(props: ChatViewProps) {
     composerRef.current?.resetCursorState();
 
     let turnStartSucceeded = false;
+    // Holds the fully built command so a connection failure can hand it to the
+    // queue instead of unwinding the send back into the composer.
+    const requeueCommandRef: { current: QueuedTurn["command"] | null } = { current: null };
     await (async () => {
       let firstComposerImageName: string | null = null;
       if (composerImagesSnapshot.length > 0) {
@@ -4202,7 +4226,7 @@ function ChatViewContent(props: ChatViewProps) {
             }
           : undefined;
       beginLocalDispatch({ preparingWorktree: false });
-      await api.orchestration.dispatchCommand({
+      const turnStartCommand = {
         type: "thread.turn.start",
         commandId: newCommandId(),
         threadId: threadIdForSend,
@@ -4218,9 +4242,39 @@ function ChatViewContent(props: ChatViewProps) {
         interactionMode,
         ...(bootstrap ? { bootstrap } : {}),
         createdAt: messageCreatedAt,
-      });
+      } as const;
+      requeueCommandRef.current = turnStartCommand;
+      await api.orchestration.dispatchCommand(turnStartCommand);
       turnStartSucceeded = true;
     })().catch(async (err: unknown) => {
+      // A send that failed because the connection was down is not the user's
+      // problem to re-do. Park it in the same queue that holds messages typed
+      // while the agent is busy: it stays visible in the thread, retries by
+      // itself once the socket is back, and can be resent by hand if it does
+      // end up failing for a real reason.
+      const queuedCommand = requeueCommandRef.current;
+      if (!turnStartSucceeded && queuedCommand && isTransportConnectionError(err)) {
+        setOptimisticUserMessages((existing) => {
+          const removed = existing.filter((message) => message.id === messageIdForSend);
+          for (const message of removed) {
+            revokeUserMessagePreviewUrls(message);
+          }
+          const next = existing.filter((message) => message.id !== messageIdForSend);
+          return next.length === existing.length ? existing : next;
+        });
+        useQueuedTurnStore.getState().enqueue({
+          id: String(messageIdForSend),
+          threadRef: scopeThreadRef(activeThread.environmentId, threadIdForSend),
+          displayText:
+            trimmed ||
+            (queuedCommand.message.attachments.length > 0 ? "Attachment" : messageTextForSend),
+          status: "queued",
+          error: null,
+          command: queuedCommand,
+        });
+        setThreadError(threadIdForSend, null);
+        return;
+      }
       if (
         !turnStartSucceeded &&
         promptRef.current.length === 0 &&

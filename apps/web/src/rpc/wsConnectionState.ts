@@ -10,8 +10,10 @@ export type WsReconnectPhase = "attempting" | "exhausted" | "idle" | "waiting";
 export const WS_RECONNECT_INITIAL_DELAY_MS = DEFAULT_RECONNECT_BACKOFF.initialDelayMs;
 export const WS_RECONNECT_BACKOFF_FACTOR = DEFAULT_RECONNECT_BACKOFF.backoffFactor;
 export const WS_RECONNECT_MAX_DELAY_MS = DEFAULT_RECONNECT_BACKOFF.maxDelayMs;
-export const WS_RECONNECT_MAX_RETRIES = DEFAULT_RECONNECT_BACKOFF.maxRetries!;
-export const WS_RECONNECT_MAX_ATTEMPTS = WS_RECONNECT_MAX_RETRIES + 1;
+export const WS_RECONNECT_MAX_RETRIES = DEFAULT_RECONNECT_BACKOFF.maxRetries;
+/** `null` when reconnects are unlimited, which is the default. */
+export const WS_RECONNECT_MAX_ATTEMPTS =
+  WS_RECONNECT_MAX_RETRIES === null ? null : WS_RECONNECT_MAX_RETRIES + 1;
 
 export interface WsConnectionStatus {
   readonly attemptCount: number;
@@ -27,7 +29,7 @@ export interface WsConnectionStatus {
   readonly online: boolean;
   readonly phase: "idle" | "connecting" | "connected" | "disconnected";
   readonly reconnectAttemptCount: number;
-  readonly reconnectMaxAttempts: number;
+  readonly reconnectMaxAttempts: number | null;
   readonly reconnectPhase: WsReconnectPhase;
   readonly socketUrl: string | null;
 }

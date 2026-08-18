@@ -12,14 +12,19 @@ describe("getReconnectDelayMs", () => {
     expect(getReconnectDelayMs(1)).toBe(2_000);
     expect(getReconnectDelayMs(2)).toBe(4_000);
     expect(getReconnectDelayMs(3)).toBe(8_000);
-    expect(getReconnectDelayMs(4)).toBe(16_000);
-    expect(getReconnectDelayMs(5)).toBe(32_000);
-    expect(getReconnectDelayMs(6)).toBe(64_000);
+    expect(getReconnectDelayMs(4)).toBe(15_000);
   });
 
-  it("returns null when retry index exceeds maxRetries", () => {
-    expect(getReconnectDelayMs(7)).toBeNull();
-    expect(getReconnectDelayMs(100)).toBeNull();
+  it("never gives up with the default config", () => {
+    expect(getReconnectDelayMs(7)).toBe(15_000);
+    expect(getReconnectDelayMs(100)).toBe(15_000);
+  });
+
+  it("returns null when retry index exceeds a finite maxRetries", () => {
+    const config: ReconnectBackoffConfig = { ...DEFAULT_RECONNECT_BACKOFF, maxRetries: 7 };
+
+    expect(getReconnectDelayMs(7, config)).toBeNull();
+    expect(getReconnectDelayMs(100, config)).toBeNull();
   });
 
   it("returns null for negative indices", () => {
@@ -50,8 +55,8 @@ describe("getReconnectDelayMs", () => {
     };
 
     expect(getReconnectDelayMs(0, config)).toBe(1_000);
-    expect(getReconnectDelayMs(50, config)).toBe(64_000); // capped at maxDelayMs
-    expect(getReconnectDelayMs(100, config)).toBe(64_000);
+    expect(getReconnectDelayMs(50, config)).toBe(15_000); // capped at maxDelayMs
+    expect(getReconnectDelayMs(100, config)).toBe(15_000);
   });
 });
 
@@ -59,7 +64,7 @@ describe("DEFAULT_RECONNECT_BACKOFF", () => {
   it("has sensible defaults", () => {
     expect(DEFAULT_RECONNECT_BACKOFF.initialDelayMs).toBe(1_000);
     expect(DEFAULT_RECONNECT_BACKOFF.backoffFactor).toBe(2);
-    expect(DEFAULT_RECONNECT_BACKOFF.maxDelayMs).toBe(64_000);
-    expect(DEFAULT_RECONNECT_BACKOFF.maxRetries).toBe(7);
+    expect(DEFAULT_RECONNECT_BACKOFF.maxDelayMs).toBe(15_000);
+    expect(DEFAULT_RECONNECT_BACKOFF.maxRetries).toBeNull();
   });
 });

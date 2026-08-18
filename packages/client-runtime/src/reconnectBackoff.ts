@@ -15,13 +15,19 @@ export interface ReconnectBackoffConfig {
 /**
  * Sensible defaults for WebSocket reconnect backoff.
  *
- * - 1 s initial delay, doubling each retry, capped at 64 s, up to 7 retries.
+ * - 1 s initial delay, doubling each retry, capped at 15 s, retrying forever.
+ *
+ * Retries are unlimited on purpose. A client that gives up strands the user on
+ * a dead UI until they notice and press a button, which is exactly the wrong
+ * behaviour for a phone that was in a pocket while the network came back. The
+ * delay cap keeps an unreachable server cheap to wait on while still restoring
+ * the connection within ~15 s of it returning.
  */
 export const DEFAULT_RECONNECT_BACKOFF: ReconnectBackoffConfig = {
   initialDelayMs: 1_000,
   backoffFactor: 2,
-  maxDelayMs: 64_000,
-  maxRetries: 7,
+  maxDelayMs: 15_000,
+  maxRetries: null,
 };
 
 /**

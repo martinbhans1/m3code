@@ -7,6 +7,10 @@ import { RpcClient, RpcSerialization } from "effect/unstable/rpc";
 import * as Socket from "effect/unstable/socket/Socket";
 
 import {
+  type ConnectionHeartbeatConfig,
+  DEFAULT_CONNECTION_HEARTBEAT,
+} from "./connectionHeartbeat.ts";
+import {
   DEFAULT_RECONNECT_BACKOFF,
   getReconnectDelayMs,
   type ReconnectBackoffConfig,
@@ -54,6 +58,8 @@ export interface WsRpcProtocolRequestTelemetry {
 export interface WsRpcProtocolOptions {
   /** Backoff configuration for reconnect retries. */
   readonly backoff?: ReconnectBackoffConfig;
+  /** Ping cadence and missed-pong tolerance for the socket heartbeat. */
+  readonly heartbeat?: ConnectionHeartbeatConfig;
   /**
    * Invoked before user {@link WsProtocolLifecycleHandlers} for each socket lifecycle event.
    * Use for additive telemetry (connection state, clearing request trackers on disconnect).
@@ -199,6 +205,7 @@ export function createWsRpcProtocolLayer(
 ) {
   const lifecycle = resolveLifecycleHandlers(handlers, options?.telemetryLifecycle);
   const backoff = options?.backoff ?? DEFAULT_RECONNECT_BACKOFF;
+  const heartbeat = options?.heartbeat ?? DEFAULT_CONNECTION_HEARTBEAT;
   const requestTelemetry = options?.requestTelemetry;
   const resolvedUrl =
     typeof url === "function"
@@ -275,6 +282,10 @@ export function createWsRpcProtocolLayer(
     RpcClient.Protocol,
     Effect.map(
       RpcClient.makeProtocolSocket({
+        heartbeat: {
+          intervalMillis: heartbeat.intervalMillis,
+          maxMissedPongs: heartbeat.maxMissedPongs,
+        },
         retryPolicy,
         retryTransientErrors: true,
       }),
