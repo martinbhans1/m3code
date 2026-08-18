@@ -285,14 +285,65 @@ export function fromEmbeddingBytes(bytes: Uint8Array): Float32Array {
   return new Float32Array(copy.buffer);
 }
 
+/**
+ * How results are ordered for reading, best band first.
+ *
+ * The score decides which threads make the cut; the band decides how the ones
+ * that made it are laid out. Inside a band the order is newest first, because
+ * the differences the scorer draws there — bm25 between two threads that both
+ * match every term, the fifth decimal of a cosine — are invisible to whoever is
+ * reading the list, and a list whose dates jump around reads as unordered.
+ * Between bands the score still rules: a verbatim hit never sits under a
+ * fresher guess.
+ */
+export const THREAD_SEARCH_BAND = {
+  /** Contains the search string verbatim. */
+  exact: 6,
+  /** The thread's own title matched. */
+  title: 5,
+  /** Matched on the project name or branch rather than the thread itself. */
+  metadata: 4,
+  /** A message contained every search term. */
+  content: 3,
+  /** Recognized by meaning, with none of the words necessarily present. */
+  semantic: 2,
+  /** Matched only some of the terms, after the all-terms search found nothing. */
+  loose: 1,
+} as const;
+
+export type ThreadSearchBand = (typeof THREAD_SEARCH_BAND)[keyof typeof THREAD_SEARCH_BAND];
+
+/** A result carrying the band it should be read in; internal to search. */
+export interface BandedThreadSearchResult extends OrchestrationThreadSearchResult {
+  readonly band: ThreadSearchBand;
+}
+
+/**
+ * Flatten each band to one score before the result leaves the server.
+ *
+ * The palette searches several environments and merges the responses by score,
+ * so a score that still varied inside a band would resurrect the ordering this
+ * function exists to replace. One score per band means any downstream sort of
+ * "score, then recency" reproduces exactly what the server decided.
+ */
+export function toOrderedThreadSearchResults(
+  results: ReadonlyArray<BandedThreadSearchResult>,
+): OrchestrationThreadSearchResult[] {
+  return results
+    .toSorted(
+      (left, right) => right.band - left.band || right.updatedAt.localeCompare(left.updatedAt),
+    )
+    .map(({ band, ...result }) => ({ ...result, score: band * 1_000 }));
+}
+
 export function mergeHybridThreadSearchResults(input: {
-  readonly lexical: ReadonlyArray<OrchestrationThreadSearchResult>;
-  readonly semantic: ReadonlyArray<OrchestrationThreadSearchResult>;
+  readonly lexical: ReadonlyArray<BandedThreadSearchResult>;
+  readonly semantic: ReadonlyArray<BandedThreadSearchResult>;
   readonly limit: number;
-}): OrchestrationThreadSearchResult[] {
+}): BandedThreadSearchResult[] {
   const byThreadId = new Map<
     string,
-    { result: OrchestrationThreadSearchResult; lexicalRank?: number; semanticRank?: number }
+    { result: BandedThreadSearchResult; lexicalRank?: number; semanticRank?: number }
   >();
 
   input.lexical.forEach((result, lexicalRank) => {
@@ -305,6 +356,7 @@ export function mergeHybridThreadSearchResults(input: {
         result: {
           ...existing.result,
           matchKind: "hybrid",
+          band: Math.max(existing.result.band, result.band) as ThreadSearchBand,
           score: existing.result.score + result.score * 0.2,
         },
         ...(existing.lexicalRank === undefined ? {} : { lexicalRank: existing.lexicalRank }),
@@ -324,7 +376,10 @@ export function mergeHybridThreadSearchResults(input: {
         (entry.semanticRank === undefined ? 0 : 1 / (60 + entry.semanticRank)),
     }))
     .toSorted(
-      (left, right) => right.score - left.score || right.updatedAt.localeCompare(left.updatedAt),
+      (left, right) =>
+        right.band - left.band ||
+        right.score - left.score ||
+        right.updatedAt.localeCompare(left.updatedAt),
     )
     .slice(0, input.limit);
 }

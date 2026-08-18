@@ -6,23 +6,38 @@ import {
   buildFtsQuery,
   mergeHybridThreadSearchResults,
   relaxFtsQuery,
+  THREAD_SEARCH_BAND,
+  toOrderedThreadSearchResults,
+  type BandedThreadSearchResult,
+  type ThreadSearchBand,
 } from "./logic.ts";
+
+const BAND_FOR_KIND: Record<OrchestrationThreadSearchResult["matchKind"], ThreadSearchBand> = {
+  exact: THREAD_SEARCH_BAND.exact,
+  metadata: THREAD_SEARCH_BAND.title,
+  content: THREAD_SEARCH_BAND.content,
+  hybrid: THREAD_SEARCH_BAND.content,
+  semantic: THREAD_SEARCH_BAND.semantic,
+  "content-loose": THREAD_SEARCH_BAND.loose,
+};
 
 const result = (
   threadId: string,
   matchKind: OrchestrationThreadSearchResult["matchKind"],
   score: number,
-): OrchestrationThreadSearchResult => ({
+  updatedAt = "2026-08-05T00:00:00.000Z",
+): BandedThreadSearchResult => ({
   threadId: ThreadId.make(threadId),
   projectId: ProjectId.make("project-1"),
   title: threadId,
   projectTitle: "Deal Journey",
   branch: null,
   archivedAt: null,
-  updatedAt: "2026-08-05T00:00:00.000Z",
+  updatedAt,
   snippet: null,
   matchedRole: null,
   matchKind,
+  band: BAND_FOR_KIND[matchKind],
   score,
 });
 
@@ -141,5 +156,27 @@ describe("conversation search logic", () => {
       ThreadId.make("semantic"),
     ]);
     expect(merged[0]?.matchKind).toBe("hybrid");
+  });
+
+  it("reads in date order inside a band, without letting a fresh guess pass a certain hit", () => {
+    // Within one band the scorer's differences are invisible to whoever reads
+    // the list, so the list is laid out newest first instead. Across bands the
+    // band still wins, however old the better match is.
+    const ordered = toOrderedThreadSearchResults([
+      result("older-content", "content", 780, "2026-06-01T00:00:00.000Z"),
+      result("newest-semantic", "semantic", 400, "2026-08-05T00:00:00.000Z"),
+      result("newer-content", "content", 700, "2026-07-01T00:00:00.000Z"),
+      result("oldest-exact", "exact", 1_500, "2020-01-01T00:00:00.000Z"),
+    ]);
+
+    expect(ordered.map((entry) => entry.threadId)).toEqual([
+      ThreadId.make("oldest-exact"),
+      ThreadId.make("newer-content"),
+      ThreadId.make("older-content"),
+      ThreadId.make("newest-semantic"),
+    ]);
+    // One score per band, so merging several environments by score client-side
+    // reproduces this order rather than the pre-band one.
+    expect(ordered[1]?.score).toBe(ordered[2]?.score);
   });
 });

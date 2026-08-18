@@ -22,7 +22,10 @@ import {
   fromEmbeddingBytes,
   mergeHybridThreadSearchResults,
   relaxFtsQuery,
+  THREAD_SEARCH_BAND,
   toEmbeddingBytes,
+  toOrderedThreadSearchResults,
+  type BandedThreadSearchResult,
   type ConversationSearchChunk,
   type SearchableConversationMessage,
 } from "./logic.ts";
@@ -496,11 +499,14 @@ const makeConversationSearch = Effect.gen(function* () {
       LIMIT ${candidateLimit}
     `;
     return rows.map(
-      (row, index): OrchestrationThreadSearchResult => ({
+      (row, index): BandedThreadSearchResult => ({
         ...toBaseResult(row),
         snippet: null,
         matchedRole: null,
         matchKind: "metadata",
+        // Matching the thread's own title is a different claim from matching the
+        // project it happens to live in, which every sibling thread matches too.
+        band: row.metadataRank >= 3 ? THREAD_SEARCH_BAND.title : THREAD_SEARCH_BAND.metadata,
         score: 1_100 + row.metadataRank * 20 - index,
       }),
     );
@@ -558,7 +564,7 @@ const makeConversationSearch = Effect.gen(function* () {
       }
     }
     const seenThreadIds = new Set<string>();
-    const results: OrchestrationThreadSearchResult[] = [];
+    const results: BandedThreadSearchResult[] = [];
     for (const row of rows) {
       if (seenThreadIds.has(row.threadId)) continue;
       seenThreadIds.add(row.threadId);
@@ -568,6 +574,7 @@ const makeConversationSearch = Effect.gen(function* () {
         snippet: row.snippet,
         matchedRole: messageRole(row.role),
         matchKind: loose ? "content-loose" : "content",
+        band: loose ? THREAD_SEARCH_BAND.loose : THREAD_SEARCH_BAND.content,
         score:
           (loose ? LOOSE_CONTENT_BASE_SCORE : STRICT_CONTENT_BASE_SCORE) +
           (exactPhrase ? 80 : 0) +
@@ -637,7 +644,7 @@ const makeConversationSearch = Effect.gen(function* () {
     `;
 
     const seenThreadIds = new Set<string>();
-    const results: OrchestrationThreadSearchResult[] = [];
+    const results: BandedThreadSearchResult[] = [];
     for (const row of rows) {
       if (results.length >= limit) break;
       if (seenThreadIds.has(row.threadId)) continue;
@@ -647,6 +654,7 @@ const makeConversationSearch = Effect.gen(function* () {
         snippet: exactSnippet(row.text, row.matchOffset),
         matchedRole: messageRole(row.role),
         matchKind: "exact",
+        band: THREAD_SEARCH_BAND.exact,
         score: EXACT_BASE_SCORE - results.length,
       });
     }
@@ -682,7 +690,7 @@ const makeConversationSearch = Effect.gen(function* () {
       .filter((entry) => entry.similarity >= MIN_SEMANTIC_SIMILARITY)
       .toSorted((left, right) => right.similarity - left.similarity);
     const seenThreadIds = new Set<string>();
-    const results: OrchestrationThreadSearchResult[] = [];
+    const results: BandedThreadSearchResult[] = [];
     for (const entry of rankedChunks) {
       if (results.length >= candidateLimit || seenThreadIds.has(entry.chunk.threadId)) continue;
       const metadata = metadataByThreadId.get(entry.chunk.threadId);
@@ -693,6 +701,7 @@ const makeConversationSearch = Effect.gen(function* () {
         snippet: semanticSnippet(entry.chunk.text),
         matchedRole: null,
         matchKind: "semantic",
+        band: THREAD_SEARCH_BAND.semantic,
         score: entry.similarity * 500,
       });
     }
@@ -711,7 +720,7 @@ const makeConversationSearch = Effect.gen(function* () {
       // thing it is for: an empty result that can be believed.
       if (input.exact === true) {
         return {
-          results: yield* searchExact(query, includeArchived, limit),
+          results: toOrderedThreadSearchResults(yield* searchExact(query, includeArchived, limit)),
           semanticStatus,
         } satisfies OrchestrationSearchThreadsResult;
       }
@@ -741,15 +750,17 @@ const makeConversationSearch = Effect.gen(function* () {
               Effect.map(Option.getOrElse(() => [])),
             );
       return {
-        results: mergeHybridThreadSearchResults({
-          lexical: mergeHybridThreadSearchResults({
-            lexical: metadata,
-            semantic: content,
-            limit: candidateLimit,
+        results: toOrderedThreadSearchResults(
+          mergeHybridThreadSearchResults({
+            lexical: mergeHybridThreadSearchResults({
+              lexical: metadata,
+              semantic: content,
+              limit: candidateLimit,
+            }),
+            semantic,
+            limit,
           }),
-          semantic,
-          limit,
-        }),
+        ),
         semanticStatus,
       } satisfies OrchestrationSearchThreadsResult;
     },
