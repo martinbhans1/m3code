@@ -1107,3 +1107,69 @@ describe("computeStableMessagesTimelineRows", () => {
     expect(reordered.result).toEqual([initial.result[1], initial.result[0]]);
   });
 });
+
+describe("deriveMessagesTimelineRows — side threads", () => {
+  const anchorEntry = {
+    id: "assistant-1-entry",
+    kind: "message" as const,
+    createdAt: "2026-01-01T00:00:10Z",
+    message: {
+      id: "assistant-1" as never,
+      role: "assistant" as const,
+      text: "Three things happened.",
+      turnId: "turn-1" as never,
+      createdAt: "2026-01-01T00:00:10Z",
+      completedAt: "2026-01-01T00:00:11Z",
+      streaming: false,
+    },
+  };
+
+  it("adds a replies pill directly under the message a thread hangs off", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [anchorEntry],
+      latestTurn: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+      messageThreadsByAnchorId: new Map([
+        [
+          "assistant-1" as never,
+          {
+            anchorMessageId: "assistant-1" as never,
+            entries: [],
+            replyCount: 2,
+            lastActivityAt: "2026-01-01T00:05:00Z",
+            streaming: false,
+          },
+        ],
+      ]),
+      openMessageThreadAnchorId: "assistant-1" as never,
+    });
+
+    expect(rows.map((row) => row.kind)).toEqual(["message", "message-thread"]);
+    const pill = rows[1];
+    expect(pill).toMatchObject({
+      kind: "message-thread",
+      anchorMessageId: "assistant-1",
+      replyCount: 2,
+      lastActivityAt: "2026-01-01T00:05:00Z",
+      streaming: false,
+      open: true,
+    });
+  });
+
+  it("leaves messages without a thread alone", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [anchorEntry],
+      latestTurn: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+      messageThreadsByAnchorId: new Map(),
+    });
+
+    expect(rows.map((row) => row.kind)).toEqual(["message"]);
+  });
+});

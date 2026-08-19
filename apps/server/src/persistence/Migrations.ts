@@ -51,6 +51,7 @@ import Migration0035 from "./Migrations/035_ConversationMessageSearch.ts";
 import Migration0036 from "./Migrations/036_FixConversationSearchDirtyTriggers.ts";
 import Migration0037 from "./Migrations/037_ConversationMessageTrigramIndex.ts";
 import Migration0038 from "./Migrations/038_ProjectionThreadsHandoff.ts";
+import Migration0039 from "./Migrations/039_ProjectionThreadMessagesReplyTo.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -101,6 +102,7 @@ export const migrationEntries = [
   [36, "FixConversationSearchDirtyTriggers", Migration0036],
   [37, "ConversationMessageTrigramIndex", Migration0037],
   [38, "ProjectionThreadsHandoff", Migration0038],
+  [39, "ProjectionThreadMessagesReplyTo", Migration0039],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

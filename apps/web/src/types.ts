@@ -52,6 +52,12 @@ export interface ChatMessage {
   text: string;
   attachments?: ChatAttachment[];
   turnId?: TurnId | null;
+  /**
+   * Anchor message when this was sent into a side thread hung off an earlier
+   * message. Null/absent for the main conversation. Assistant replies inherit
+   * the thread through their turn id, not through this field.
+   */
+  replyToMessageId?: MessageId | null;
   createdAt: string;
   completedAt?: string | undefined;
   streaming: boolean;

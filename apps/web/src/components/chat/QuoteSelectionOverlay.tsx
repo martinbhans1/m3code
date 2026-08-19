@@ -1,4 +1,4 @@
-import { TextQuoteIcon } from "lucide-react";
+import { MessagesSquareIcon, TextQuoteIcon } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
@@ -8,6 +8,8 @@ interface QuoteButtonPlacement {
   left: number;
   below: boolean;
   text: string;
+  /** The message the selection sits in — the anchor a side thread would hang off. */
+  messageId: string | null;
 }
 
 function closestElement(node: Node): Element | null {
@@ -15,14 +17,21 @@ function closestElement(node: Node): Element | null {
 }
 
 /**
- * Floating "Quote" pill that appears next to a text selection inside the
- * messages timeline. Clicking it hands the selected text to `onQuote` (which
- * drops it into the composer as a <quote> block) and clears the selection.
+ * Floating pill that appears next to a text selection inside the messages
+ * timeline, offering the two things you can do with a highlighted passage:
+ * quote it into the main composer, or open a side thread on the message it
+ * came from with the passage already quoted in the reply box. The second is
+ * how you say "this specific bit" without retyping which bit you meant.
  */
 export const QuoteSelectionOverlay = memo(function QuoteSelectionOverlay(props: {
   containerRef: React.RefObject<HTMLDivElement | null>;
   /** Returns true when the quote landed in the composer. */
   onQuote: (text: string) => boolean;
+  /**
+   * Open a side thread on `messageId` with the selection quoted into its reply
+   * box. Omitted where side threads do not apply, which hides the button.
+   */
+  onReplyInThread?: ((messageId: string, text: string) => boolean) | undefined;
 }) {
   const { containerRef } = props;
   const [placement, setPlacement] = useState<QuoteButtonPlacement | null>(null);
@@ -47,10 +56,12 @@ export const QuoteSelectionOverlay = memo(function QuoteSelectionOverlay(props: 
         return;
       }
       // Only offer quoting for selections that start inside an actual message row.
-      if (!closestElement(selection.anchorNode)?.closest("[data-message-id]")) {
+      const messageRow = closestElement(selection.anchorNode)?.closest("[data-message-id]");
+      if (!messageRow) {
         setPlacement(null);
         return;
       }
+      const messageId = messageRow.getAttribute("data-message-id");
       const text = selection.toString();
       if (text.trim().length === 0) {
         setPlacement(null);
@@ -72,7 +83,7 @@ export const QuoteSelectionOverlay = memo(function QuoteSelectionOverlay(props: 
       const top = below
         ? Math.min(rect.bottom - containerRect.top + 6, containerRect.height - 8)
         : topAbove;
-      setPlacement({ top, left, below, text });
+      setPlacement({ top, left, below, text, messageId });
     };
     const schedule = () => {
       if (frameRef.current != null) return;
@@ -98,32 +109,58 @@ export const QuoteSelectionOverlay = memo(function QuoteSelectionOverlay(props: 
     return null;
   }
 
+  const dismiss = () => {
+    window.getSelection()?.removeAllRanges();
+    setPlacement(null);
+  };
+  const anchorMessageId = placement.messageId;
+  const canReplyInThread = Boolean(props.onReplyInThread) && anchorMessageId !== null;
+
   return (
     <div
       className="pointer-events-none absolute z-30"
       style={{ top: placement.top, left: placement.left }}
     >
-      <button
-        type="button"
-        data-quote-selection-button="true"
-        // Keep the selection alive: default mousedown behavior would collapse
-        // it before click fires.
-        onPointerDown={(event) => event.preventDefault()}
-        onClick={() => {
-          // Keep the selection (and the pill) when the composer rejects the
-          // insert — e.g. an approval prompt is up or we're disconnected.
-          if (!props.onQuote(placement.text)) return;
-          window.getSelection()?.removeAllRanges();
-          setPlacement(null);
-        }}
+      <div
         className={cn(
-          "pointer-events-auto flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border/60 bg-card px-3 py-1 text-muted-foreground text-xs shadow-md transition-colors hover:border-border hover:text-foreground hover:cursor-pointer",
+          "pointer-events-auto flex -translate-x-1/2 items-center overflow-hidden rounded-full border border-border/60 bg-card text-muted-foreground text-xs shadow-md",
           placement.below ? "translate-y-0" : "-translate-y-full",
         )}
       >
-        <TextQuoteIcon className="size-3.5" />
-        Quote
-      </button>
+        <button
+          type="button"
+          data-quote-selection-button="true"
+          // Keep the selection alive: default mousedown behavior would collapse
+          // it before click fires.
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={() => {
+            // Keep the selection (and the pill) when the composer rejects the
+            // insert — e.g. an approval prompt is up or we're disconnected.
+            if (!props.onQuote(placement.text)) return;
+            dismiss();
+          }}
+          className="flex items-center gap-1.5 px-3 py-1 transition-colors hover:text-foreground hover:cursor-pointer"
+        >
+          <TextQuoteIcon className="size-3.5" />
+          Quote
+        </button>
+        {canReplyInThread ? (
+          <button
+            type="button"
+            data-reply-in-thread-button="true"
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => {
+              if (!anchorMessageId) return;
+              if (!props.onReplyInThread?.(anchorMessageId, placement.text)) return;
+              dismiss();
+            }}
+            className="flex items-center gap-1.5 border-border/60 border-l px-3 py-1 transition-colors hover:text-foreground hover:cursor-pointer"
+          >
+            <MessagesSquareIcon className="size-3.5" />
+            Reply in thread
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 });

@@ -53,6 +53,7 @@ import {
   GlobeIcon,
   HammerIcon,
   MessageCircleIcon,
+  MessagesSquareIcon,
   MousePointerClickIcon,
   PaintbrushIcon,
   MinusIcon,
@@ -96,7 +97,12 @@ import {
 import { cn } from "~/lib/utils";
 import { formatQuoteBlocksForDisplay } from "~/quoteSelection";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
-import { formatChatTimestampTooltip, formatShortTimestamp } from "../../timestampFormat";
+import {
+  formatChatTimestampTooltip,
+  formatRelativeTimeLabel,
+  formatShortTimestamp,
+} from "../../timestampFormat";
+import type { MessageThreadSummary } from "../../messageThreads";
 
 import {
   buildInlineTerminalContextText,
@@ -139,6 +145,10 @@ interface TimelineRowSharedState {
    * that graph and put a router hook in a tree that has no RouterProvider.
    */
   onOpenThread: (threadId: ThreadId) => void;
+  /** Open the side thread hanging off a message (or start one on it). */
+  onOpenMessageThread: (anchorMessageId: MessageId) => void;
+  /** Whether side threads can be started here at all — off in the panel itself. */
+  messageThreadsEnabled: boolean;
 }
 
 interface TimelineRowActivityState {
@@ -155,6 +165,8 @@ const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "d
 // Module-level so the default does not change identity per render and defeat
 // the sharedState memo.
 const NOOP_OPEN_THREAD = (): void => {};
+const NOOP_OPEN_MESSAGE_THREAD = (): void => {};
+const EMPTY_MESSAGE_THREADS: ReadonlyMap<MessageId, MessageThreadSummary> = new Map();
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -187,11 +199,44 @@ interface MessagesTimelineProps {
   workspaceRoot: string | undefined;
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   onIsAtEndChange: (isAtEnd: boolean) => void;
+  /**
+   * Side threads hanging off messages in this timeline. Their entries are
+   * already excluded from `timelineEntries`; each surfaces here as a "replies"
+   * pill under the message it belongs to. Omitted when the timeline is itself
+   * rendering a side thread — threads do not nest.
+   */
+  messageThreadsByAnchorId?: ReadonlyMap<MessageId, MessageThreadSummary> | undefined;
+  openMessageThreadAnchorId?: MessageId | null | undefined;
+  onOpenMessageThread?: ((anchorMessageId: MessageId) => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
 // MessagesTimeline — list owner
 // ---------------------------------------------------------------------------
+
+/**
+ * Everything a timeline needs that is not the list itself. Lets a second
+ * timeline — the side-thread panel — be handed the same context the main one
+ * runs on without ChatView spelling out fifteen props twice.
+ */
+export type MessagesTimelineSharedProps = Pick<
+  MessagesTimelineProps,
+  | "latestTurn"
+  | "turnDiffSummaryByAssistantMessageId"
+  | "routeThreadKey"
+  | "onOpenTurnDiff"
+  | "onOpenThread"
+  | "revertTurnCountByUserMessageId"
+  | "onRevertUserMessage"
+  | "isRevertingCheckpoint"
+  | "onImageExpand"
+  | "activeThreadEnvironmentId"
+  | "markdownCwd"
+  | "resolvedTheme"
+  | "timestampFormat"
+  | "workspaceRoot"
+  | "skills"
+>;
 
 export const MessagesTimeline = memo(function MessagesTimeline({
   isWorking,
@@ -215,6 +260,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   workspaceRoot,
   skills = EMPTY_TIMELINE_SKILLS,
   onIsAtEndChange,
+  messageThreadsByAnchorId = EMPTY_MESSAGE_THREADS,
+  openMessageThreadAnchorId = null,
+  onOpenMessageThread = NOOP_OPEN_MESSAGE_THREAD,
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
 
@@ -294,6 +342,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         activeTurnStartedAt,
         turnDiffSummaryByAssistantMessageId,
         revertTurnCountByUserMessageId,
+        messageThreadsByAnchorId,
+        openMessageThreadAnchorId,
       }),
     [
       timelineEntries,
@@ -303,6 +353,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       activeTurnStartedAt,
       turnDiffSummaryByAssistantMessageId,
       revertTurnCountByUserMessageId,
+      messageThreadsByAnchorId,
+      openMessageThreadAnchorId,
     ],
   );
   const rows = useStableRows(rawRows);
@@ -347,6 +399,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       onToggleTurnFold,
       onOpenThread,
+      onOpenMessageThread,
+      messageThreadsEnabled: onOpenMessageThread !== NOOP_OPEN_MESSAGE_THREAD,
     }),
     [
       timestampFormat,
@@ -361,6 +415,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       onOpenTurnDiff,
       onToggleTurnFold,
       onOpenThread,
+      onOpenMessageThread,
     ],
   );
   const activityState = useMemo<TimelineRowActivityState>(
@@ -795,6 +850,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
       ) : null}
+      {row.kind === "message-thread" ? <MessageThreadTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
       {row.kind === "handoff" ? <HandoffTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
@@ -912,12 +968,76 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           </Tooltip>
           <div className="flex items-center gap-0.5">
             {canRevertAgentWork && <RevertUserMessageButton messageId={row.message.id} />}
+            <ReplyInThreadButton messageId={row.message.id} />
             {displayedUserMessage.copyText && (
               <MessageCopyButton text={displayedUserMessage.copyText} variant="ghost" />
             )}
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Opens (or starts) the side thread on this message. Sits with copy/revert so
+ * the affordance is in the same place on every message, and is hidden in the
+ * side-thread panel itself — threads within threads are a different feature.
+ */
+function ReplyInThreadButton({ messageId }: { messageId: MessageId }) {
+  const ctx = use(TimelineRowCtx);
+
+  if (!ctx.messageThreadsEnabled) {
+    return null;
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            onClick={() => ctx.onOpenMessageThread(messageId)}
+            aria-label="Reply in thread"
+          />
+        }
+      >
+        <MessagesSquareIcon className="size-3" />
+      </TooltipTrigger>
+      <TooltipPopup side="top">Reply in thread</TooltipPopup>
+    </Tooltip>
+  );
+}
+
+function MessageThreadTimelineRow({
+  row,
+}: {
+  row: Extract<TimelineRow, { kind: "message-thread" }>;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const replyLabel = row.replyCount === 1 ? "1 reply" : `${row.replyCount} replies`;
+
+  return (
+    <div className="min-w-0 px-1">
+      <button
+        type="button"
+        data-message-thread-anchor={row.anchorMessageId}
+        onClick={() => ctx.onOpenMessageThread(row.anchorMessageId)}
+        className={cn(
+          "flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70",
+          row.open
+            ? "border-primary/50 bg-primary/10 text-foreground"
+            : "border-border/60 bg-card/60 text-muted-foreground hover:border-border hover:text-foreground",
+        )}
+      >
+        <MessagesSquareIcon className="size-3.5" />
+        <span className="font-medium">{replyLabel}</span>
+        <span className="text-muted-foreground/70">
+          {row.streaming ? "replying…" : formatRelativeTimeLabel(row.lastActivityAt)}
+        </span>
+      </button>
     </div>
   );
 }
@@ -994,6 +1114,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
         {row.showAssistantMeta ? (
           <div className="mt-1.5 flex items-center gap-2 text-xs tabular-nums opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/assistant:opacity-100">
             <AssistantCopyButton row={row} />
+            <ReplyInThreadButton messageId={row.message.id} />
             {!row.message.streaming && (
               <Tooltip>
                 <TooltipTrigger

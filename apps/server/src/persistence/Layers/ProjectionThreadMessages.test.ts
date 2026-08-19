@@ -36,6 +36,7 @@ layer("ProjectionThreadMessageRepository", (it) => {
         role: "user",
         text: "initial",
         attachments: persistedAttachments,
+        replyToMessageId: null,
         isStreaming: false,
         createdAt,
         updatedAt,
@@ -47,6 +48,7 @@ layer("ProjectionThreadMessageRepository", (it) => {
         turnId: null,
         role: "user",
         text: "updated",
+        replyToMessageId: null,
         isStreaming: false,
         createdAt,
         updatedAt: "2026-02-28T19:00:02.000Z",
@@ -88,6 +90,7 @@ layer("ProjectionThreadMessageRepository", (it) => {
             sizeBytes: 5,
           },
         ],
+        replyToMessageId: null,
         isStreaming: false,
         createdAt,
         updatedAt: "2026-02-28T19:10:01.000Z",
@@ -100,6 +103,7 @@ layer("ProjectionThreadMessageRepository", (it) => {
         role: "assistant",
         text: "cleared",
         attachments: [],
+        replyToMessageId: null,
         isStreaming: false,
         createdAt,
         updatedAt: "2026-02-28T19:10:02.000Z",
@@ -109,6 +113,43 @@ layer("ProjectionThreadMessageRepository", (it) => {
       assert.equal(rows.length, 1);
       assert.equal(rows[0]?.text, "cleared");
       assert.deepEqual(rows[0]?.attachments, []);
+    }),
+  );
+  it.effect("round-trips the side-thread anchor", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.make("thread-reply-anchor");
+      const anchorId = MessageId.make("message-anchor");
+      const replyId = MessageId.make("message-reply");
+      const createdAt = "2026-08-19T09:00:00.000Z";
+
+      yield* repository.upsert({
+        messageId: anchorId,
+        threadId,
+        turnId: null,
+        role: "assistant",
+        text: "Three things happened.",
+        replyToMessageId: null,
+        isStreaming: false,
+        createdAt,
+        updatedAt: createdAt,
+      });
+      yield* repository.upsert({
+        messageId: replyId,
+        threadId,
+        turnId: null,
+        role: "user",
+        text: "About the second one…",
+        replyToMessageId: anchorId,
+        isStreaming: false,
+        createdAt: "2026-08-19T09:01:00.000Z",
+        updatedAt: "2026-08-19T09:01:00.000Z",
+      });
+
+      const rows = yield* repository.listByThreadId({ threadId });
+      assert.equal(rows.length, 2);
+      assert.equal(rows[0]?.replyToMessageId, null);
+      assert.equal(rows[1]?.replyToMessageId, anchorId);
     }),
   );
 });

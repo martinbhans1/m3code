@@ -427,6 +427,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           attachments_json AS "attachments",
+          reply_to_message_id AS "replyToMessageId",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -789,6 +790,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     readonly role: OrchestrationMessage["role"];
     readonly text: string;
     readonly turnId: OrchestrationMessage["turnId"];
+    readonly replyToMessageId: OrchestrationMessage["replyToMessageId"];
     readonly isStreaming: number;
     readonly createdAt: string;
     readonly updatedAt: string;
@@ -799,6 +801,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       role: row.role,
       text: row.text,
       turnId: row.turnId,
+      replyToMessageId: row.replyToMessageId,
       streaming: row.isStreaming === 1,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -823,6 +826,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           attachments_json AS "attachments",
+          reply_to_message_id AS "replyToMessageId",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -845,6 +849,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           role,
           text,
           attachments_json AS "attachments",
+          reply_to_message_id AS "replyToMessageId",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
           updated_at AS "updatedAt"
@@ -1173,6 +1178,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                   text: row.text,
                   ...(row.attachments !== null ? { attachments: row.attachments } : {}),
                   turnId: row.turnId,
+                  replyToMessageId: row.replyToMessageId,
                   streaming: row.isStreaming === 1,
                   createdAt: row.createdAt,
                   updatedAt: row.updatedAt,

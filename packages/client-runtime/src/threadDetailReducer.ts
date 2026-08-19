@@ -210,6 +210,7 @@ export function applyThreadDetailEvent(
           ? { attachments: event.payload.attachments }
           : {}),
         turnId: event.payload.turnId,
+        replyToMessageId: event.payload.replyToMessageId,
         streaming: event.payload.streaming,
         createdAt: event.payload.createdAt,
         updatedAt: event.payload.updatedAt,

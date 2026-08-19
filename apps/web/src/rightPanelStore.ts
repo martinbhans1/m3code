@@ -22,6 +22,7 @@ export const RIGHT_PANEL_KINDS = [
   "file",
   "preview",
   "terminal",
+  "messageThread",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -53,6 +54,16 @@ export type RightPanelSurface =
       revealLine: number | null;
       revealRequestId: number;
     }
+  | {
+      /**
+       * A side thread hanging off one message of this conversation. Several can
+       * be open at once, each as its own tab, which is the point — three topics
+       * from one answer become three tabs instead of one tangled reply.
+       */
+      id: `messageThread:${string}`;
+      kind: "messageThread";
+      anchorMessageId: string;
+    }
   | { id: "plan"; kind: "plan" }
   // The orchestrator's status board: every conversation it can see, and what
   // each one is waiting on.
@@ -69,7 +80,10 @@ export interface ThreadRightPanelState {
 
 interface RightPanelStoreState {
   byThreadKey: Record<string, ThreadRightPanelState>;
-  open: (ref: ScopedThreadRef, kind: Exclude<RightPanelKind, "file" | "terminal">) => void;
+  open: (
+    ref: ScopedThreadRef,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "messageThread">,
+  ) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
   openFile: (
     ref: ScopedThreadRef,
@@ -78,6 +92,7 @@ interface RightPanelStoreState {
     workspaceRoot?: string,
   ) => void;
   openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
+  openMessageThread: (ref: ScopedThreadRef, anchorMessageId: string) => void;
   splitTerminal: (
     ref: ScopedThreadRef,
     surfaceId: string,
@@ -96,7 +111,10 @@ interface RightPanelStoreState {
   show: (ref: ScopedThreadRef) => void;
   close: (ref: ScopedThreadRef) => void;
   toggleVisibility: (ref: ScopedThreadRef) => void;
-  toggle: (ref: ScopedThreadRef, kind: Exclude<RightPanelKind, "file" | "terminal">) => void;
+  toggle: (
+    ref: ScopedThreadRef,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "messageThread">,
+  ) => void;
   removeThread: (ref: ScopedThreadRef) => void;
 }
 
@@ -107,7 +125,7 @@ const EMPTY_THREAD_STATE: ThreadRightPanelState = {
 };
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal">,
+  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "messageThread">,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -141,6 +159,12 @@ const fileSurface = (
   ...(workspaceRoot ? { workspaceRoot } : {}),
   revealLine,
   revealRequestId,
+});
+
+const messageThreadSurface = (anchorMessageId: string): RightPanelSurface => ({
+  id: `messageThread:${anchorMessageId}`,
+  kind: "messageThread",
+  anchorMessageId,
 });
 
 const terminalSurface = (terminalId: string): RightPanelSurface => ({
@@ -289,6 +313,12 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               : current.surfaces;
             return upsertSurface({ ...current, surfaces: withoutPlaceholder }, surface);
           }),
+        })),
+      openMessageThread: (ref, anchorMessageId) =>
+        set((state) => ({
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
+            upsertSurface(current, messageThreadSurface(anchorMessageId)),
+          ),
         })),
       openFile: (ref, relativePath, line, workspaceRoot) =>
         set((state) => ({

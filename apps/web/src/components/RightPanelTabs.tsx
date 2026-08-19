@@ -6,6 +6,7 @@ import {
   Files,
   Globe2,
   LayoutDashboard,
+  MessagesSquare,
   Plus,
   TerminalSquare,
   X,
@@ -42,6 +43,8 @@ interface RightPanelTabsProps {
   pendingSurfaceIds: ReadonlySet<string>;
   previewSessions: Readonly<Record<string, PreviewSessionSnapshot>>;
   terminalLabelsById: ReadonlyMap<string, string>;
+  /** Short previews of the messages side threads hang off, keyed by anchor message id. */
+  messageThreadLabelsByAnchorId?: ReadonlyMap<string, string>;
   onActivate: (surface: RightPanelSurface) => void;
   onCloseSurface: (surface: RightPanelSurface) => void;
   onCloseOtherSurfaces: (surface: RightPanelSurface) => void;
@@ -57,6 +60,8 @@ interface RightPanelTabsProps {
   filesAvailable: boolean;
   children: ReactNode;
 }
+
+const EMPTY_MESSAGE_THREAD_LABELS: ReadonlyMap<string, string> = new Map();
 
 const SURFACE_DISABLED_REASONS = {
   browser: "Browser previews are only available in the M3 Code desktop app.",
@@ -198,6 +203,7 @@ function surfaceTitle(
   surface: RightPanelSurface,
   sessions: Readonly<Record<string, PreviewSessionSnapshot>>,
   terminalLabelsById: ReadonlyMap<string, string>,
+  messageThreadLabelsByAnchorId: ReadonlyMap<string, string>,
 ): string {
   switch (surface.kind) {
     case "diff":
@@ -215,6 +221,8 @@ function surfaceTitle(
       return "Plan";
     case "board":
       return "Board";
+    case "messageThread":
+      return messageThreadLabelsByAnchorId.get(surface.anchorMessageId) ?? "Thread";
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
@@ -278,6 +286,8 @@ function SurfaceIcon({
       return <ClipboardList className="size-3.5 shrink-0" />;
     case "board":
       return <LayoutDashboard className="size-3.5 shrink-0" />;
+    case "messageThread":
+      return <MessagesSquare className="size-3.5 shrink-0" />;
   }
 }
 
@@ -373,7 +383,12 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             {props.surfaces.map((surface) => {
               const active = surface.id === props.activeSurfaceId;
               const pending = props.pendingSurfaceIds.has(surface.id);
-              const title = surfaceTitle(surface, props.previewSessions, props.terminalLabelsById);
+              const title = surfaceTitle(
+                surface,
+                props.previewSessions,
+                props.terminalLabelsById,
+                props.messageThreadLabelsByAnchorId ?? EMPTY_MESSAGE_THREAD_LABELS,
+              );
               return (
                 <div
                   key={surface.id}

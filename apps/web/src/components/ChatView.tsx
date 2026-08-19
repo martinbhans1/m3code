@@ -127,6 +127,13 @@ import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
 import { OrchestratorBoardPanel } from "./OrchestratorBoardPanel";
+import { MessageThreadPanel, type MessageThreadPendingQuote } from "./chat/MessageThreadPanel";
+import type { MessagesTimelineSharedProps } from "./chat/MessagesTimeline";
+import {
+  anchorForActiveTurn,
+  partitionMessageThreads,
+  summarizeAnchorText,
+} from "../messageThreads";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { ChevronDownIcon, TriangleAlertIcon, WifiOffIcon } from "lucide-react";
 import { RightPanelTabs } from "./RightPanelTabs";
@@ -237,6 +244,10 @@ const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROPOSED_PLANS: Thread["proposedPlans"] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_SKILLS: ServerProvider["skills"] = [];
+// The side-thread list scrolls itself; only the main timeline drives the
+// "scroll to bottom" pill, so only its at-end state is worth tracking.
+const NOOP_IS_AT_END_CHANGE = (): void => {};
+const EMPTY_MESSAGE_THREAD_ENTRIES: ReturnType<typeof deriveTimelineEntries> = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const EMPTY_FOLLOWUP_PROJECT_CHOICES: FollowupProjectChoice[] = [];
 const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
@@ -1168,6 +1179,10 @@ function ChatViewContent(props: ChatViewProps) {
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
+  /** Quote from a text selection, waiting for its side thread to open. */
+  const [messageThreadQuote, setMessageThreadQuote] = useState<MessageThreadPendingQuote | null>(
+    null,
+  );
   const optimisticUserMessagesRef = useRef(optimisticUserMessages);
   optimisticUserMessagesRef.current = optimisticUserMessages;
   const [localDraftErrorsByDraftId, setLocalDraftErrorsByDraftId] = useState<
@@ -1208,6 +1223,7 @@ function ChatViewContent(props: ChatViewProps) {
     LastInvokedScriptByProjectSchema,
   );
   const legendListRef = useRef<LegendListRef | null>(null);
+  const messageThreadListRef = useRef<LegendListRef | null>(null);
   const isAtEndRef = useRef(true);
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
@@ -1313,6 +1329,10 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const activeFileSurface =
     activeRightPanelSurface?.kind === "file" ? activeRightPanelSurface : null;
+  const openMessageThreadAnchorId =
+    activeRightPanelSurface?.kind === "messageThread"
+      ? (activeRightPanelSurface.anchorMessageId as MessageId)
+      : null;
   const activePreviewState = usePreviewStateStore((state) =>
     selectThreadPreviewState(state.byThreadKey, activeThreadRef),
   );
@@ -2347,6 +2367,55 @@ function ChatViewContent(props: ChatViewProps) {
       ),
     [activeThread?.proposedPlans, timelineMessages, workLogEntries, continuedInHandoffs],
   );
+  // Side threads are pulled out of the main timeline here: what is left renders
+  // as the conversation, and each thread renders in its own right-panel tab.
+  const messageThreadPartition = useMemo(
+    () => partitionMessageThreads(timelineEntries),
+    [timelineEntries],
+  );
+  const messageThreadLabelsByAnchorId = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const entry of timelineEntries) {
+      if (entry.kind !== "message") continue;
+      if (!messageThreadPartition.threadsByAnchorId.has(entry.message.id)) continue;
+      labels.set(entry.message.id, summarizeAnchorText(entry.message.text, 24) || "Thread");
+    }
+    return labels;
+  }, [messageThreadPartition, timelineEntries]);
+
+  const openMessageThreadSummary =
+    openMessageThreadAnchorId !== null
+      ? (messageThreadPartition.threadsByAnchorId.get(openMessageThreadAnchorId) ?? null)
+      : null;
+  const openMessageThreadAnchorEntry =
+    openMessageThreadAnchorId !== null
+      ? (timelineEntries.find(
+          (entry) => entry.kind === "message" && entry.message.id === openMessageThreadAnchorId,
+        ) ?? null)
+      : null;
+  const openMessageThreadAnchor =
+    openMessageThreadAnchorEntry?.kind === "message" ? openMessageThreadAnchorEntry.message : null;
+  // Replies only — the panel renders the message they are about in its own
+  // header block, so repeating it in the timeline would show it twice.
+  const openMessageThreadEntries =
+    openMessageThreadSummary?.entries ?? EMPTY_MESSAGE_THREAD_ENTRIES;
+
+  /**
+   * Bring the anchor back into view in the main conversation. The list is
+   * virtualized, so this only lands when the row is mounted — which it is in
+   * the case that matters: coming back from a thread you just opened from it.
+   */
+  const scrollToMessageThreadAnchor = useCallback(() => {
+    if (openMessageThreadAnchorId === null) return;
+    messagesWrapperRef.current
+      ?.querySelector(`[data-message-id="${CSS.escape(openMessageThreadAnchorId)}"]`)
+      ?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [openMessageThreadAnchorId]);
+  const activeMessageThreadTurnAnchorId = anchorForActiveTurn(
+    messageThreadPartition,
+    activeThread?.session?.activeTurnId ?? activeLatestTurn?.turnId ?? null,
+  );
+
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
   const turnDiffSummaryByAssistantMessageId = useMemo(() => {
@@ -2503,6 +2572,13 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().openFile(activeThreadRef, relativePath);
   };
+  const openMessageThread = useCallback(
+    (anchorMessageId: MessageId) => {
+      if (!activeThreadRef) return;
+      useRightPanelStore.getState().openMessageThread(activeThreadRef, anchorMessageId);
+    },
+    [activeThreadRef],
+  );
   // Right-panel arbitration:
   //   - The diff panel's openness is mirrored by the `?diff=1` URL search
   //     param so it deep-links cleanly. The store still records preview/plan
@@ -4835,6 +4911,141 @@ function ChatViewContent(props: ChatViewProps) {
     [composerRef],
   );
 
+  /**
+   * Reply inside a side thread. This is deliberately not the main send path:
+   * a side thread only ever exists on an established server conversation, so
+   * none of the first-message work (titling, worktree bootstrap, attachments,
+   * slash commands) applies. What it does share is the queue — a reply typed
+   * while the agent is mid-turn waits its turn like any other message.
+   */
+  const sendMessageThreadReply = useCallback(
+    async (anchorMessageId: MessageId, text: string): Promise<boolean> => {
+      const api = readEnvironmentApi(environmentId);
+      const trimmed = text.trim();
+      if (!api || !activeThread || !isServerThread || trimmed.length === 0) return false;
+      if (activeEnvironmentUnavailable) return false;
+      const sendCtx = composerRef.current?.getSendContext();
+      if (!sendCtx) return false;
+
+      const threadIdForSend = activeThread.id;
+      const messageIdForSend = newMessageId();
+      const messageCreatedAt = new Date().toISOString();
+      const outgoingMessageText = formatOutgoingPrompt({
+        provider: sendCtx.selectedProvider,
+        model: sendCtx.selectedModel,
+        models: sendCtx.selectedProviderModels,
+        effort: sendCtx.selectedPromptEffort,
+        text: trimmed,
+      });
+      const command = {
+        type: "thread.turn.start",
+        commandId: newCommandId(),
+        threadId: threadIdForSend,
+        message: {
+          messageId: messageIdForSend,
+          role: "user",
+          text: outgoingMessageText,
+          attachments: [],
+          replyToMessageId: anchorMessageId,
+        },
+        modelSelection: sendCtx.selectedModelSelection,
+        titleSeed: activeThread.title,
+        runtimeMode,
+        interactionMode,
+        createdAt: messageCreatedAt,
+      } as const;
+
+      if (phase === "running") {
+        useQueuedTurnStore.getState().enqueue({
+          id: String(messageIdForSend),
+          threadRef: scopeThreadRef(activeThread.environmentId, threadIdForSend),
+          displayText: trimmed,
+          status: "queued",
+          error: null,
+          command,
+        });
+        setThreadError(threadIdForSend, null);
+        return true;
+      }
+
+      sendInFlightRef.current = true;
+      beginLocalDispatch({ preparingWorktree: false });
+      setThreadError(threadIdForSend, null);
+      setOptimisticUserMessages((existing) => [
+        ...existing,
+        {
+          id: messageIdForSend,
+          role: "user",
+          text: outgoingMessageText,
+          replyToMessageId: anchorMessageId,
+          createdAt: messageCreatedAt,
+          streaming: false,
+        },
+      ]);
+
+      try {
+        await api.orchestration.dispatchCommand(command);
+        sendInFlightRef.current = false;
+        return true;
+      } catch (err) {
+        setOptimisticUserMessages((existing) =>
+          existing.filter((message) => message.id !== messageIdForSend),
+        );
+        setThreadError(
+          threadIdForSend,
+          err instanceof Error ? err.message : "Failed to send the thread reply.",
+        );
+        sendInFlightRef.current = false;
+        resetLocalDispatch();
+        return false;
+      }
+    },
+    [
+      activeEnvironmentUnavailable,
+      activeThread,
+      beginLocalDispatch,
+      composerRef,
+      environmentId,
+      interactionMode,
+      isServerThread,
+      phase,
+      resetLocalDispatch,
+      runtimeMode,
+      setThreadError,
+    ],
+  );
+
+  const submitOpenMessageThreadReply = useCallback(
+    (text: string) =>
+      openMessageThreadAnchorId === null
+        ? Promise.resolve(false)
+        : sendMessageThreadReply(openMessageThreadAnchorId, text),
+    [openMessageThreadAnchorId, sendMessageThreadReply],
+  );
+
+  /**
+   * "Reply in thread" from a text selection: open the thread on the message the
+   * selection came from, with the selection already quoted into its reply box —
+   * so the agent is told exactly which sentence the question is about instead of
+   * having to infer it.
+   */
+  const onReplyInMessageThread = useCallback(
+    (anchorMessageId: string, text: string): boolean => {
+      if (!isServerThread) return false;
+      const insertion = buildQuoteInsertion("", text);
+      if (!insertion) return false;
+      const anchor = anchorMessageId as MessageId;
+      setMessageThreadQuote((existing) => ({
+        anchorMessageId: anchor,
+        text: insertion,
+        requestId: (existing?.requestId ?? 0) + 1,
+      }));
+      openMessageThread(anchor);
+      return true;
+    },
+    [isServerThread, openMessageThread],
+  );
+
   const onDoFollowupNow = useCallback(
     async (followup: FollowupState) => {
       const api = readEnvironmentApi(environmentId);
@@ -5324,6 +5535,33 @@ function ChatViewContent(props: ChatViewProps) {
     return <NoActiveThreadState showRecentThreads />;
   }
 
+  // Handed to both timelines so the side-thread panel renders rows exactly the
+  // way the conversation does, without ChatView listing fifteen props twice.
+  const messagesTimelineSharedProps: MessagesTimelineSharedProps = {
+    latestTurn: activeLatestTurn,
+    turnDiffSummaryByAssistantMessageId,
+    routeThreadKey,
+    onOpenTurnDiff,
+    onOpenThread,
+    revertTurnCountByUserMessageId,
+    onRevertUserMessage,
+    isRevertingCheckpoint,
+    onImageExpand: onExpandTimelineImage,
+    activeThreadEnvironmentId: activeThread.environmentId,
+    markdownCwd: gitCwd ?? undefined,
+    resolvedTheme,
+    timestampFormat,
+    workspaceRoot: activeWorkspaceRoot,
+    skills: activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS,
+  };
+  const messageThreadDisabledReason = !isServerThread
+    ? "Threads open once the conversation has started."
+    : activeEnvironmentUnavailable
+      ? `${activeEnvironmentUnavailableLabel ?? "This environment"} is unavailable`
+      : isConnecting
+        ? "Connecting…"
+        : null;
+
   const panelToggleControls = (
     <PanelLayoutControls
       terminalAvailable={Boolean(activeProject)}
@@ -5380,6 +5618,34 @@ function ChatViewContent(props: ChatViewProps) {
       <Suspense fallback={null}>
         <DiffPanel mode="embedded" composerDraftTarget={composerDraftTarget} />
       </Suspense>
+    ) : activeRightPanelSurface?.kind === "messageThread" ? (
+      <MessageThreadPanel
+        key={activeRightPanelSurface.anchorMessageId}
+        anchorRole={openMessageThreadAnchor?.role ?? "assistant"}
+        anchorText={openMessageThreadAnchor?.text ?? "This message is no longer loaded."}
+        hasReplies={(openMessageThreadSummary?.entries.length ?? 0) > 0}
+        skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
+        disabled={messageThreadDisabledReason !== null}
+        disabledReason={messageThreadDisabledReason ?? undefined}
+        willQueue={phase === "running"}
+        {...(messageThreadQuote?.anchorMessageId === openMessageThreadAnchorId
+          ? { pendingQuote: messageThreadQuote }
+          : {})}
+        onSend={submitOpenMessageThreadReply}
+        onJumpToAnchor={scrollToMessageThreadAnchor}
+        timeline={
+          <MessagesTimeline
+            {...messagesTimelineSharedProps}
+            key={`message-thread:${activeRightPanelSurface.anchorMessageId}`}
+            listRef={messageThreadListRef}
+            timelineEntries={openMessageThreadEntries}
+            isWorking={isWorking && activeMessageThreadTurnAnchorId === openMessageThreadAnchorId}
+            activeTurnInProgress={isWorking || !latestTurnSettled}
+            activeTurnStartedAt={activeWorkStartedAt}
+            onIsAtEndChange={NOOP_IS_AT_END_CHANGE}
+          />
+        }
+      />
     ) : activeRightPanelSurface?.kind === "board" ? (
       <OrchestratorBoardPanel mode="embedded" environmentId={environmentId} />
     ) : activeRightPanelSurface?.kind === "plan" ? (
@@ -5496,11 +5762,11 @@ function ChatViewContent(props: ChatViewProps) {
                 {/* Messages — LegendList handles virtualization and scrolling internally */}
                 <MessagesTimeline
                   key={activeThread.id}
-                  isWorking={isWorking}
+                  isWorking={isWorking && activeMessageThreadTurnAnchorId === null}
                   activeTurnInProgress={isWorking || !latestTurnSettled}
                   activeTurnStartedAt={activeWorkStartedAt}
                   listRef={legendListRef}
-                  timelineEntries={timelineEntries}
+                  timelineEntries={messageThreadPartition.mainEntries}
                   latestTurn={activeLatestTurn}
                   turnDiffSummaryByAssistantMessageId={turnDiffSummaryByAssistantMessageId}
                   activeThreadEnvironmentId={activeThread.environmentId}
@@ -5517,6 +5783,9 @@ function ChatViewContent(props: ChatViewProps) {
                   workspaceRoot={activeWorkspaceRoot}
                   skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
                   onIsAtEndChange={onIsAtEndChange}
+                  messageThreadsByAnchorId={messageThreadPartition.threadsByAnchorId}
+                  openMessageThreadAnchorId={openMessageThreadAnchorId}
+                  onOpenMessageThread={openMessageThread}
                 />
 
                 {/* scroll to bottom pill — shown when user has scrolled away from the bottom */}
@@ -5537,6 +5806,7 @@ function ChatViewContent(props: ChatViewProps) {
                 <QuoteSelectionOverlay
                   containerRef={messagesWrapperRef}
                   onQuote={onQuoteSelection}
+                  onReplyInThread={isServerThread ? onReplyInMessageThread : undefined}
                 />
 
                 {/* Suggested-task deck — floats over the top-right of the chat
@@ -5761,6 +6031,7 @@ function ChatViewContent(props: ChatViewProps) {
           pendingSurfaceIds={pendingFileSurfaceIds}
           previewSessions={activePreviewState.sessions}
           terminalLabelsById={activeTerminalLabelsById}
+          messageThreadLabelsByAnchorId={messageThreadLabelsByAnchorId}
           onActivate={activateRightPanelSurface}
           onCloseSurface={closeRightPanelSurface}
           onCloseOtherSurfaces={closeOtherRightPanelSurfaces}
@@ -5789,6 +6060,7 @@ function ChatViewContent(props: ChatViewProps) {
             pendingSurfaceIds={pendingFileSurfaceIds}
             previewSessions={activePreviewState.sessions}
             terminalLabelsById={activeTerminalLabelsById}
+            messageThreadLabelsByAnchorId={messageThreadLabelsByAnchorId}
             onActivate={activateRightPanelSurface}
             onCloseSurface={closeRightPanelSurface}
             onCloseOtherSurfaces={closeOtherRightPanelSurfaces}

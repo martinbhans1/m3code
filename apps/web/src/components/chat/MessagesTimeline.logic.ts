@@ -7,6 +7,7 @@ import {
 } from "../../session-logic";
 import { type ChatMessage, type ProposedPlan, type TurnDiffSummary } from "../../types";
 import { type MessageId, type OrchestrationLatestTurn, type TurnId } from "@t3tools/contracts";
+import type { MessageThreadSummary } from "../../messageThreads";
 
 export const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
 
@@ -67,6 +68,17 @@ export type MessagesTimelineRow =
       assistantCopyStreaming: boolean;
       assistantTurnDiffSummary?: TurnDiffSummary | undefined;
       revertTurnCount?: number | undefined;
+    }
+  | {
+      /** "3 replies" pill under the message a side thread hangs off. */
+      kind: "message-thread";
+      id: string;
+      createdAt: string;
+      anchorMessageId: MessageId;
+      replyCount: number;
+      lastActivityAt: string;
+      streaming: boolean;
+      open: boolean;
     }
   | {
       kind: "proposed-plan";
@@ -321,6 +333,10 @@ export function deriveMessagesTimelineRows(input: {
   activeTurnStartedAt: string | null;
   turnDiffSummaryByAssistantMessageId: ReadonlyMap<MessageId, TurnDiffSummary>;
   revertTurnCountByUserMessageId: ReadonlyMap<MessageId, number>;
+  /** Side threads keyed by the message they hang off; their entries are not in `timelineEntries`. */
+  messageThreadsByAnchorId?: ReadonlyMap<MessageId, MessageThreadSummary> | undefined;
+  /** Anchor of the side thread currently open in the panel, so its pill reads as active. */
+  openMessageThreadAnchorId?: MessageId | null | undefined;
 }): MessagesTimelineRow[] {
   const nextRows: MessagesTimelineRow[] = [];
   const durationStartByMessageId = computeMessageDurationStart(
@@ -446,6 +462,20 @@ export function deriveMessagesTimelineRows(input: {
           ? input.revertTurnCountByUserMessageId.get(timelineEntry.message.id)
           : undefined,
     });
+
+    const messageThread = input.messageThreadsByAnchorId?.get(timelineEntry.message.id);
+    if (messageThread) {
+      nextRows.push({
+        kind: "message-thread",
+        id: `message-thread:${timelineEntry.message.id}`,
+        createdAt: timelineEntry.createdAt,
+        anchorMessageId: timelineEntry.message.id,
+        replyCount: messageThread.replyCount,
+        lastActivityAt: messageThread.lastActivityAt,
+        streaming: messageThread.streaming,
+        open: input.openMessageThreadAnchorId === timelineEntry.message.id,
+      });
+    }
   }
 
   if (input.isWorking) {
@@ -494,6 +524,16 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.label === bf.label &&
         a.expanded === bf.expanded &&
         a.expandable === bf.expandable
+      );
+    }
+
+    case "message-thread": {
+      const bt = b as typeof a;
+      return (
+        a.replyCount === bt.replyCount &&
+        a.lastActivityAt === bt.lastActivityAt &&
+        a.streaming === bt.streaming &&
+        a.open === bt.open
       );
     }
 

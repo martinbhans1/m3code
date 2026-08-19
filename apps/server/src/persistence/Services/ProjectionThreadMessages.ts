@@ -28,6 +28,8 @@ export const ProjectionThreadMessage = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
+  /** Anchor message for a side-thread reply; null in the main conversation. */
+  replyToMessageId: Schema.NullOr(MessageId),
   isStreaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

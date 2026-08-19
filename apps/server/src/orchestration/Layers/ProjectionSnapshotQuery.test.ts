@@ -317,6 +317,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               role: "assistant",
               text: "hello from projection",
               turnId: asTurnId("turn-1"),
+              replyToMessageId: null,
               streaming: false,
               createdAt: "2026-02-24T00:00:04.000Z",
               updatedAt: "2026-02-24T00:00:05.000Z",

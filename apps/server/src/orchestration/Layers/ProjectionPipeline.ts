@@ -989,6 +989,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             role: event.payload.role,
             text: nextText,
             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
+            // Assistant deltas re-upsert the same row without an anchor; keep
+            // whatever the opening user message recorded.
+            replyToMessageId:
+              event.payload.replyToMessageId ?? previousMessage?.replyToMessageId ?? null,
             isStreaming: event.payload.streaming,
             createdAt: previousMessage?.createdAt ?? event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
