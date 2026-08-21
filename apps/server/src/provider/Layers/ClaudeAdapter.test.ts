@@ -353,6 +353,9 @@ describe("ClaudeAdapterLive", () => {
           ? systemPrompt.append
           : undefined;
       assert.include(append ?? "", "suggest_followup");
+      // The response-style brief composes with the tool brief rather than
+      // replacing it, so both are present on an ordinary thread.
+      assert.include(append ?? "", "Noticed");
       // An ordinary thread must not be given the cross-thread server, nor told
       // it is an orchestrator.
       const mcpServers = harness.getLastCreateQueryInput()?.options.mcpServers ?? {};
@@ -413,6 +416,9 @@ describe("ClaudeAdapterLive", () => {
         // anyway, since its own project is excluded from `list_pending`,
         // `read_thread` and `resolve_followup`.
         assert.notInclude(append ?? "", "suggest_followup");
+        // The response-style brief is orthogonal to the role brief and rides
+        // on this thread too.
+        assert.include(append ?? "", "Noticed");
       }).pipe(
         Effect.scoped,
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -441,7 +447,9 @@ describe("ClaudeAdapterLive", () => {
         typeof systemPrompt === "object" && systemPrompt !== null && !Array.isArray(systemPrompt)
           ? systemPrompt.append
           : undefined;
-      assert.equal(append, undefined);
+      assert.notInclude(append ?? "", "suggest_followup");
+      // The response-style brief is not about a tool, so it still rides along.
+      assert.include(append ?? "", "Noticed");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

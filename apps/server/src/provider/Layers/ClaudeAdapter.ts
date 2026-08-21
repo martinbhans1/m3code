@@ -1032,7 +1032,9 @@ const CLAUDE_SETTING_SOURCES = [
  */
 const FOLLOWUP_SYSTEM_PROMPT_APPEND = `When you finish a turn, if you noticed specific work that was out of scope for what the user asked — a bug you spotted but did not fix, a refactor you had to skip, a missing test, an obvious next step — call the \`mcp__t3-code__suggest_followup\` tool once per item rather than only mentioning it in prose. The user sees these as chips they can act on later, here or in a fresh conversation.
 
-Only for work you are NOT doing this turn: use your todo list for work in progress, and ask the user directly for questions. Write the detail for a human skimming one card — plain language first, then only the specifics needed to start; markdown lists render, run-on "(a) … (b) …" prose does not. If nothing genuinely qualifies, do not call it — invented follow-ups are worse than none.`;
+Only for work you are NOT doing this turn: use your todo list for work in progress, and ask the user directly for questions. Write the detail for a human skimming one card — plain language first, then only the specifics needed to start; markdown lists render, run-on "(a) … (b) …" prose does not. If nothing genuinely qualifies, do not call it — invented follow-ups are worse than none.
+
+The deck is readable: \`mcp__t3-code__list_followups\` shows what is still on it, what was already spun off into another conversation, and what has been closed. Check it when the user asks what is outstanding here, or asks you to work out which chips still apply — a follow-up is somebody's note from earlier, so verify the code before calling one stale. When you have finished the work a chip describes, or found it no longer applies, close it with \`mcp__t3-code__resolve_followup\` after the user agrees; never close one because you intend to do it.`;
 
 /**
  * Role brief for the orchestrator ("meta") conversation, appended only when the
@@ -1063,7 +1065,34 @@ A conversation that has stopped to ask a question is doing nothing until it gets
 
 Before you report work as finished — and before you close anything — check what actually changed on disk with \`read_thread_changes\`. \`read_thread\` only tells you what an agent said it did, and agents report work as done that was never written. Its file list is cheap; ask for the patch only when you are going to read it.
 
-Follow-ups you have confirmed are finished should be closed with \`resolve_followup\`, or \`list_pending\` fills up with work that is already done and stops being worth reading. Confirm with \`read_thread_changes\`, or have the user tell you — never mark something done because an agent said it would do it.`;
+Follow-ups you have confirmed are finished should be closed with \`resolve_followup\`, or \`list_pending\` fills up with work that is already done and stops being worth reading. Confirm with \`read_thread_changes\`, or have the user tell you — never mark something done because an agent said it would do it. When you start a follow-up's work somewhere else, close it as 'spunOff' with the new conversation's id in the same breath: that link is the only record of where it went, and \`read_thread\` reports it back under \`recentlyResolvedFollowups\` — read that list before offering to start something, or you will hand out a job that is already running.`;
+
+/**
+ * How to write the final message of a turn. Rides on every Claude turn in this
+ * app, whatever MCP servers are mounted, because it is about the shape of the
+ * reply rather than about a tool.
+ *
+ * The timeline folds a settled turn's tool activity behind a "Worked for ..."
+ * row, which leaves mid-turn commentary pointing at work that is no longer
+ * beside it ("Now the dispatch method:" with nothing under it). The fix is not
+ * to stop folding, it is to stop loading that commentary with anything the user
+ * needs: the final message has to be complete on its own.
+ *
+ * The "Noticed" row is the safety valve. The user's real fear is silent loss --
+ * not being told a thing exists, and so never knowing to ask. A flag costs one
+ * line and makes the follow-up question possible; the alternative is the agent
+ * deciding on the user's behalf that something was not worth mentioning.
+ *
+ * Kept short deliberately: this is appended to every turn, and a long append
+ * both costs tokens and dilutes the preset.
+ */
+const RESPONSE_STYLE_SYSTEM_PROMPT_APPEND = `Write the final message of a turn so that it stands alone. Commentary you write between tool calls is scaffolding -- the user skims past it, and this app folds the work it belongs to behind a "Worked for ..." summary once the turn settles. Anything that matters has to be in the final message too, not only in the narration.
+
+Lead with what the user would notice, in plain language. Leave out the walkthrough -- which files you opened, what you tried first, how the code is shaped. They will ask when they want it, and a turn they have to re-read to find the point has failed however true every word of it is.
+
+Flag rather than explain. Something worth their attention that is not the task -- an unrelated bug, a ticket or a comment that corroborates or contradicts what you found, a measurement that surprised you, a risk you took deliberately -- gets one line, so that they can ask. Do not investigate it and do not write it up. Say it the same way when the work itself was awkward: you reached the answer the long way round, a script or a tool would have made it direct, something ate context for nothing. Staying quiet is the expensive failure, because the user cannot ask about a thing they were never told exists.
+
+When a project asks you to close with a status table, carry those flags in a **Noticed** row above **Still open**, one per line, and drop the row entirely when there is nothing to put in it. This app adds that row: it overrides any instruction that fixes the table at a set number of rows.`;
 
 function buildPromptText(
   input: ProviderSendTurnInput,
@@ -3801,6 +3830,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(ultracode ? { ultracode: true } : {}),
       };
       const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+      // The response-style brief is unconditional -- it describes how to write
+      // the reply, not a tool the turn may or may not have. The tool briefs stay
+      // gated on the MCP session, and remain mutually exclusive.
+      const systemPromptAppend = [
+        ...(mcpSession
+          ? [
+              mcpSession.orchestratorEndpoint
+                ? ORCHESTRATOR_SYSTEM_PROMPT_APPEND
+                : FOLLOWUP_SYSTEM_PROMPT_APPEND,
+            ]
+          : []),
+        RESPONSE_STYLE_SYSTEM_PROMPT_APPEND,
+      ].join("\n\n");
       const queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(apiModelId ? { model: apiModelId } : {}),
@@ -3808,8 +3850,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
-          // Only when the t3-code MCP server is mounted, which is what actually
-          // provides `suggest_followup`.
+          // The follow-up brief rides only on a mounted t3-code MCP server,
+          // which is what actually provides `suggest_followup`.
           //
           // The orchestrator brief *replaces* the follow-up brief rather than
           // being appended to it. The two contradict each other outright: one
@@ -3819,13 +3861,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
           // `list_pending`, `read_thread` and `resolve_followup` — so it would
           // be creating follow-ups that can never be seen or closed, in the
           // feature whose whole point is that those do not pile up.
-          ...(mcpSession
-            ? {
-                append: mcpSession.orchestratorEndpoint
-                  ? ORCHESTRATOR_SYSTEM_PROMPT_APPEND
-                  : FOLLOWUP_SYSTEM_PROMPT_APPEND,
-              }
-            : {}),
+          append: systemPromptAppend,
         },
         settingSources: [...CLAUDE_SETTING_SOURCES],
         // `ultracode` is a Claude Code setting, not an API effort level. It is
