@@ -541,6 +541,14 @@ label:has(> select#reasoning-effort) select {
   height: 100%;
 }
 
+/* Timeline rows: full-width shell that the centred reading column sits in.
+   It is an inline-size container so wide content (tables) can measure the room
+   left beside the column, and it clips whatever still overflows. */
+.chat-timeline-row {
+  container-type: inline-size;
+  overflow-x: clip;
+}
+
 /* Chat markdown rendering */
 .chat-markdown {
   min-width: 0;
@@ -863,19 +871,53 @@ label:has(> select#reasoning-effort) select {
   border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
 }
 
+/* Tables may run wider than the reading column: they shrink-wrap their content
+   and are allowed to bleed to the right, into whatever room the window has next
+   to the centred column (never past it, capped so ultrawide windows stay sane).
+   Only assistant messages opt in, via .chat-markdown-wide-tables inside a
+   timeline row — everywhere else --chat-table-bleed stays 0. */
+.chat-markdown-wide-tables .chat-markdown-table-container {
+  --chat-table-bleed: clamp(0px, (100cqw - 48rem) / 2, 14rem);
+}
+
+.chat-markdown .chat-markdown-table-container {
+  width: fit-content;
+  min-width: 100%;
+  max-width: calc(100% + var(--chat-table-bleed, 0px));
+  margin-inline-end: calc(-1 * var(--chat-table-bleed, 0px));
+}
+
 /* Collapsed (default): single-line cells truncate so arbitrary chat content
    cannot blow the column out; the footer toggle expands cells to wrap. */
 .chat-markdown .chat-markdown-table-container[data-expanded="false"] th,
 .chat-markdown .chat-markdown-table-container[data-expanded="false"] td {
   overflow: hidden;
-  max-width: 24rem;
+  max-width: 32rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* Expanded: take the full bleed width and hand column sizing back to the
+   browser's auto table layout, so every cell wraps in full instead of being
+   ellipsised. `break-word` (not `anywhere`) keeps the longest word as the
+   column floor — with `anywhere` a column could collapse to one character.
+   Once those floors no longer fit, the table overflows and scrolls sideways. */
+.chat-markdown .chat-markdown-table-container[data-expanded="true"] {
+  width: calc(100% + var(--chat-table-bleed, 0px));
+}
+
+.chat-markdown .chat-markdown-table-container[data-expanded="true"] table {
+  width: 100%;
+  min-width: 0;
+}
+
+.chat-markdown .chat-markdown-table-container[data-expanded="true"] th,
 .chat-markdown .chat-markdown-table-container[data-expanded="true"] td {
-  max-width: 24rem;
-  overflow-wrap: anywhere;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 
 .chat-markdown .chat-markdown-table-footer {

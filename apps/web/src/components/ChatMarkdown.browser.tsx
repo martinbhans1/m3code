@@ -700,7 +700,35 @@ describe("ChatMarkdown", () => {
       }
     });
 
-    it("retains column widths when cells expand", async () => {
+    it("shows every cell in full when expanded", async () => {
+      const source = [
+        "| # | What we want | Where we stand today |",
+        "| --- | --- | --- |",
+        `| 1 | Templates so setup is not a blank page | ${longCell} |`,
+      ].join("\n");
+      const screen = await render(<ChatMarkdown text={source} cwd="/repo/project" />);
+
+      try {
+        const viewport = document.querySelector(
+          '.chat-markdown-table-container [data-slot="scroll-area-viewport"]',
+        )!;
+        const noteCell = [...document.querySelectorAll(".chat-markdown td")].at(-1)!;
+        expect(noteCell.scrollWidth).toBeGreaterThan(noteCell.clientWidth);
+
+        await page.getByRole("button", { name: "Expand table cells" }).click();
+
+        // Every cell wraps in full — nothing is ellipsised or clipped — and the
+        // table fits the container, so no sideways scrolling is needed.
+        [...document.querySelectorAll(".chat-markdown th, .chat-markdown td")].forEach((cell) => {
+          expect(cell.scrollWidth).toBeLessThanOrEqual(cell.clientWidth + 1);
+        });
+        expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.clientWidth + 1);
+      } finally {
+        await screen.unmount();
+      }
+    });
+
+    it("keeps expanded columns readable and scrollable when there are too many", async () => {
       const source = [
         "| ID | Owner | Status | Priority | Region | Summary | Long Description | Metrics | Payload | Notes |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -712,22 +740,52 @@ describe("ChatMarkdown", () => {
         const viewport = document.querySelector(
           '.chat-markdown-table-container [data-slot="scroll-area-viewport"]',
         )!;
-        const table = viewport.querySelector("table")!;
-        const collapsedWidths = [...table.querySelectorAll("thead th")].map(
-          (cell) => cell.getBoundingClientRect().width,
-        );
         expect(viewport.scrollWidth).toBeGreaterThan(viewport.clientWidth);
 
         await page.getByRole("button", { name: "Expand table cells" }).click();
 
-        const expandedWidths = [...table.querySelectorAll("thead th")].map(
-          (cell) => cell.getBoundingClientRect().width,
-        );
-        expect(expandedWidths).toHaveLength(collapsedWidths.length);
-        expandedWidths.forEach((width, index) => {
-          expect(width).toBeGreaterThanOrEqual(collapsedWidths[index]! - 1);
+        // Columns never collapse below their longest word, so the table stays
+        // legible and the rest of it is reachable by scrolling right.
+        [...document.querySelectorAll(".chat-markdown td")].forEach((cell) => {
+          expect(cell.scrollWidth).toBeLessThanOrEqual(cell.clientWidth + 1);
         });
         expect(viewport.scrollWidth).toBeGreaterThan(viewport.clientWidth);
+        viewport.scrollLeft = viewport.scrollWidth;
+        expect(viewport.scrollLeft).toBeGreaterThan(0);
+      } finally {
+        await screen.unmount();
+      }
+    });
+
+    it("lets assistant tables run wider than the reading column", async () => {
+      const columns = ["Name", "Owner", "Status", "Region", "Summary", "Notes"];
+      const source = [
+        `| ${columns.join(" | ")} |`,
+        `| ${columns.map(() => "---").join(" | ")} |`,
+        `| api | Ada Lovelace | Active | us-west-2 | Payment workflow migration | ${longCell} |`,
+      ].join("\n");
+      const screen = await render(
+        // Mirrors the timeline row: a full-width inline-size container holding
+        // the centred max-w-3xl reading column.
+        <div className="chat-timeline-row" style={{ width: "1200px" }}>
+          <div className="mx-auto w-full min-w-0 max-w-3xl">
+            <ChatMarkdown text={source} cwd="/repo/project" className="chat-markdown-wide-tables" />
+          </div>
+        </div>,
+      );
+
+      try {
+        const shell = document.querySelector<HTMLElement>(".chat-timeline-row")!;
+        const column = shell.firstElementChild as HTMLElement;
+        const container = document.querySelector<HTMLElement>(".chat-markdown-table-container")!;
+
+        const shellRight = shell.getBoundingClientRect().right;
+        const columnRight = column.getBoundingClientRect().right;
+        const tableRight = container.getBoundingClientRect().right;
+
+        // Wider than the text column, but never past the room beside it.
+        expect(tableRight).toBeGreaterThan(columnRight + 1);
+        expect(tableRight).toBeLessThanOrEqual(shellRight + 1);
       } finally {
         await screen.unmount();
       }

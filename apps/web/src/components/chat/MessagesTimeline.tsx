@@ -493,8 +493,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const renderItem = useCallback(
     ({ item }: { item: MessagesTimelineRow }) => (
-      <div className="mx-auto w-full min-w-0 max-w-3xl overflow-x-clip" data-timeline-root="true">
-        <TimelineRowContent row={item} />
+      <div className="chat-timeline-row" data-timeline-root="true">
+        <div className="mx-auto w-full min-w-0 max-w-3xl">
+          <TimelineRowContent row={item} />
+        </div>
       </div>
     ),
     [],
@@ -1110,6 +1112,7 @@ function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "mess
           threadRef={ctx.threadRef ?? undefined}
           isStreaming={Boolean(row.message.streaming)}
           skills={ctx.skills}
+          className="chat-markdown-wide-tables"
         />
         {row.showAssistantMeta ? (
           <div className="mt-1.5 flex items-center gap-2 text-xs tabular-nums opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/assistant:opacity-100">

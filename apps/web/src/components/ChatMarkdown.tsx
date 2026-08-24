@@ -309,34 +309,16 @@ function getHighlighterPromise(language: string): Promise<DiffsHighlighter> {
 
 function MarkdownTable({ children, ...props }: React.ComponentProps<"table">) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const tableRef = useRef<HTMLTableElement | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const expandLabel = expanded ? "Collapse table cells" : "Expand table cells";
   const copyLabel = copied ? "Copied" : "Copy table";
 
+  // Expanding hands column sizing back to the browser's auto table layout: the
+  // table fills the (wider) container and cells wrap, so nothing is ellipsised.
+  // Pinning the collapsed widths here would carry the truncation over.
   function toggleExpanded() {
-    const table = tableRef.current;
-    if (!table) return;
-
-    if (!expanded) {
-      const rows = [...table.rows];
-      const columnWidths = rows.reduce<number[]>((widths, row) => {
-        [...row.cells].forEach((cell, columnIndex) => {
-          widths[columnIndex] = Math.max(
-            widths[columnIndex] ?? 0,
-            cell.getBoundingClientRect().width,
-          );
-        });
-        return widths;
-      }, []);
-
-      [...(table.tHead?.rows[0]?.cells ?? [])].forEach((cell, columnIndex) => {
-        cell.style.minWidth = `${columnWidths[columnIndex] ?? cell.getBoundingClientRect().width}px`;
-      });
-    }
-
     setExpanded((value) => !value);
   }
 
@@ -386,9 +368,7 @@ function MarkdownTable({ children, ...props }: React.ComponentProps<"table">) {
         hideScrollbars
         className="w-full max-w-full rounded-none"
       >
-        <table ref={tableRef} {...props}>
-          {children}
-        </table>
+        <table {...props}>{children}</table>
       </ScrollArea>
       <div className="chat-markdown-table-footer select-none">
         <Tooltip>
