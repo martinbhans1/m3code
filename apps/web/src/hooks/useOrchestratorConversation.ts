@@ -134,7 +134,7 @@ export function useOpenOrchestratorConversation() {
       // Local, never a worktree: there is no repository here to branch.
       await handleNewThread(scopeProjectRef(environmentId, projectId), {
         envMode: "local",
-      }).catch(() => undefined);
+      });
     },
     [handleNewThread, navigate, orchestratorProjectId, projects, threadShells, updateSettings],
   );
