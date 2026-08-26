@@ -1764,6 +1764,52 @@ describe("deriveFollowups", () => {
     expect(pending[0]?.title).toBe("Extract shared helper");
     expect(pending[0]?.detail).toBeNull();
   });
+
+  it("recovers a description the agent sent under the wrong field name", () => {
+    // Chips recorded before the adapter learned the aliases have no detail of
+    // their own, but the call that made them is still in the activity log.
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "tool-call",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        sequence: 1,
+        kind: "tool.completed",
+        summary: "Suggest a follow-up",
+        tone: "tool",
+        payload: {
+          itemType: "mcp_tool_call",
+          data: {
+            toolName: "mcp__t3-code__suggest_followup",
+            input: {
+              title: "Fix team chat realtime",
+              description: "Dead channels stay silent forever.",
+              why: "Christine cannot see replies.",
+            },
+            result: { tool_use_id: "toolu_1", type: "tool_result" },
+          },
+        },
+      }),
+      followupActivity({
+        id: "a1",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        sequence: 2,
+        followup: {
+          id: "toolu_1",
+          title: "Fix team chat realtime",
+          detail: null,
+          rationale: null,
+          status: "pending",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          updatedAt: "2026-02-23T00:00:01.000Z",
+        },
+      }),
+    ];
+
+    const pending = derivePendingFollowups(activities);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.detail).toBe("Dead channels stay silent forever.");
+    expect(pending[0]?.rationale).toBe("Christine cannot see replies.");
+  });
 });
 
 describe("deriveHandoffs", () => {

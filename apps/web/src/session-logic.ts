@@ -593,6 +593,76 @@ export function deriveActivePlanState(
   };
 }
 
+// The body of a follow-up as the agent actually sent it to `suggest_followup`.
+//
+// The tool declares `detail`, but a sizeable minority of calls put the body
+// under `description`, `body`, `details`, `prompt`, `summary` or `text`. Those
+// calls still succeeded, so the chip was recorded with a bare title and the
+// description was lost — from the user's side the card simply stopped having a
+// description. The adapter now reads the aliases when the call comes in; this
+// recovers the same text for every follow-up recorded before it did, straight
+// from the tool call still sitting in the activity log.
+const FOLLOWUP_DETAIL_ALIASES = [
+  "description",
+  "body",
+  "details",
+  "prompt",
+  "text",
+  "notes",
+  "summary",
+] as const;
+const FOLLOWUP_RATIONALE_ALIASES = ["rationale", "why", "reason"] as const;
+
+function readAliasedString(
+  input: Record<string, unknown>,
+  keys: ReadonlyArray<string>,
+): string | null {
+  for (const key of keys) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+/**
+ * Misnamed follow-up bodies, keyed by the tool_use id — which is also the
+ * follow-up's own id, so a chip missing its detail can be matched to the call
+ * that made it.
+ */
+function collectFollowupToolInputs(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): Map<string, { detail: string | null; rationale: string | null }> {
+  const byToolUseId = new Map<string, { detail: string | null; rationale: string | null }>();
+  for (const activity of activities) {
+    if (activity.kind !== "tool.completed") {
+      continue;
+    }
+    const data =
+      activity.payload && typeof activity.payload === "object"
+        ? ((activity.payload as Record<string, unknown>).data as
+            | Record<string, unknown>
+            | undefined)
+        : undefined;
+    if (!data || typeof data.toolName !== "string" || !data.toolName.endsWith("suggest_followup")) {
+      continue;
+    }
+    const result = data.result as Record<string, unknown> | undefined;
+    const toolUseId = result && typeof result.tool_use_id === "string" ? result.tool_use_id : null;
+    const input =
+      data.input && typeof data.input === "object" ? (data.input as Record<string, unknown>) : null;
+    if (toolUseId === null || input === null) {
+      continue;
+    }
+    byToolUseId.set(toolUseId, {
+      detail: readAliasedString(input, FOLLOWUP_DETAIL_ALIASES),
+      rationale: readAliasedString(input, FOLLOWUP_RATIONALE_ALIASES),
+    });
+  }
+  return byToolUseId;
+}
+
 // Follow-ups are stored as thread activities of kind "turn.followup.suggested"
 // (see buildFollowupActivity in contracts). Each create/update appends a new
 // activity carrying the full follow-up in its payload; the latest activity per
@@ -601,6 +671,7 @@ export function deriveFollowups(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): FollowupState[] {
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const toolInputs = collectFollowupToolInputs(ordered);
   const byId = new Map<string, FollowupState>();
   for (const activity of ordered) {
     if (activity.kind !== "turn.followup.suggested") {
@@ -626,12 +697,18 @@ export function deriveFollowups(
       raw.status === "spunOff" || raw.status === "done" || raw.status === "dismissed"
         ? raw.status
         : "pending";
+    const recorded = toolInputs.get(id);
     byId.set(id, {
       id,
       title,
-      detail: typeof raw.detail === "string" && raw.detail.length > 0 ? raw.detail : null,
+      detail:
+        typeof raw.detail === "string" && raw.detail.length > 0
+          ? raw.detail
+          : (recorded?.detail ?? null),
       rationale:
-        typeof raw.rationale === "string" && raw.rationale.length > 0 ? raw.rationale : null,
+        typeof raw.rationale === "string" && raw.rationale.length > 0
+          ? raw.rationale
+          : (recorded?.rationale ?? null),
       status,
       turnId: (typeof raw.turnId === "string" ? raw.turnId : null) as TurnId | null,
       createdAt: typeof raw.createdAt === "string" ? raw.createdAt : activity.createdAt,
