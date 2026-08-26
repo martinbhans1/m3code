@@ -4911,6 +4911,20 @@ function ChatViewContent(props: ChatViewProps) {
     [composerRef],
   );
 
+  // The board proposes a sentence rather than sending one. Every action it
+  // offers would have the orchestrator go and do something, so it lands in the
+  // composer where you can edit or discard it — the same contract the
+  // orchestrator's own tools hold themselves to.
+  const onBoardComposeMessage = useCallback(
+    (prompt: string) => {
+      const handle = composerRef.current;
+      if (!handle) return;
+      const existing = handle.readSnapshot().value;
+      handle.insertTextAtEnd(existing.trim().length === 0 ? prompt : `\n\n${prompt}`);
+    },
+    [composerRef],
+  );
+
   /**
    * Reply inside a side thread. This is deliberately not the main send path:
    * a side thread only ever exists on an established server conversation, so
@@ -5647,7 +5661,11 @@ function ChatViewContent(props: ChatViewProps) {
         }
       />
     ) : activeRightPanelSurface?.kind === "board" ? (
-      <OrchestratorBoardPanel mode="embedded" environmentId={environmentId} />
+      <OrchestratorBoardPanel
+        mode="embedded"
+        environmentId={environmentId}
+        onComposeMessage={onBoardComposeMessage}
+      />
     ) : activeRightPanelSurface?.kind === "plan" ? (
       <PlanSidebar
         activePlan={activePlan}

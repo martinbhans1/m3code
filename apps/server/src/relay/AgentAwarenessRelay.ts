@@ -200,6 +200,8 @@ export function resolveAgentAwarenessRelayPublishSnapshot(input: {
   readonly threadId: ThreadId;
   readonly thread: Option.Option<OrchestrationThreadShell>;
   readonly project: Option.Option<OrchestrationProjectShell>;
+  /** Epoch milliseconds, for deciding whether a running turn has gone silent. */
+  readonly now: number;
 }): {
   readonly projectId: string | null;
   readonly state: RelayAgentActivityState | null;
@@ -226,6 +228,7 @@ export function resolveAgentAwarenessRelayPublishSnapshot(input: {
         environmentId: input.environmentId,
         project: input.project.value,
         thread: input.thread.value,
+        now: input.now,
       }),
     ),
     reason: "snapshot",
@@ -236,6 +239,8 @@ export function resolveAgentAwarenessRelayActiveThreadIds(input: {
   readonly environmentId: EnvironmentId;
   readonly projects: ReadonlyArray<Pick<OrchestrationProjectShell, "id" | "title">>;
   readonly threads: ReadonlyArray<OrchestrationThreadShell>;
+  /** Epoch milliseconds, for deciding whether a running turn has gone silent. */
+  readonly now: number;
 }): ReadonlyArray<ThreadId> {
   const projectById = new Map(input.projects.map((project) => [project.id, project]));
   return input.threads
@@ -249,6 +254,7 @@ export function resolveAgentAwarenessRelayActiveThreadIds(input: {
           environmentId: input.environmentId,
           project,
           thread,
+          now: input.now,
         }) !== null
       );
     })
@@ -364,6 +370,7 @@ const make = Effect.gen(function* () {
       threadId,
       thread,
       project,
+      now: DateTime.toEpochMillis(yield* DateTime.now),
     });
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
@@ -432,6 +439,7 @@ const make = Effect.gen(function* () {
       environmentId,
       projects: snapshot.projects,
       threads: snapshot.threads,
+      now: DateTime.toEpochMillis(yield* DateTime.now),
     });
     if (activeThreadIds.length === 0) {
       yield* Effect.logDebug("agent activity snapshot has no publishable threads");

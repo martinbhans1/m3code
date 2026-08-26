@@ -259,6 +259,30 @@ const threadDetail = {
       turnId: "turn-1",
       createdAt: "2026-08-05T08:30:00.000Z",
     },
+    {
+      // Handed to another conversation. It stops being pending the moment it is
+      // spun off, so the only place it can still be seen is the resolved list —
+      // which is what stops the same work being handed out twice.
+      id: "activity-3",
+      tone: "info",
+      kind: "turn.followup.suggested",
+      summary: "Rewrite the merge-field parser",
+      payload: {
+        followup: {
+          id: "followup-3",
+          turnId: "turn-1",
+          title: "Rewrite the merge-field parser",
+          detail: null,
+          rationale: null,
+          status: "spunOff",
+          implementationThreadId: busyThreadId,
+          createdAt: "2026-08-05T08:31:00.000Z",
+          updatedAt: "2026-08-05T08:35:00.000Z",
+        },
+      },
+      turnId: "turn-1",
+      createdAt: "2026-08-05T08:35:00.000Z",
+    },
   ],
   checkpoints: [
     {
@@ -308,6 +332,50 @@ const blastRadiusQuestion = {
     // descriptions unsanitized, so a model that omits one writes "". The UI
     // renders that fine, and this must not make the whole question invisible.
     { label: "Email-only", description: "" },
+  ],
+};
+
+const blockedThreadDetail = {
+  ...blockedThread,
+  messages: [],
+  proposedPlans: [],
+  activities: [
+    {
+      // Already answered, so it must not be offered again.
+      id: "activity-a0",
+      tone: "approval",
+      kind: "approval.requested",
+      summary: "Command approval requested",
+      payload: {
+        requestId: "approval-answered",
+        requestKind: "command",
+        detail: "rm -rf node_modules",
+      },
+      turnId: "turn-3",
+      createdAt: "2026-08-05T09:09:00.000Z",
+    },
+    {
+      id: "activity-a1",
+      tone: "approval",
+      kind: "approval.resolved",
+      summary: "Approval resolved",
+      payload: { requestId: "approval-answered", decision: "accept" },
+      turnId: "turn-3",
+      createdAt: "2026-08-05T09:10:00.000Z",
+    },
+    {
+      id: "activity-a2",
+      tone: "approval",
+      kind: "approval.requested",
+      summary: "Command approval requested",
+      payload: {
+        requestId: "approval-open",
+        requestKind: "command",
+        detail: "pnpm test --filter @t3tools/web",
+      },
+      turnId: "turn-3",
+      createdAt: "2026-08-05T09:12:00.000Z",
+    },
   ],
 };
 
@@ -516,7 +584,9 @@ const TestServicesLive = Layer.mergeAll(
             ? threadDetail
             : threadId === questionThreadId
               ? questionThreadDetail
-              : null;
+              : threadId === blockedThreadId
+                ? blockedThreadDetail
+                : null;
         const ordered = (detail?.messages ?? [])
           .toSorted((left: { createdAt: string }, right: { createdAt: string }) =>
             left.createdAt.localeCompare(right.createdAt),
@@ -533,7 +603,9 @@ const TestServicesLive = Layer.mergeAll(
             ? threadDetail
             : threadId === questionThreadId
               ? questionThreadDetail
-              : null;
+              : threadId === blockedThreadId
+                ? blockedThreadDetail
+                : null;
         return Effect.succeed(
           (detail?.activities ?? []).filter((activity: { kind: string }) =>
             kinds.includes(activity.kind),
@@ -730,16 +802,23 @@ it.effect("lists threads with derived phases and filters to those needing attent
       expect(all.isError).toBe(false);
       const threads = (all.structuredContent as { threads: ReadonlyArray<Record<string, unknown>> })
         .threads;
-      // Most recently updated first. The orchestrator project's own threads are
-      // absent even though the fixture shares them: an orchestrator listing its
-      // own past conversations is never useful.
+      // Most recently updated first. The orchestrator's own earlier
+      // conversation is in the list — that is how a session picks up what the
+      // last one decided — but the conversation doing the asking is not.
       expect(threads.map((thread) => thread.threadId)).toEqual([
+        siblingMetaThreadId,
         questionThreadId,
         blockedThreadId,
         busyThreadId,
         interruptedThreadId,
         idleThreadId,
       ]);
+      expect(threads.some((thread) => thread.threadId === metaThreadId)).toBe(false);
+      // Readable, flagged, and never sendable, whatever the sharing settings say.
+      expect(threads.find((thread) => thread.threadId === siblingMetaThreadId)).toMatchObject({
+        isOrchestratorConversation: true,
+        orchestratorAccess: "watch",
+      });
       expect(threads.find((thread) => thread.threadId === busyThreadId)).toMatchObject({
         phase: "running",
         hasActiveTurn: true,
@@ -779,15 +858,36 @@ it.effect("reads a thread's tail, truncating long messages and surfacing open fo
       const payload = result.structuredContent as {
         messages: ReadonlyArray<{ text: string; truncated: boolean }>;
         pendingFollowups: ReadonlyArray<{ followupId: string }>;
+        recentlyResolvedFollowups: ReadonlyArray<{
+          followupId: string;
+          status: string;
+          implementationThread: { threadId: string; title: string; state: string } | null;
+        }>;
       };
       expect(payload.messages).toHaveLength(2);
       expect(payload.messages[1]?.truncated).toBe(true);
       expect(payload.messages[1]?.text.length).toBeLessThan(1_100);
       expect(payload.messages[0]?.truncated).toBe(false);
-      // followup-2 was dismissed, so only the pending one comes back.
+      // followup-2 was dismissed and followup-3 spun off, so only the pending
+      // one comes back here.
       expect(payload.pendingFollowups.map((followup) => followup.followupId)).toEqual([
         "followup-1",
       ]);
+      // The closed ones are reported separately, newest first, so the
+      // orchestrator can see what was already handled and where it went.
+      expect(payload.recentlyResolvedFollowups.map((followup) => followup.followupId)).toEqual([
+        "followup-3",
+        "followup-2",
+      ]);
+      expect(payload.recentlyResolvedFollowups[0]?.implementationThread).toMatchObject({
+        threadId: busyThreadId,
+        title: "Telavox dial failure regression",
+        state: "running",
+      });
+      expect(payload.recentlyResolvedFollowups[1]).toMatchObject({
+        status: "dismissed",
+        implementationThread: null,
+      });
     }),
   ).pipe(Effect.provide(TestLayer)),
 );
@@ -996,12 +1096,12 @@ it.effect("pages the thread listing, reporting the true total behind each page",
         nextOffset: number | null;
       };
       expect(firstPayload.threads.map((thread) => thread.threadId)).toEqual([
+        siblingMetaThreadId,
         questionThreadId,
-        blockedThreadId,
       ]);
       // The count is of everything matched, not of what fitted on the page —
       // this is what stops a page being reported to the user as the whole library.
-      expect(firstPayload.totalMatched).toBe(5);
+      expect(firstPayload.totalMatched).toBe(6);
       expect(firstPayload.nextOffset).toBe(2);
 
       const second = yield* callTool("list_threads", { limit: 2, offset: 2 });
@@ -1010,8 +1110,8 @@ it.effect("pages the thread listing, reporting the true total behind each page",
         nextOffset: number | null;
       };
       expect(secondPayload.threads.map((thread) => thread.threadId)).toEqual([
+        blockedThreadId,
         busyThreadId,
-        interruptedThreadId,
       ]);
       expect(secondPayload.nextOffset).toBe(4);
 
@@ -1022,7 +1122,10 @@ it.effect("pages the thread listing, reporting the true total behind each page",
         threads: ReadonlyArray<{ threadId: string }>;
         nextOffset: number | null;
       };
-      expect(lastPayload.threads.map((thread) => thread.threadId)).toEqual([idleThreadId]);
+      expect(lastPayload.threads.map((thread) => thread.threadId)).toEqual([
+        interruptedThreadId,
+        idleThreadId,
+      ]);
       expect(lastPayload.nextOffset).toBeNull();
 
       // Paging past the end is empty rather than an error; a stale offset from
@@ -1326,20 +1429,25 @@ it.effect("falls back to the default access for conversations with no entry of t
       resetAccess();
       threadAccess = {};
 
-      // Default "none": opt-in, so nothing is visible.
+      // Default "none": opt-in, so none of the user's work is visible. Its own
+      // earlier conversation still is — sharing settings govern the threads
+      // that do the work, not the orchestrator's memory of itself.
       const closed = yield* callTool("list_threads", {});
       expect(
-        (closed.structuredContent as { threads: ReadonlyArray<unknown> }).threads,
-      ).toHaveLength(0);
+        (
+          closed.structuredContent as { threads: ReadonlyArray<Record<string, unknown>> }
+        ).threads.map((thread) => thread.threadId),
+      ).toEqual([siblingMetaThreadId]);
 
       // Default "watch": opt-out, so everything is readable but nothing is
-      // sendable — and the orchestrator's own threads still stay hidden.
+      // sendable.
       defaultAccess = "watch";
       const watched = yield* callTool("list_threads", {});
       const watchedThreads = (
         watched.structuredContent as { threads: ReadonlyArray<Record<string, unknown>> }
       ).threads;
       expect(watchedThreads.map((thread) => thread.threadId)).toEqual([
+        siblingMetaThreadId,
         questionThreadId,
         blockedThreadId,
         busyThreadId,
@@ -1375,7 +1483,7 @@ it.effect("lets a conversation override the default in either direction", () =>
         (
           opened.structuredContent as { threads: ReadonlyArray<Record<string, unknown>> }
         ).threads.map((thread) => thread.threadId),
-      ).toEqual([idleThreadId]);
+      ).toEqual([siblingMetaThreadId, idleThreadId]);
 
       // Closed below an open default: an explicit "none" outranks it, which a
       // missing entry no longer does.
@@ -1414,16 +1522,24 @@ it.effect("opens every conversation when the orchestrator's own access control s
           accessMode: string;
         }
       ).threads;
-      // Everything, in spite of the explicit "none" — and still not the
-      // orchestrator's own project, which no override reaches into.
+      // Everything, in spite of the explicit "none". Its own earlier
+      // conversation comes along, but no override raises it above watching.
       expect(threads.map((thread) => thread.threadId)).toEqual([
+        siblingMetaThreadId,
         questionThreadId,
         blockedThreadId,
         busyThreadId,
         interruptedThreadId,
         idleThreadId,
       ]);
-      expect(threads.every((thread) => thread.orchestratorAccess === "control")).toBe(true);
+      expect(
+        threads
+          .filter((thread) => thread.isOrchestratorConversation !== true)
+          .every((thread) => thread.orchestratorAccess === "control"),
+      ).toBe(true);
+      expect(threads.find((thread) => thread.threadId === siblingMetaThreadId)).toMatchObject({
+        orchestratorAccess: "watch",
+      });
       // Reported back, so the orchestrator can say "this is everything" rather
       // than hedging about what might not be shared.
       expect((listed.structuredContent as { accessMode: string }).accessMode).toBe("control-all");
@@ -1438,10 +1554,16 @@ it.effect("opens every conversation when the orchestrator's own access control s
       expect(sent.isError).toBe(false);
       expect(dispatched).toHaveLength(1);
 
-      // The sibling meta thread stays out of reach: two orchestrators driving
-      // each other is the one thing a blanket grant must not enable.
+      // The sibling is readable, but a blanket grant still cannot make it
+      // writable: two orchestrators driving each other is the one thing no
+      // override may enable.
       const sibling = yield* callTool("read_thread", { threadId: siblingMetaThreadId });
-      expect(sibling.isError).toBe(true);
+      expect(sibling.isError).toBe(false);
+      const siblingSend = yield* callTool("send_to_thread", {
+        threadId: siblingMetaThreadId,
+        message: "take this over",
+      });
+      expect(siblingSend.isError).toBe(true);
 
       resetAccess();
       dispatched.length = 0;
@@ -1462,7 +1584,7 @@ it.effect("reads everything but sends nowhere under a read-only override", () =>
       const threads = (
         listed.structuredContent as { threads: ReadonlyArray<Record<string, unknown>> }
       ).threads;
-      expect(threads).toHaveLength(5);
+      expect(threads).toHaveLength(6);
       // Including the one the user had set to "control": read-all is a ceiling,
       // not just a floor.
       expect(threads.every((thread) => thread.orchestratorAccess === "watch")).toBe(true);
@@ -1496,9 +1618,13 @@ it.effect("keeps unshared conversations hidden under a read-shared override", ()
       const threads = (
         listed.structuredContent as { threads: ReadonlyArray<Record<string, unknown>> }
       ).threads;
-      // Reach is untouched — only the two shared threads — while the one set to
-      // "control" is clamped to watching.
-      expect(threads.map((thread) => thread.threadId)).toEqual([busyThreadId, idleThreadId]);
+      // Reach is untouched — only the two shared threads, plus its own history —
+      // while the one set to "control" is clamped to watching.
+      expect(threads.map((thread) => thread.threadId)).toEqual([
+        siblingMetaThreadId,
+        busyThreadId,
+        idleThreadId,
+      ]);
       expect(threads.every((thread) => thread.orchestratorAccess === "watch")).toBe(true);
 
       const blocked = yield* callTool("read_thread", { threadId: questionThreadId });
@@ -1509,14 +1635,24 @@ it.effect("keeps unshared conversations hidden under a read-shared override", ()
   ).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect("refuses to read a sibling orchestrator conversation even when shared", () =>
+it.effect("reads an earlier orchestrator conversation but never itself", () =>
   Effect.scoped(
     Effect.gen(function* () {
       resetAccess();
+      // Its own history is what stops a fresh orchestrator conversation
+      // re-deciding what the last one already settled with the user.
       const read = yield* callTool("read_thread", { threadId: siblingMetaThreadId });
-      expect(read.isError).toBe(true);
-      const text = read.content.map((entry) => ("text" in entry ? entry.text : "")).join(" ");
-      expect(text).toContain("another orchestrator conversation");
+      expect(read.isError).toBe(false);
+      expect((read.structuredContent as { thread: Record<string, unknown> }).thread).toMatchObject({
+        isOrchestratorConversation: true,
+        orchestratorAccess: "watch",
+      });
+
+      // Reading itself is a loop, not a memory.
+      const self = yield* callTool("read_thread", { threadId: metaThreadId });
+      expect(self.isError).toBe(true);
+      const selfText = self.content.map((entry) => ("text" in entry ? entry.text : "")).join(" ");
+      expect(selfText).toContain("this conversation");
       resetAccess();
     }),
   ).pipe(Effect.provide(TestLayer)),
@@ -1969,6 +2105,47 @@ it.effect("is idempotent and refuses unknown follow-up ids", () =>
   ).pipe(Effect.provide(TestLayer)),
 );
 
+it.effect("records where a follow-up went when it is closed as spun off", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      resetAccess();
+      dispatched.length = 0;
+
+      // Without the conversation that picked it up the follow-up would vanish
+      // from every surface with no record of who is doing it.
+      const unlinked = yield* callTool("resolve_followup", {
+        threadId: idleThreadId,
+        followupId: "followup-1",
+        status: "spunOff",
+      });
+      expect(unlinked.isError).toBe(true);
+      expect(dispatched).toHaveLength(0);
+
+      const result = yield* callTool("resolve_followup", {
+        threadId: idleThreadId,
+        followupId: "followup-1",
+        status: "spunOff",
+        implementationThreadId: busyThreadId,
+      });
+      expect(result.isError).toBe(false);
+      expect(result.structuredContent).toMatchObject({
+        followupId: "followup-1",
+        status: "spunOff",
+        implementationThreadId: busyThreadId,
+      });
+      expect(dispatched).toHaveLength(1);
+      expect((dispatched[0] as { followup: Record<string, unknown> }).followup).toMatchObject({
+        id: "followup-1",
+        status: "spunOff",
+        implementationThreadId: busyThreadId,
+      });
+
+      resetAccess();
+      dispatched.length = 0;
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
 it.effect("refuses to close follow-ups on a watch-only conversation", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -2195,6 +2372,150 @@ it.effect("still defaults to sharing the project checkout", () =>
 
       resetAccess();
       dispatched.length = 0;
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("puts the pending approval detail where the user can see it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      resetAccess();
+      const read = yield* callTool("read_thread", { threadId: blockedThreadId });
+      expect(read.isError).toBe(false);
+      const pending = (
+        read.structuredContent as {
+          pendingApprovals: ReadonlyArray<Record<string, unknown>>;
+        }
+      ).pendingApprovals;
+      // Only the outstanding one: an approval already answered is not a choice.
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({
+        requestId: "approval-open",
+        requestKind: "command",
+        detail: "pnpm test --filter @t3tools/web",
+      });
+
+      // The same detail reaches the "what am I forgetting?" surface, so the
+      // user can decide without opening each thread.
+      const listed = yield* callTool("list_pending", { sections: ["approvals"] });
+      expect(
+        (
+          listed.structuredContent as {
+            pendingApprovalRequests: ReadonlyArray<Record<string, unknown>>;
+          }
+        ).pendingApprovalRequests,
+      ).toMatchObject([{ requestId: "approval-open", detail: "pnpm test --filter @t3tools/web" }]);
+      resetAccess();
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("relays an approval decision to the thread that asked", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      resetAccess();
+      dispatched.length = 0;
+
+      const responded = yield* callTool("respond_to_approval", {
+        threadId: blockedThreadId,
+        decision: "accept",
+      });
+      expect(responded.isError).toBe(false);
+      // Echoed back so the orchestrator reports what it actually allowed
+      // rather than what it meant to.
+      expect(responded.structuredContent).toMatchObject({
+        requestId: "approval-open",
+        decision: "accept",
+        detail: "pnpm test --filter @t3tools/web",
+      });
+      expect(dispatched).toHaveLength(1);
+      expect(dispatched[0]).toMatchObject({
+        type: "thread.approval.respond",
+        threadId: blockedThreadId,
+        requestId: "approval-open",
+        decision: "accept",
+      });
+
+      dispatched.length = 0;
+      resetAccess();
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("refuses an approval it cannot pin to a request", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      resetAccess();
+      dispatched.length = 0;
+
+      // A requestId that is not outstanding must never fall back to "the other
+      // one" — that would run a command the user never saw.
+      const wrong = yield* callTool("respond_to_approval", {
+        threadId: blockedThreadId,
+        decision: "accept",
+        requestId: "approval-answered",
+      });
+      expect(wrong.isError).toBe(true);
+      expect(dispatched).toHaveLength(0);
+
+      // And a thread with nothing outstanding is an error rather than a no-op.
+      const none = yield* callTool("respond_to_approval", {
+        threadId: idleThreadId,
+        decision: "accept",
+      });
+      expect(none.isError).toBe(true);
+      expect(dispatched).toHaveLength(0);
+
+      resetAccess();
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("will not answer an approval on a conversation it may only watch", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      resetAccess();
+      dispatched.length = 0;
+      threadAccess = { [blockedThreadId]: "watch" };
+
+      const responded = yield* callTool("respond_to_approval", {
+        threadId: blockedThreadId,
+        decision: "accept",
+      });
+      expect(responded.isError).toBe(true);
+      expect(dispatched).toHaveLength(0);
+
+      resetAccess();
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("stops a running turn, and refuses when there is nothing running", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      resetAccess();
+      dispatched.length = 0;
+
+      const stopped = yield* callTool("stop_thread", { threadId: busyThreadId });
+      expect(stopped.isError).toBe(false);
+      expect(stopped.structuredContent).toMatchObject({
+        threadId: busyThreadId,
+        hadRunningTurn: true,
+      });
+      expect(dispatched).toHaveLength(1);
+      expect(dispatched[0]).toMatchObject({
+        type: "thread.turn.interrupt",
+        threadId: busyThreadId,
+      });
+
+      // Reporting "stopped it" for a thread that had already finished is the
+      // kind of thing the user acts on, so it is refused rather than faked.
+      dispatched.length = 0;
+      const idle = yield* callTool("stop_thread", { threadId: idleThreadId });
+      expect(idle.isError).toBe(true);
+      expect(dispatched).toHaveLength(0);
+
+      resetAccess();
     }),
   ).pipe(Effect.provide(TestLayer)),
 );

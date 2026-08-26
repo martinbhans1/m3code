@@ -13,7 +13,7 @@ import { buildThreadRouteParams, resolveThreadRouteTarget } from "../threadRoute
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import type { SidebarThreadSummary } from "../types";
 import { useUiStateStore } from "../uiStateStore";
-import { resolveProjectStatusIndicator, resolveThreadStatusPill } from "./Sidebar.logic";
+import { resolveThreadStatusPill } from "./Sidebar.logic";
 import { ThreadStatusLabel } from "./ThreadStatusIndicators";
 import {
   Menu,
@@ -78,9 +78,18 @@ export function SidebarOrchestratorRow() {
     [orchestratorProjectId, sidebarThreads],
   );
 
-  // The row stands in for a project the tree never shows, so it has to carry
-  // the same signals a thread row does: whether the orchestrator is working,
-  // waiting on you, or has finished something you have not read yet.
+  // The conversation the row stands for: the one you are reading if that is an
+  // orchestrator thread, otherwise the one a click would open. The row reports
+  // on this one alone — an aggregate across the whole history would light up
+  // for a conversation you closed days ago and cannot see from here.
+  const currentThread = useMemo(
+    () =>
+      orchestratorThreads.find((thread) => thread.id === routeThreadId) ??
+      orchestratorThreads[0] ??
+      null,
+    [orchestratorThreads, routeThreadId],
+  );
+
   const threadLastVisitedAts = useUiStateStore(
     useShallow((state) =>
       orchestratorThreads.map(
@@ -92,34 +101,33 @@ export function SidebarOrchestratorRow() {
     ),
   );
 
-  const { rowStatus, statusByThreadId, hasPendingFollowups } = useMemo(() => {
-    const statusByThreadId = new Map(
-      orchestratorThreads.map((thread, index) => {
-        const lastVisitedAt = threadLastVisitedAts[index];
-        return [
-          thread.id,
-          resolveThreadStatusPill({
-            thread: {
-              ...thread,
-              ...(lastVisitedAt !== null && lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
-            },
-          }),
-        ] as const;
-      }),
-    );
-    return {
-      statusByThreadId,
-      rowStatus: resolveProjectStatusIndicator([...statusByThreadId.values()]),
-      hasPendingFollowups: orchestratorThreads.some((thread) => thread.hasPendingFollowups),
-    };
-  }, [orchestratorThreads, threadLastVisitedAts]);
+  // Per conversation, so the dropdown can say which of them is the one that
+  // needs you — the row only ever shows the current one's.
+  const statusByThreadId = useMemo(
+    () =>
+      new Map(
+        orchestratorThreads.map((thread, index) => {
+          const lastVisitedAt = threadLastVisitedAts[index];
+          return [
+            thread.id,
+            resolveThreadStatusPill({
+              thread: {
+                ...thread,
+                ...(lastVisitedAt !== null && lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
+              },
+            }),
+          ] as const;
+        }),
+      ),
+    [orchestratorThreads, threadLastVisitedAts],
+  );
 
-  const isActive =
-    routeThreadId !== null &&
-    orchestratorProjectId !== null &&
-    sidebarThreads.some(
-      (thread) => thread.id === routeThreadId && thread.projectId === orchestratorProjectId,
-    );
+  const isActive = currentThread !== null && currentThread.id === routeThreadId;
+  // An unread reply clears itself: opening the conversation stamps
+  // `lastVisitedAt`, which is what turns the "Completed" dot off.
+  const rowStatus =
+    currentThread === null ? null : (statusByThreadId.get(currentThread.id) ?? null);
+  const hasPendingFollowups = currentThread?.hasPendingFollowups ?? false;
 
   const closeMobileSidebar = useCallback(() => {
     if (isMobile) {
@@ -176,7 +184,6 @@ export function SidebarOrchestratorRow() {
             onClick={() => open(false)}
           >
             <CompassIcon className="size-4 shrink-0" />
-            <span className="min-w-0 flex-1 truncate font-medium">Orchestrator</span>
             {hasPendingFollowups ? (
               <Tooltip>
                 <TooltipTrigger
@@ -193,6 +200,7 @@ export function SidebarOrchestratorRow() {
               </Tooltip>
             ) : null}
             {rowStatus ? <ThreadStatusLabel status={rowStatus} compact /> : null}
+            <span className="min-w-0 flex-1 truncate font-medium">Orchestrator</span>
           </SidebarMenuButton>
           {isMobile ? (
             <button
@@ -264,10 +272,15 @@ export function SidebarOrchestratorRow() {
                     <MenuGroupLabel>Recent</MenuGroupLabel>
                     {orchestratorThreads.map((thread) => {
                       const threadStatus = statusByThreadId.get(thread.id) ?? null;
+                      // The one you are already reading stays listed so the
+                      // history still shows where you are, but choosing it
+                      // would navigate you to the page you are on.
+                      const isCurrent = thread.id === routeThreadId;
                       return (
                         <MenuItem
                           key={thread.id}
                           className="justify-between gap-3"
+                          disabled={isCurrent}
                           onClick={() => {
                             openExistingThread(thread);
                           }}
@@ -278,11 +291,13 @@ export function SidebarOrchestratorRow() {
                             ) : null}
                             <span className="min-w-0 flex-1 truncate">{thread.title}</span>
                           </span>
-                          {thread.updatedAt ? (
-                            <span className="shrink-0 text-muted-foreground text-xs">
-                              {formatRelativeTimeLabel(thread.updatedAt)}
-                            </span>
-                          ) : null}
+                          <span className="shrink-0 text-muted-foreground text-xs">
+                            {isCurrent
+                              ? "Open"
+                              : thread.updatedAt
+                                ? formatRelativeTimeLabel(thread.updatedAt)
+                                : null}
+                          </span>
                         </MenuItem>
                       );
                     })}

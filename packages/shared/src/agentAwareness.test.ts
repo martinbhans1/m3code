@@ -9,9 +9,10 @@ import type {
 } from "@t3tools/contracts";
 import { ProviderInstanceId } from "@t3tools/contracts";
 
-import { projectThreadAwareness } from "./agentAwareness.ts";
+import { projectThreadAwareness, STALE_RUNNING_TURN_MS } from "./agentAwareness.ts";
 
 const NOW = "2026-05-22T12:00:00.000Z";
+const NOW_MS = Date.parse(NOW);
 
 const project = {
   title: "t3code",
@@ -50,6 +51,7 @@ describe("projectThreadAwareness", () => {
         environmentId: "env-1" as EnvironmentId,
         project,
         thread: thread(),
+        now: NOW_MS,
       }),
     ).toBeNull();
   });
@@ -58,6 +60,7 @@ describe("projectThreadAwareness", () => {
     const state = projectThreadAwareness({
       environmentId: "env-1" as EnvironmentId,
       project,
+      now: NOW_MS,
       thread: thread({
         hasPendingApprovals: true,
         session: {
@@ -80,6 +83,7 @@ describe("projectThreadAwareness", () => {
     const state = projectThreadAwareness({
       environmentId: "env-1" as EnvironmentId,
       project,
+      now: NOW_MS,
       thread: thread({
         session: {
           threadId: "thread-1" as ThreadId,
@@ -106,6 +110,7 @@ describe("projectThreadAwareness", () => {
     const state = projectThreadAwareness({
       environmentId: "env-1" as EnvironmentId,
       project,
+      now: NOW_MS,
       thread: thread({
         session: {
           threadId: "thread-1" as ThreadId,
@@ -124,5 +129,61 @@ describe("projectThreadAwareness", () => {
       headline: "Agent failed",
       detail: "Provider process exited.",
     });
+  });
+
+  it("stops believing a running turn that has gone silent", () => {
+    const runningThread = thread({
+      session: {
+        threadId: "thread-1" as ThreadId,
+        status: "running",
+        providerName: "Codex",
+        runtimeMode: "full-access",
+        activeTurnId: "turn-1" as TurnId,
+        lastError: null,
+        updatedAt: NOW,
+      },
+    });
+
+    // One tick short of the threshold it is still working...
+    expect(
+      projectThreadAwareness({
+        environmentId: "env-1" as EnvironmentId,
+        project,
+        thread: runningThread,
+        now: NOW_MS + STALE_RUNNING_TURN_MS - 1,
+      })?.phase,
+    ).toBe("running");
+
+    // ...and past it, the turn is reported as dead rather than as work.
+    expect(
+      projectThreadAwareness({
+        environmentId: "env-1" as EnvironmentId,
+        project,
+        thread: runningThread,
+        now: NOW_MS + STALE_RUNNING_TURN_MS,
+      }),
+    ).toMatchObject({ phase: "stale", headline: "Stopped reporting" });
+  });
+
+  it("keeps reporting what the user is blocked on rather than staleness", () => {
+    const state = projectThreadAwareness({
+      environmentId: "env-1" as EnvironmentId,
+      project,
+      now: NOW_MS + STALE_RUNNING_TURN_MS * 10,
+      thread: thread({
+        hasPendingUserInput: true,
+        session: {
+          threadId: "thread-1" as ThreadId,
+          status: "running",
+          providerName: "Codex",
+          runtimeMode: "full-access",
+          activeTurnId: "turn-1" as TurnId,
+          lastError: null,
+          updatedAt: NOW,
+        },
+      }),
+    });
+
+    expect(state?.phase).toBe("waiting_for_input");
   });
 });

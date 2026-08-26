@@ -7,6 +7,7 @@ import {
   type ThreadSortInput,
 } from "../lib/threadSort";
 import type { SidebarThreadSummary, Thread } from "../types";
+import { isStaleRunningTurn } from "@t3tools/shared/agentAwareness";
 import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
 
@@ -32,17 +33,19 @@ export interface ThreadStatusPill {
     | "Completed"
     | "Pending Approval"
     | "Awaiting Input"
-    | "Plan Ready";
+    | "Plan Ready"
+    | "Stalled";
   colorClass: string;
   dotClass: string;
   pulse: boolean;
 }
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
-  "Pending Approval": 5,
-  "Awaiting Input": 4,
-  Working: 3,
-  Connecting: 3,
+  "Pending Approval": 6,
+  "Awaiting Input": 5,
+  Working: 4,
+  Connecting: 4,
+  Stalled: 3,
   "Plan Ready": 2,
   Completed: 1,
 };
@@ -57,6 +60,7 @@ type ThreadStatusInput = Pick<
   | "session"
 > & {
   lastVisitedAt?: string | undefined;
+  updatedAt?: string | undefined;
 };
 
 export interface ThreadJumpHintVisibilityController {
@@ -337,6 +341,8 @@ export function resolveThreadRowClassName(input: {
 
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
+  /** Epoch milliseconds; defaults to now. Injected by tests. */
+  now?: number;
 }): ThreadStatusPill | null {
   const { thread } = input;
 
@@ -354,6 +360,25 @@ export function resolveThreadStatusPill(input: {
       label: "Awaiting Input",
       colorClass: "text-indigo-600 dark:text-indigo-300/90",
       dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
+      pulse: false,
+    };
+  }
+
+  // A turn only leaves "running" because an event says so, and that event is
+  // lost whenever the app is killed or a provider dies — so a thread can claim
+  // to be working for weeks with nothing behind it. Those crowd out the threads
+  // that really are working, which is the one thing this dot exists to show.
+  if (
+    isStaleRunningTurn({
+      isRunning: thread.session?.status === "running" || thread.session?.status === "connecting",
+      lastActivityAt: thread.session?.updatedAt ?? thread.updatedAt,
+      now: input.now ?? Date.now(),
+    })
+  ) {
+    return {
+      label: "Stalled",
+      colorClass: "text-orange-600 dark:text-orange-300/90",
+      dotClass: "bg-orange-500 dark:bg-orange-300/90",
       pulse: false,
     };
   }

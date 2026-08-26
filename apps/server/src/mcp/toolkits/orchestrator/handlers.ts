@@ -8,7 +8,7 @@ import {
   FOLLOWUP_ACTIVITY_KIND,
   type IsoDateTime,
   MessageId,
-  OrchestrationFollowup,
+  type OrchestrationFollowup,
   type OrchestrationProjectShell,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
@@ -26,7 +26,6 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import * as Schema from "effect/Schema";
 
 import { CheckpointDiffQuery } from "../../../checkpointing/Services/CheckpointDiffQuery.ts";
 import { ConversationSearch } from "../../../conversationSearch/ConversationSearch.ts";
@@ -37,6 +36,11 @@ import { ProjectSetupScriptRunner } from "../../../project/Services/ProjectSetup
 import { ServerRuntimeStartup } from "../../../serverRuntimeStartup.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import {
+  deriveFollowupRecords,
+  derivePendingFollowups,
+  describeThreadState,
+} from "../followup/records.ts";
 import { OrchestratorToolError, OrchestratorToolkit } from "./tools.ts";
 
 const DEFAULT_THREAD_LIMIT = 40;
@@ -190,23 +194,16 @@ const truncate = (
     : { text, truncated: false };
 
 /**
- * Follow-ups ride the activity log rather than a thread column: each create or
- * status change appends another `turn.followup.suggested` activity carrying the
- * full record, and the latest one per id wins. Mirrors `deriveFollowups` on the
- * web side; kept separate because that lives in the web bundle.
- */
-const decodeFollowup = Schema.decodeUnknownOption(OrchestrationFollowup);
-
-/**
  * Every activity kind the orchestrator derives anything from, and nothing else.
  *
- * `derivePendingFollowups` reads the first; `derivePendingUserInputs` reads the
- * other three. Passing this to a kind-filtered query rather than loading the
- * whole activity log is the difference between reading kilobytes and megabytes
- * per thread — across this projection these kinds are a fifth of a percent of
- * the rows and a tenth of a percent of the payload bytes.
+ * `derivePendingFollowups` reads the first, `derivePendingUserInputs` the next
+ * three, `derivePendingApprovals` the last three. Passing this to a
+ * kind-filtered query rather than loading the whole activity log is the
+ * difference between reading kilobytes and megabytes per thread — across this
+ * projection these kinds are a fifth of a percent of the rows and a tenth of a
+ * percent of the payload bytes.
  *
- * Adding a kind to either derivation means adding it here, or the rows it needs
+ * Adding a kind to any derivation means adding it here, or the rows it needs
  * will simply not be fetched — and the symptom is silence, not an error.
  */
 const ORCHESTRATOR_ACTIVITY_KINDS = [
@@ -214,60 +211,84 @@ const ORCHESTRATOR_ACTIVITY_KINDS = [
   "user-input.requested",
   "user-input.resolved",
   "provider.user-input.respond.failed",
+  "approval.requested",
+  "approval.resolved",
+  "provider.approval.respond.failed",
 ] as const;
 
 /**
- * The current state of every follow-up in a thread, keyed by id.
+ * The follow-ups of a thread that have been closed out, most recently resolved
+ * first: what was spun off elsewhere, done, or dismissed.
  *
- * Whole records rather than a display projection, because closing one out means
- * writing the record back with only `status` and `updatedAt` changed — dropping
- * `turnId` or `implementationThreadId` on the way through would detach the
- * follow-up from its turn or forget the thread that was spun off for it.
+ * Reported alongside the pending ones so the orchestrator can answer "was this
+ * ever picked up?" without being told only about what is still open — a
+ * follow-up handed to another conversation stops being pending the moment it is
+ * spun off, and would otherwise vanish from every surface here.
  */
-function deriveFollowupRecords(
+function deriveResolvedFollowups(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
-): Map<string, OrchestrationFollowup> {
-  const byId = new Map<string, OrchestrationFollowup>();
-
-  // Latest per id wins, so fold in timestamp order rather than trusting the
-  // order the snapshot happened to return them in.
-  const followupActivities = activities
-    .filter((activity) => activity.kind === FOLLOWUP_ACTIVITY_KIND)
-    .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
-
-  for (const activity of followupActivities) {
-    const payload =
-      activity.payload && typeof activity.payload === "object"
-        ? (activity.payload as Record<string, unknown>)
-        : null;
-    if (!payload) continue;
-    const decoded = decodeFollowup(payload.followup);
-    if (Option.isSome(decoded)) {
-      byId.set(decoded.value.id, decoded.value);
-    }
-  }
-
-  return byId;
-}
-
-function derivePendingFollowups(activities: ReadonlyArray<OrchestrationThreadActivity>): Array<{
-  followupId: string;
-  title: string;
-  detail: string | null;
-  rationale: string | null;
-  createdAt: string;
-}> {
+): Array<OrchestrationFollowup> {
   return [...deriveFollowupRecords(activities).values()]
-    .filter((followup) => followup.status === "pending")
-    .map((followup) => ({
-      followupId: followup.id,
-      title: followup.title,
-      detail: followup.detail,
-      rationale: followup.rationale,
-      createdAt: followup.createdAt,
-    }))
-    .toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
+    .filter((followup) => followup.status !== "pending")
+    .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
+
+/**
+ * How many closed follow-ups `read_thread` reports. Enough to see what has
+ * already been handled on a busy thread without turning a read into a history
+ * dump — the pending ones are the part that still needs somebody.
+ */
+const MAX_RESOLVED_FOLLOWUPS = 10;
+
+/** Shape closed follow-ups for a tool result, joining each spin-off to its thread. */
+const summarizeResolvedFollowups = Effect.fn("orchestrator.summarizeResolvedFollowups")(function* (
+  followups: ReadonlyArray<OrchestrationFollowup>,
+) {
+  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  // Deduplicated: several follow-ups can have gone to the same conversation.
+  const threadIds = [
+    ...new Set(
+      followups
+        .map((followup) => followup.implementationThreadId)
+        .filter((threadId): threadId is ThreadId => threadId !== null),
+    ),
+  ];
+  const shells = new Map(
+    yield* Effect.forEach(threadIds, (threadId) =>
+      projectionSnapshotQuery.getThreadShellById(threadId).pipe(
+        // A conversation since deleted or archived reads as absent. That is a
+        // null link, not a reason to fail the read.
+        Effect.orElseSucceed(() => Option.none<OrchestrationThreadShell>()),
+        Effect.map(
+          (shell) =>
+            [
+              threadId,
+              Option.match(shell, {
+                onNone: () => null,
+                onSome: (target) => ({
+                  threadId: target.id,
+                  title: target.title,
+                  state: describeThreadState(target),
+                  updatedAt: target.updatedAt,
+                }),
+              }),
+            ] as const,
+        ),
+      ),
+    ),
+  );
+
+  return followups.map((followup) => ({
+    followupId: followup.id,
+    title: followup.title,
+    status: followup.status as "spunOff" | "done" | "dismissed",
+    updatedAt: followup.updatedAt,
+    implementationThread:
+      followup.implementationThreadId === null
+        ? null
+        : (shells.get(followup.implementationThreadId) ?? null),
+  }));
+});
 
 /**
  * The questions a thread is currently parked on, oldest first.
@@ -346,6 +367,79 @@ const STALE_USER_INPUT_FAILURE_MARKERS = [
   "unknown pending codex user input request",
 ];
 
+/**
+ * The approval requests a thread is still stopped on, oldest first.
+ *
+ * The projection tracks only that an approval is outstanding, so what it is
+ * *for* has to be recovered from the activity the provider wrote when it asked.
+ * Mirrors the client's own derivation, including the stale-failure case: a
+ * request the provider has since forgotten can never be answered, and leaving
+ * it listed would have the orchestrator offer the user a dead choice.
+ */
+function derivePendingApprovals(activities: ReadonlyArray<OrchestrationThreadActivity>): Array<{
+  requestId: string;
+  requestKind: "command" | "file-read" | "file-change" | null;
+  detail: string | null;
+  createdAt: string;
+}> {
+  const openByRequestId = new Map<
+    string,
+    {
+      requestId: string;
+      requestKind: "command" | "file-read" | "file-change" | null;
+      detail: string | null;
+      createdAt: string;
+    }
+  >();
+
+  // Sequence first, timestamp as a tie-break — same ordering as the pending
+  // question derivation, and for the same reason.
+  const ordered = activities.toSorted(
+    (left, right) =>
+      (left.sequence ?? Number.MAX_SAFE_INTEGER) - (right.sequence ?? Number.MAX_SAFE_INTEGER) ||
+      left.createdAt.localeCompare(right.createdAt),
+  );
+
+  for (const activity of ordered) {
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    const requestId =
+      typeof payload?.requestId === "string" && payload.requestId.length > 0
+        ? payload.requestId
+        : null;
+    if (!requestId) continue;
+
+    if (activity.kind === "approval.requested") {
+      const requestKind =
+        payload?.requestKind === "command" ||
+        payload?.requestKind === "file-read" ||
+        payload?.requestKind === "file-change"
+          ? payload.requestKind
+          : null;
+      openByRequestId.set(requestId, {
+        requestId,
+        requestKind,
+        detail: typeof payload?.detail === "string" ? payload.detail : null,
+        createdAt: activity.createdAt,
+      });
+      continue;
+    }
+
+    if (
+      activity.kind === "approval.resolved" ||
+      activity.kind === "provider.approval.respond.failed"
+    ) {
+      openByRequestId.delete(requestId);
+    }
+  }
+
+  return [...openByRequestId.values()].toSorted((left, right) =>
+    left.createdAt.localeCompare(right.createdAt),
+  );
+}
+
 function derivePendingUserInputs(activities: ReadonlyArray<OrchestrationThreadActivity>): Array<{
   requestId: ApprovalRequestId;
   createdAt: string;
@@ -408,6 +502,19 @@ function derivePendingUserInputs(activities: ReadonlyArray<OrchestrationThreadAc
 }
 
 /** Shape `derivePendingUserInputs` output for a tool result. */
+/** Shape `derivePendingApprovals` output for a tool result. */
+const toPendingApprovals = (
+  pending: ReturnType<typeof derivePendingApprovals>,
+  thread: { threadId: ThreadId; threadTitle: string; projectTitle: string },
+) =>
+  pending.map((request) => ({
+    ...thread,
+    requestId: request.requestId,
+    requestKind: request.requestKind,
+    detail: request.detail,
+    createdAt: request.createdAt as IsoDateTime,
+  }));
+
 const toPendingQuestionSets = (
   pending: ReturnType<typeof derivePendingUserInputs>,
   thread: { threadId: ThreadId; threadTitle: string; projectTitle: string },
@@ -433,12 +540,17 @@ function summarizeThread(input: {
   readonly thread: OrchestrationThreadShell;
   readonly projectTitle: string;
   readonly access: SharedThreadAccess;
+  /** Epoch milliseconds, for deciding whether a running turn has gone silent. */
+  readonly now: number;
+  /** True for one of the orchestrator's own earlier conversations. */
+  readonly isOrchestratorConversation: boolean;
 }) {
   const { thread, projectTitle } = input;
   const awareness = projectThreadAwareness({
     environmentId: input.environmentId,
     project: { title: projectTitle },
     thread,
+    now: input.now,
   });
 
   // Awareness only names the states its push notifications care about and
@@ -467,16 +579,20 @@ function summarizeThread(input: {
     runtimeMode: thread.runtimeMode,
     updatedAt: thread.updatedAt,
     latestUserMessageAt: thread.latestUserMessageAt,
+    // A stale turn is not an active one: reporting it as active would have the
+    // orchestrator refuse to send into a thread whose turn died weeks ago.
     hasActiveTurn:
-      thread.latestTurn?.state === "running" ||
-      thread.session?.status === "running" ||
-      thread.session?.status === "starting",
+      awareness?.phase !== "stale" &&
+      (thread.latestTurn?.state === "running" ||
+        thread.session?.status === "running" ||
+        thread.session?.status === "starting"),
     awaitingApproval: thread.hasPendingApprovals,
     awaitingUserInput: thread.hasPendingUserInput,
     hasPendingFollowups: thread.hasPendingFollowups,
     archived: thread.archivedAt !== null,
     pinned: thread.pinnedAt !== null,
     orchestratorAccess: input.access,
+    isOrchestratorConversation: input.isOrchestratorConversation,
   };
 }
 
@@ -504,10 +620,13 @@ const loadThreadSummaries = Effect.fn("OrchestratorToolkit.loadThreadSummaries")
     readonly environmentId: McpInvocationContext.McpInvocationScope["environmentId"];
     readonly includeArchived: boolean;
     readonly accessFor: (threadId: string) => OrchestratorThreadAccess;
-    /** Threads in this project are the orchestrator's own; never list them. */
+    /** Threads in this project are the orchestrator's own: readable, never writable. */
     readonly orchestratorProjectId: ProjectId;
+    /** The orchestrator conversation asking, which is left out of its own results. */
+    readonly callerThreadId: ThreadId;
   }) {
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+    const now = DateTime.toEpochMillis(yield* DateTime.now);
     const shell = yield* projectionSnapshotQuery
       .getShellSnapshot()
       .pipe(Effect.mapError(snapshotError("read the thread snapshot")));
@@ -524,14 +643,26 @@ const loadThreadSummaries = Effect.fn("OrchestratorToolkit.loadThreadSummaries")
 
     // Threads resolving to "none" are dropped here, before anything else looks
     // at them — they are absent from every listing rather than present and
-    // unsendable. Sibling orchestrator threads are dropped too: they all sit in
-    // the designated project, so a permissive default would otherwise have the
-    // orchestrator listing (and reasoning about) its own past conversations.
+    // unsendable.
+    //
+    // The orchestrator's own earlier conversations are the exception, and they
+    // are listed as "watch" whatever the sharing settings say. They are the
+    // user's own meta conversations, sitting behind the same row as this one,
+    // and without them every new orchestrator conversation starts amnesiac —
+    // re-deciding what the last one decided and offering work it already handed
+    // out. "watch" rather than "control" is the whole point: readable, so a
+    // session can pick up where the last left off; never writable, so two
+    // orchestrators cannot drive each other. The caller's own thread is left
+    // out — it can already see itself, and listing it invites it to reason
+    // about its own state as though it were somebody else's.
     return (
       [...shell.threads, ...(archived?.threads ?? [])]
         .flatMap((thread) => {
-          if (thread.projectId === options.orchestratorProjectId) return [];
-          const access = options.accessFor(thread.id);
+          const isOrchestratorConversation = thread.projectId === options.orchestratorProjectId;
+          if (isOrchestratorConversation && thread.id === options.callerThreadId) return [];
+          const access = isOrchestratorConversation
+            ? ("watch" as const)
+            : options.accessFor(thread.id);
           return access === "none"
             ? []
             : [
@@ -540,6 +671,8 @@ const loadThreadSummaries = Effect.fn("OrchestratorToolkit.loadThreadSummaries")
                   thread,
                   projectTitle: projectTitles.get(thread.projectId) ?? "Unknown project",
                   access,
+                  now,
+                  isOrchestratorConversation,
                 }),
               ];
         })
@@ -671,6 +804,7 @@ const handlers = {
         includeArchived: input.includeArchived === true,
         accessFor,
         orchestratorProjectId,
+        callerThreadId: invocation.threadId,
       });
       const matched = threads
         .filter((thread) => matchesProject(thread, input.projectTitle))
@@ -690,7 +824,7 @@ const handlers = {
 
   search_threads: (input) =>
     Effect.gen(function* () {
-      const { orchestratorProjectId, accessFor } = yield* requireOrchestrator();
+      const { invocation, orchestratorProjectId, accessFor } = yield* requireOrchestrator();
       const conversationSearch = yield* ConversationSearch;
       const query = input.query.trim();
       if (query.length === 0) {
@@ -716,12 +850,17 @@ const handlers = {
         );
 
       return {
-        // Search runs over every conversation, so closed threads — and the
-        // orchestrator's own — are dropped from the results rather than being
-        // excluded from the query.
+        // Search runs over every conversation, so closed threads are dropped
+        // from the results rather than being excluded from the query. Its own
+        // earlier conversations stay in — searching them is how a session finds
+        // what a previous one already worked out — but never this one, which
+        // would match its own words back to itself.
         results: result.results
-          .filter((match) => match.projectId !== orchestratorProjectId)
-          .filter((match) => accessFor(match.threadId) !== "none")
+          .filter((match) => match.threadId !== invocation.threadId)
+          .filter(
+            (match) =>
+              match.projectId === orchestratorProjectId || accessFor(match.threadId) !== "none",
+          )
           .map((match) => ({
             threadId: match.threadId,
             title: match.title,
@@ -740,27 +879,31 @@ const handlers = {
   read_thread: (input) =>
     Effect.gen(function* () {
       const { invocation, orchestratorProjectId, accessFor } = yield* requireOrchestrator();
-      const access = accessFor(input.threadId);
-      if (access === "none") {
-        return yield* notShared(input.threadId);
-      }
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
 
       // The shell carries the derived pending/session flags used for the
-      // summary below, and it is read first so the "this is one of your own
-      // conversations" refusal does not depend on the heavier detail query
-      // succeeding.
+      // summary below, and it is read before access is resolved: which project
+      // the thread is in decides how that resolves.
       const shell = yield* projectionSnapshotQuery
         .getThreadShellById(input.threadId)
         .pipe(Effect.mapError(snapshotError("read the conversation's state")));
 
-      // Sibling orchestrator threads are excluded from every listing; a direct
-      // read by id would otherwise be the one way back into them once the
-      // default grants blanket access.
-      if (Option.isSome(shell) && shell.value.projectId === orchestratorProjectId) {
+      // Its own earlier conversations are readable whatever the sharing
+      // settings say — that is how a session picks up what the last one
+      // decided, and they are the user's own meta conversations either way.
+      // Itself is not: a thread summarising its own half-written turn back to
+      // itself is a loop, not a memory.
+      const isOrchestratorConversation =
+        Option.isSome(shell) && shell.value.projectId === orchestratorProjectId;
+      if (isOrchestratorConversation && input.threadId === invocation.threadId) {
         return yield* new OrchestratorToolError({
-          message: `"${shell.value.title}" is another orchestrator conversation. Orchestrators do not read each other; ask the user what they need from it instead.`,
+          message:
+            "That is this conversation. Scroll back through it rather than reading it as though it were somebody else's.",
         });
+      }
+      const access = isOrchestratorConversation ? ("watch" as const) : accessFor(input.threadId);
+      if (access === "none") {
+        return yield* notShared(input.threadId);
       }
 
       if (Option.isNone(shell)) {
@@ -833,15 +976,28 @@ const handlers = {
         })
         .toReversed();
 
+      const recentlyResolvedFollowups = yield* summarizeResolvedFollowups(
+        deriveResolvedFollowups(activities).slice(0, MAX_RESOLVED_FOLLOWUPS),
+      ).pipe(
+        Effect.mapError(snapshotError("read the conversations a follow-up was spun off into")),
+      );
+
       return {
         thread: summarizeThread({
           access,
           environmentId: invocation.environmentId,
           thread,
           projectTitle,
+          now: DateTime.toEpochMillis(yield* DateTime.now),
+          isOrchestratorConversation,
         }),
         messages,
         pendingQuestions: toPendingQuestionSets(derivePendingUserInputs(activities), {
+          threadId: thread.id,
+          threadTitle: thread.title,
+          projectTitle,
+        }),
+        pendingApprovals: toPendingApprovals(derivePendingApprovals(activities), {
           threadId: thread.id,
           threadTitle: thread.title,
           projectTitle,
@@ -852,6 +1008,7 @@ const handlers = {
           threadTitle: thread.title,
           projectTitle,
         })),
+        recentlyResolvedFollowups,
       };
     }),
 
@@ -878,6 +1035,7 @@ const handlers = {
         includeArchived: false,
         accessFor,
         orchestratorProjectId,
+        callerThreadId: invocation.threadId,
       })).filter((thread) => matchesProject(thread, input.projectTitle));
 
       // A thread is in range on when it last moved. The three thread-shaped
@@ -900,6 +1058,9 @@ const handlers = {
       // several queries deep and returning the questions for threads the caller
       // was not shown would put the cap back where it started.
       const questionThreads = sections.has("questions") ? page(awaitingUserInput) : [];
+      // Same reasoning for approvals: hydrate the page being returned, not
+      // every blocked thread in the library.
+      const approvalThreads = sections.has("approvals") ? page(awaitingApproval) : [];
 
       // Follow-ups carry their own timestamp, so they are filtered on when the
       // follow-up was recorded rather than on when its thread last moved —
@@ -919,10 +1080,14 @@ const handlers = {
 
       const hydrateThreads = [
         ...new Map(
-          [...questionThreads, ...followupThreads].map((thread) => [thread.threadId, thread]),
+          [...questionThreads, ...approvalThreads, ...followupThreads].map((thread) => [
+            thread.threadId,
+            thread,
+          ]),
         ).values(),
       ];
       const questionThreadIds = new Set(questionThreads.map((thread) => thread.threadId));
+      const approvalThreadIds = new Set(approvalThreads.map((thread) => thread.threadId));
       const followupThreadIds = new Set(followupThreads.map((thread) => thread.threadId));
 
       const hydrated = yield* Effect.forEach(
@@ -952,6 +1117,13 @@ const handlers = {
                       projectTitle: thread.projectTitle,
                     })
                   : [],
+                approvals: approvalThreadIds.has(thread.threadId)
+                  ? toPendingApprovals(derivePendingApprovals(activities), {
+                      threadId: thread.threadId,
+                      threadTitle: thread.title,
+                      projectTitle: thread.projectTitle,
+                    })
+                  : [],
               })),
               // A thread that will not load contributes nothing rather than
               // failing the whole call, but it is logged: its follow-ups are
@@ -963,7 +1135,7 @@ const handlers = {
                   cause,
                 }),
               ),
-              Effect.orElseSucceed(() => ({ followups: [], questions: [] })),
+              Effect.orElseSucceed(() => ({ followups: [], questions: [], approvals: [] })),
             ),
         { concurrency: 4 },
       );
@@ -994,6 +1166,7 @@ const handlers = {
         awaitingApproval: sections.has("approvals") ? page(awaitingApproval) : [],
         awaitingUserInput: questionThreads,
         pendingQuestions: hydrated.flatMap((entry) => entry.questions),
+        pendingApprovalRequests: hydrated.flatMap((entry) => entry.approvals),
         failed: sections.has("failed") ? page(failed) : [],
         pendingFollowups: page(pendingFollowups),
         counts,
@@ -1068,6 +1241,9 @@ const handlers = {
         environmentId: invocation.environmentId,
         thread: target,
         projectTitle,
+        now: DateTime.toEpochMillis(yield* DateTime.now),
+        // Sibling orchestrator threads were refused above.
+        isOrchestratorConversation: false,
       });
 
       // A parked thread is waiting on the user, not on more instructions.
@@ -1793,6 +1969,210 @@ const handlers = {
       };
     }),
 
+  respond_to_approval: (input) =>
+    Effect.gen(function* () {
+      const { orchestratorProjectId, accessFor, accessOverride } = yield* requireOrchestrator();
+      const access = accessFor(input.threadId);
+      if (access === "none") {
+        return yield* notShared(input.threadId);
+      }
+      // Approving resumes the thread and runs whatever it asked to run, which
+      // is the most consequential thing on this surface — so it takes the same
+      // permission as sending, and refuses on "watch" rather than degrading.
+      if (access !== "control") {
+        return yield* new OrchestratorToolError({
+          message: `You may see what conversation ${input.threadId} is waiting to do, but not allow it. Tell the user what it is asking for so they can answer it there. ${raiseToControlHint(accessOverride)}`,
+        });
+      }
+
+      const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+      const orchestrationEngine = yield* OrchestrationEngineService;
+      const startup = yield* ServerRuntimeStartup;
+      const crypto = yield* Crypto.Crypto;
+
+      const shell = yield* projectionSnapshotQuery
+        .getThreadShellById(input.threadId)
+        .pipe(Effect.mapError(snapshotError("read the conversation")));
+      if (Option.isNone(shell)) {
+        return yield* new OrchestratorToolError({
+          message: `No active conversation with id ${input.threadId}. It may have been archived or deleted.`,
+        });
+      }
+      const thread = shell.value;
+      if (thread.projectId === orchestratorProjectId) {
+        return yield* new OrchestratorToolError({
+          message: `"${thread.title}" is another orchestrator conversation. Orchestrators do not run commands, so there is nothing here to approve.`,
+        });
+      }
+
+      const project = yield* projectionSnapshotQuery
+        .getProjectShellById(thread.projectId)
+        .pipe(Effect.mapError(snapshotError("read the conversation's project")));
+      const projectTitle = Option.match(project, {
+        onNone: () => "Unknown project",
+        onSome: (value: OrchestrationProjectShell) => value.title,
+      });
+
+      const activities = yield* projectionSnapshotQuery
+        .listThreadActivitiesByKinds(input.threadId, ORCHESTRATOR_ACTIVITY_KINDS)
+        .pipe(Effect.mapError(snapshotError("read the conversation's approval requests")));
+      const pending = derivePendingApprovals(activities);
+      if (pending.length === 0) {
+        return yield* new OrchestratorToolError({
+          message: `"${thread.title}" is not waiting on an approval — either it was already answered or the request expired. Re-read the thread before telling the user anything about it.`,
+        });
+      }
+
+      // Answering the wrong request would run a command the user never saw, so
+      // an ambiguous call is refused rather than guessed. Same contract as
+      // answer_thread_question, and for a rather larger reason.
+      const request =
+        input.requestId === undefined
+          ? pending.length === 1
+            ? pending[0]
+            : undefined
+          : pending.find((candidate) => candidate.requestId === input.requestId);
+      if (request === undefined) {
+        const open = pending
+          .map(
+            (candidate) =>
+              `${candidate.requestId} (${candidate.requestKind ?? "approval"}: ${
+                candidate.detail ?? "no detail"
+              })`,
+          )
+          .join(", ");
+        return yield* new OrchestratorToolError({
+          message:
+            input.requestId === undefined
+              ? `"${thread.title}" has ${pending.length} outstanding approvals; pass the requestId of the one you mean. Open requests: ${open}.`
+              : `No outstanding approval with requestId ${input.requestId} in "${thread.title}" — it may have just been answered in the thread. Open requests: ${open}.`,
+        });
+      }
+
+      const createdAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
+      const commandUuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+
+      yield* startup
+        .enqueueCommand(
+          orchestrationEngine.dispatch({
+            type: "thread.approval.respond",
+            // Prefixed so the event log shows the decision came from an
+            // orchestrator rather than from the composer.
+            commandId: CommandId.make(`orchestrator:${commandUuid}`),
+            threadId: input.threadId,
+            requestId: ApprovalRequestId.make(request.requestId),
+            decision: input.decision,
+            createdAt,
+          }),
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorToolError({
+                message: `Failed to answer the approval in "${thread.title}": ${
+                  cause instanceof Error ? cause.message : String(cause)
+                }`,
+              }),
+          ),
+        );
+
+      return {
+        threadId: input.threadId,
+        threadTitle: thread.title,
+        projectTitle,
+        requestId: request.requestId,
+        decision: input.decision,
+        detail: request.detail,
+      };
+    }),
+
+  stop_thread: (input) =>
+    Effect.gen(function* () {
+      const { orchestratorProjectId, accessFor, accessOverride } = yield* requireOrchestrator();
+      const access = accessFor(input.threadId);
+      if (access === "none") {
+        return yield* notShared(input.threadId);
+      }
+      if (access !== "control") {
+        return yield* new OrchestratorToolError({
+          message: `You may watch conversation ${input.threadId} but not stop it. Tell the user, so they can stop it there. ${raiseToControlHint(accessOverride)}`,
+        });
+      }
+
+      const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+      const orchestrationEngine = yield* OrchestrationEngineService;
+      const startup = yield* ServerRuntimeStartup;
+      const crypto = yield* Crypto.Crypto;
+
+      const shell = yield* projectionSnapshotQuery
+        .getThreadShellById(input.threadId)
+        .pipe(Effect.mapError(snapshotError("read the conversation")));
+      if (Option.isNone(shell)) {
+        return yield* new OrchestratorToolError({
+          message: `No active conversation with id ${input.threadId}. It may have been archived or deleted.`,
+        });
+      }
+      const thread = shell.value;
+      // Stopping a sibling would let two orchestrators fight over each other's
+      // turns; the same reason send_to_thread refuses them.
+      if (thread.projectId === orchestratorProjectId) {
+        return yield* new OrchestratorToolError({
+          message: `"${thread.title}" is another orchestrator conversation. Orchestrators do not stop each other.`,
+        });
+      }
+
+      const project = yield* projectionSnapshotQuery
+        .getProjectShellById(thread.projectId)
+        .pipe(Effect.mapError(snapshotError("read the conversation's project")));
+      const projectTitle = Option.match(project, {
+        onNone: () => "Unknown project",
+        onSome: (value: OrchestrationProjectShell) => value.title,
+      });
+
+      // Read before dispatching: once the interrupt lands the projection says
+      // nothing was running, and reporting "stopped it" for a thread that had
+      // already finished is exactly the kind of thing the user acts on.
+      const hadRunningTurn =
+        thread.latestTurn?.state === "running" ||
+        thread.session?.status === "running" ||
+        thread.session?.status === "starting";
+      if (!hadRunningTurn) {
+        return yield* new OrchestratorToolError({
+          message: `"${thread.title}" has no turn running, so there is nothing to stop. Re-read it before telling the user anything about its state.`,
+        });
+      }
+
+      const createdAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
+      const commandUuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+
+      yield* startup
+        .enqueueCommand(
+          orchestrationEngine.dispatch({
+            type: "thread.turn.interrupt",
+            commandId: CommandId.make(`orchestrator:${commandUuid}`),
+            threadId: input.threadId,
+            createdAt,
+          }),
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorToolError({
+                message: `Failed to stop "${thread.title}": ${
+                  cause instanceof Error ? cause.message : String(cause)
+                }`,
+              }),
+          ),
+        );
+
+      return {
+        threadId: input.threadId,
+        threadTitle: thread.title,
+        projectTitle,
+        hadRunningTurn,
+      };
+    }),
+
   resolve_followup: (input) =>
     Effect.gen(function* () {
       const { orchestratorProjectId, accessFor, accessOverride } = yield* requireOrchestrator();
@@ -1842,14 +2222,31 @@ const handlers = {
         });
       }
 
+      // A spin-off with nowhere to point is worse than leaving it pending: the
+      // follow-up disappears from every surface and no record survives of which
+      // conversation was supposed to be doing it.
+      if (input.status === "spunOff" && input.implementationThreadId === undefined) {
+        return yield* new OrchestratorToolError({
+          message: `Closing "${existing.title}" as spun off needs the conversation that picked it up. Pass its id as implementationThreadId — the one create_thread returned — or close it as done or dismissed instead.`,
+        });
+      }
+      const implementationThreadId =
+        input.status === "spunOff"
+          ? (input.implementationThreadId ?? null)
+          : existing.implementationThreadId;
+
       // Already in the requested state: report success without appending
       // another activity, so a retry does not grow the log.
-      if (existing.status === input.status) {
+      if (
+        existing.status === input.status &&
+        existing.implementationThreadId === implementationThreadId
+      ) {
         return {
           threadId: input.threadId,
           followupId: existing.id,
           title: existing.title,
           status: input.status,
+          implementationThreadId,
         };
       }
 
@@ -1862,9 +2259,15 @@ const handlers = {
             type: "thread.followup.upsert",
             commandId: CommandId.make(`orchestrator:${commandUuid}`),
             threadId: input.threadId,
-            // Everything but the status is carried through untouched: the
-            // record is re-appended whole, and the latest one per id wins.
-            followup: { ...existing, status: input.status, updatedAt: now },
+            // Everything but the status and the spin-off link is carried
+            // through untouched: the record is re-appended whole, and the
+            // latest one per id wins.
+            followup: {
+              ...existing,
+              status: input.status,
+              implementationThreadId,
+              updatedAt: now,
+            },
             createdAt: now,
           }),
         )
@@ -1884,6 +2287,7 @@ const handlers = {
         followupId: existing.id,
         title: existing.title,
         status: input.status,
+        implementationThreadId,
       };
     }),
 } satisfies Parameters<typeof OrchestratorToolkit.toLayer>[0];

@@ -102,6 +102,12 @@ export const OrchestratorThreadSummary = Schema.Struct({
    * `send_to_thread` will refuse it.
    */
   orchestratorAccess: Schema.Literals(["watch", "control"]),
+  /**
+   * True for one of your own earlier conversations. Those are readable so you
+   * can pick up what a previous session already decided, but never writable:
+   * orchestrators relay work to the threads that do it, never to each other.
+   */
+  isOrchestratorConversation: Schema.Boolean,
 });
 
 export const OrchestratorFollowupSummary = Schema.Struct({
@@ -113,6 +119,46 @@ export const OrchestratorFollowupSummary = Schema.Struct({
   detail: Schema.NullOr(Schema.String),
   rationale: Schema.NullOr(Schema.String),
   createdAt: IsoDateTime,
+});
+
+/**
+ * A follow-up that is no longer on the user's deck, and what became of it.
+ *
+ * The counterpart to `OrchestratorFollowupSummary`, which only ever describes
+ * pending ones. A follow-up handed to another conversation stops being pending
+ * the moment it is spun off, so without this the orchestrator has no way to
+ * answer "did anything ever come of that?" — it would simply stop seeing it.
+ */
+export const OrchestratorResolvedFollowup = Schema.Struct({
+  followupId: Schema.String,
+  title: Schema.String,
+  /**
+   * "spunOff" was handed to another conversation, "done" was acted on in this
+   * one, "dismissed" was waved away. None of the three is proof the work is
+   * right — somebody said so, that is all.
+   */
+  status: Schema.Literals(["spunOff", "done", "dismissed"]),
+  /** When it stopped being pending. */
+  updatedAt: IsoDateTime,
+  /**
+   * The conversation that picked the work up, on a `spunOff` follow-up. Null on
+   * the others, and on one whose conversation has since been deleted.
+   */
+  implementationThread: Schema.NullOr(
+    Schema.Struct({
+      threadId: ThreadId,
+      title: Schema.String,
+      /**
+       * Coarse state of that conversation — "running", "waiting_for_approval",
+       * "waiting_for_input", "failed", "interrupted", "completed" (its last turn
+       * finished) or "idle" (it never ran). Says whether the work started, not
+       * whether it succeeded; confirm with read_thread_changes before reporting
+       * anything as finished.
+       */
+      state: Schema.String,
+      updatedAt: IsoDateTime,
+    }),
+  ),
 });
 
 export const OrchestratorPendingQuestionOption = Schema.Struct({
@@ -145,6 +191,26 @@ export const OrchestratorPendingQuestionSet = Schema.Struct({
   requestId: ApprovalRequestId,
   createdAt: IsoDateTime,
   questions: Schema.Array(OrchestratorPendingQuestion),
+});
+
+/**
+ * An approval a thread has stopped to ask for, and enough of it to decide.
+ *
+ * The projection stores only the request id, so `detail` is recovered from the
+ * activity the provider wrote when it asked. Without it the orchestrator could
+ * report that something wants approval but never what for, which is the only
+ * part the user needs to answer.
+ */
+export const OrchestratorPendingApproval = Schema.Struct({
+  threadId: ThreadId,
+  threadTitle: Schema.String,
+  projectTitle: Schema.String,
+  requestId: Schema.String,
+  /** What kind of thing is being approved, when the provider said. */
+  requestKind: Schema.NullOr(Schema.Literals(["command", "file-read", "file-change"])),
+  /** The command line, file path, or diff summary. Truncated by the provider. */
+  detail: Schema.NullOr(Schema.String),
+  createdAt: IsoDateTime,
 });
 
 export const OrchestratorMessage = Schema.Struct({
@@ -282,14 +348,21 @@ export const ReadThreadInput = Schema.Struct({
 
 export const ReadThreadTool = Tool.make("read_thread", {
   description:
-    "Read the tail of one conversation: its current state, its most recent messages, any question it is stopped on, and any unanswered follow-ups. Use it to tell the user where a thread actually stands, and to check what the thread already knows before you send it more work — so the message you relay does not repeat what it just did. Message text is truncated; this is for orientation, not for reviewing code.\n\nWhen `pendingQuestions` is non-empty the thread is parked waiting for an answer and will do nothing until it gets one. Read the options out to the user, and answer with answer_thread_question once they have chosen.",
+    "Read the tail of one conversation: its current state, its most recent messages, any question it is stopped on, and its follow-ups both open and closed. Use it to tell the user where a thread actually stands, and to check what the thread already knows before you send it more work — so the message you relay does not repeat what it just did. Message text is truncated; this is for orientation, not for reviewing code.\n\nWhen `pendingQuestions` is non-empty the thread is parked waiting for an answer and will do nothing until it gets one. Read the options out to the user, and answer with answer_thread_question once they have chosen. `pendingApprovals` parks it just as hard, and carries the command or file it is asking to touch — put that in front of the user verbatim and relay their decision with respond_to_approval.\n\n`recentlyResolvedFollowups` is the memory the follow-up deck does not have: what was already spun off into another conversation, done, or dismissed. Check it before offering to start work on something, or you will hand out a job somebody is already doing — and it is where you find the conversation that picked a follow-up up.",
   parameters: ReadThreadInput,
   success: Schema.Struct({
     thread: OrchestratorThreadSummary,
     messages: Schema.Array(OrchestratorMessage),
     /** Unanswered questions blocking the thread, oldest first. */
     pendingQuestions: Schema.Array(OrchestratorPendingQuestionSet),
+    /** Unanswered approval requests blocking the thread, oldest first. */
+    pendingApprovals: Schema.Array(OrchestratorPendingApproval),
     pendingFollowups: Schema.Array(OrchestratorFollowupSummary),
+    /**
+     * The most recently closed follow-ups, newest first, capped at ten. Not the
+     * whole history — enough to see what has already been handled.
+     */
+    recentlyResolvedFollowups: Schema.Array(OrchestratorResolvedFollowup),
   }),
   failure: OrchestratorToolError,
   dependencies,
@@ -357,7 +430,7 @@ export const OrchestratorPendingCounts = Schema.Struct({
 
 export const ListPendingTool = Tool.make("list_pending", {
   description:
-    "List everything currently waiting on the user across all conversations: threads blocked on an approval, threads asking a question, threads that failed, and follow-up to-dos agents recorded but nobody has acted on. Use this for 'what am I forgetting?' — unanswered follow-ups in particular are invisible unless their thread is reopened.\n\nEach section is capped and paged independently. `counts` holds the true totals and is filled in whether or not you asked for that section's items, so lead with those — \"57 follow-ups pending, here are the oldest 25\" is the useful answer, and reporting a capped page as the whole backlog is not. To work through one section, pass that one name in `sections` with an `offset`; to narrow by time, use `since`/`until`.\n\nOnly page forward if you are just reading. The moment you resolve a follow-up or answer a question, the list shrinks under you and `nextOffset` would skip past everything that shifted into the gap — call again with `offset: 0` instead, and repeat until the count reaches zero.\n\n`pendingQuestions` carries the actual questions and options behind `awaitingUserInput`, so you can put the choice to the user here and answer it with answer_thread_question without opening each thread. A thread listed in `awaitingUserInput` with nothing in `pendingQuestions` means its question could not be read from here — open it with read_thread rather than reporting it as having no question. Approvals are not answerable from here at all; those the user has to handle in the conversation itself.",
+    "List everything currently waiting on the user across all conversations: threads blocked on an approval, threads asking a question, threads that failed, and follow-up to-dos agents recorded but nobody has acted on. Use this for 'what am I forgetting?' — unanswered follow-ups in particular are invisible unless their thread is reopened.\n\nEach section is capped and paged independently. `counts` holds the true totals and is filled in whether or not you asked for that section's items, so lead with those — \"57 follow-ups pending, here are the oldest 25\" is the useful answer, and reporting a capped page as the whole backlog is not. To work through one section, pass that one name in `sections` with an `offset`; to narrow by time, use `since`/`until`.\n\nOnly page forward if you are just reading. The moment you resolve a follow-up or answer a question, the list shrinks under you and `nextOffset` would skip past everything that shifted into the gap — call again with `offset: 0` instead, and repeat until the count reaches zero.\n\n`pendingQuestions` carries the actual questions and options behind `awaitingUserInput`, so you can put the choice to the user here and answer it with answer_thread_question without opening each thread. `pendingApprovalRequests` does the same for `awaitingApproval` — the command or file each thread is asking to touch — and respond_to_approval answers those. A thread listed in either section with nothing in the matching array means the request could not be read from here; open it with read_thread rather than reporting it as having nothing pending.",
   parameters: ListPendingInput,
   success: Schema.Struct({
     awaitingApproval: Schema.Array(OrchestratorThreadSummary),
@@ -367,6 +440,11 @@ export const ListPendingTool = Tool.make("list_pending", {
      * to the threads on that page, so paging `awaitingUserInput` pages these too.
      */
     pendingQuestions: Schema.Array(OrchestratorPendingQuestionSet),
+    /**
+     * The approvals behind the `awaitingApproval` page, ready to respond to.
+     * Scoped to the threads on that page, exactly as `pendingQuestions` is.
+     */
+    pendingApprovalRequests: Schema.Array(OrchestratorPendingApproval),
     failed: Schema.Array(OrchestratorThreadSummary),
     pendingFollowups: Schema.Array(OrchestratorFollowupSummary),
     /** True totals per section, before the cap. Report these, not the array lengths. */
@@ -648,6 +726,84 @@ export const AnswerThreadQuestionTool = Tool.make("answer_thread_question", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
+/**
+ * The subset of the engine's decisions an orchestrator may take. "cancel" is
+ * deliberately absent: it exists so a composer dialog can be dismissed without
+ * deciding, which is not something a relayed answer can mean.
+ */
+export const OrchestratorApprovalDecision = Schema.Literals([
+  "accept",
+  "acceptForSession",
+  "decline",
+]);
+
+export const RespondToApprovalInput = Schema.Struct({
+  threadId: ThreadId.annotate({
+    description: "The conversation that has stopped to ask for approval.",
+  }),
+  decision: OrchestratorApprovalDecision.annotate({
+    description:
+      "'accept' allows this one request. 'acceptForSession' allows it and stops that conversation asking again for the rest of its session — only when the user says so in those terms. 'decline' refuses it; the agent carries on without whatever it asked for.",
+  }),
+  requestId: Schema.optional(
+    Schema.String.annotate({
+      description:
+        "Which approval, exactly as returned by read_thread or list_pending. Optional only when the thread has exactly one outstanding; with several, a call without it is refused rather than guessed.",
+    }),
+  ),
+});
+
+export const RespondToApprovalTool = Tool.make("respond_to_approval", {
+  description:
+    "Allow or refuse something a conversation has stopped to ask permission for — running a command, reading a file, writing a change. A thread waiting on an approval does nothing at all until it gets one, and it cannot be unblocked by sending it a message.\n\nShow the user what is actually being asked, in the words of the request, and wait for them to decide in that turn. One approval per answer; never infer a second one from the first. This is the user's decision to make and it takes effect immediately — the command runs, the file is written — so relay their answer and nothing more. If they have not seen the detail of what it wants to do, you are not ready to call this.\n\nUse 'acceptForSession' only when the user says to stop being asked; it silences that conversation's prompts for the rest of its session, which is a much larger thing to agree to than the request in front of them.",
+  parameters: RespondToApprovalInput,
+  success: Schema.Struct({
+    threadId: ThreadId,
+    threadTitle: Schema.String,
+    projectTitle: Schema.String,
+    requestId: Schema.String,
+    decision: OrchestratorApprovalDecision,
+    /** What was approved, echoed back so you can report what you actually did. */
+    detail: Schema.NullOr(Schema.String),
+  }),
+  failure: OrchestratorToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Answer an approval request")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+export const StopThreadInput = Schema.Struct({
+  threadId: ThreadId.annotate({
+    description: "The conversation whose current turn should be stopped.",
+  }),
+});
+
+export const StopThreadTool = Tool.make("stop_thread", {
+  description:
+    "Interrupt the turn a conversation is running. Use it for a turn that has stalled — one still marked running long after it went quiet, which `phase: 'stale'` reports — or when the user wants an agent stopped.\n\nStopping is not undoing: everything the agent already did stays done, files included. The turn simply ends where it is, and the conversation becomes usable again.\n\nAsk first, every time, and only stop the thread the user named. Interrupting an agent that is genuinely mid-task throws away the work it had not finished, so a thread reported as running is one to ask about rather than tidy up. Check what it managed with read_thread_changes before offering to stop it, and again afterwards before you report what it got done.",
+  parameters: StopThreadInput,
+  success: Schema.Struct({
+    threadId: ThreadId,
+    threadTitle: Schema.String,
+    projectTitle: Schema.String,
+    /**
+     * False when nothing was running by the time the stop landed — the turn had
+     * already ended, so report that rather than claiming to have stopped it.
+     */
+    hadRunningTurn: Schema.Boolean,
+  }),
+  failure: OrchestratorToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Stop a conversation's turn")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
 export const ResolveFollowupInput = Schema.Struct({
   threadId: ThreadId.annotate({
     description: "The conversation the follow-up belongs to.",
@@ -655,21 +811,29 @@ export const ResolveFollowupInput = Schema.Struct({
   followupId: Schema.String.annotate({
     description: "The `followupId` exactly as returned by read_thread or list_pending.",
   }),
-  status: Schema.Literals(["done", "dismissed"]).annotate({
+  status: Schema.Literals(["done", "dismissed", "spunOff"]).annotate({
     description:
-      "'done' when the work actually happened — you have checked the thread and it is finished. 'dismissed' when the user decided not to do it. Do not use 'done' for work that was merely started.",
+      "'done' when the work actually happened — you have checked the thread and it is finished. 'dismissed' when the user decided not to do it. 'spunOff' when you have just started the work somewhere else, which records the link instead of claiming it is finished. Do not use 'done' for work that was merely started.",
   }),
+  implementationThreadId: Schema.optional(
+    ThreadId.annotate({
+      description:
+        "The conversation now doing the work, for `spunOff` — normally the `threadId` create_thread just returned. Required with 'spunOff' and ignored otherwise; without it the link is lost and nobody can tell where the follow-up went.",
+    }),
+  ),
 });
 
 export const ResolveFollowupTool = Tool.make("resolve_followup", {
   description:
-    "Close out a follow-up to-do, so it stops being reported as waiting on the user. Follow-ups stay pending until somebody clears them, so ones that were quietly handled inside their own thread pile up in list_pending forever and drown the ones that still matter.\n\nOnly close what you have actually confirmed: read the thread first and check the work is finished, or get the user to tell you it is. If in doubt, leave it pending and say so — a follow-up wrongly marked done is invisible from then on, whereas a stale pending one is merely noise. Ask the user before dismissing anything they have not already decided about.",
+    "Close out a follow-up to-do, so it stops being reported as waiting on the user. Follow-ups stay pending until somebody clears them, so ones that were quietly handled inside their own thread pile up in list_pending forever and drown the ones that still matter.\n\nOnly close what you have actually confirmed: read the thread first and check the work is finished, or get the user to tell you it is. If in doubt, leave it pending and say so — a follow-up wrongly marked done is invisible from then on, whereas a stale pending one is merely noise. Ask the user before dismissing anything they have not already decided about.\n\nWhen you hand a follow-up to a new conversation with create_thread, close it as 'spunOff' with that conversation's `implementationThreadId` in the same breath. That is what stops it being offered again, and it is the only record of where the work went — read_thread reports it back under `recentlyResolvedFollowups`.",
   parameters: ResolveFollowupInput,
   success: Schema.Struct({
     threadId: ThreadId,
     followupId: Schema.String,
     title: Schema.String,
-    status: Schema.Literals(["done", "dismissed"]),
+    status: Schema.Literals(["done", "dismissed", "spunOff"]),
+    /** The conversation the work went to, for a `spunOff` follow-up. */
+    implementationThreadId: Schema.NullOr(ThreadId),
   }),
   failure: OrchestratorToolError,
   dependencies,
@@ -688,6 +852,8 @@ export const OrchestratorToolkit = Toolkit.make(
   SendToThreadTool,
   CreateThreadTool,
   AnswerThreadQuestionTool,
+  RespondToApprovalTool,
+  StopThreadTool,
   ResolveFollowupTool,
   ReadThreadChangesTool,
 );

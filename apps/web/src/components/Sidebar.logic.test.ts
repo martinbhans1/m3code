@@ -535,8 +535,30 @@ describe("resolveThreadStatusPill", () => {
     expect(
       resolveThreadStatusPill({
         thread: baseThread,
+        now: Date.parse("2026-03-09T10:00:00.000Z"),
       }),
     ).toMatchObject({ label: "Working", pulse: true });
+  });
+
+  it("stops calling a running thread working once it has gone silent", () => {
+    // A turn only leaves "running" because an event says so, and that event is
+    // lost when the app is killed — so this thread would otherwise pulse
+    // "Working" forever, crowding out the ones that really are.
+    expect(
+      resolveThreadStatusPill({
+        thread: { ...baseThread, updatedAt: "2026-03-09T10:00:00.000Z" },
+        now: Date.parse("2026-03-09T11:30:00.000Z"),
+      }),
+    ).toMatchObject({ label: "Stalled", pulse: false });
+  });
+
+  it("reports what the user is blocked on ahead of staleness", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: { ...baseThread, hasPendingApprovals: true },
+        now: Date.parse("2026-03-20T10:00:00.000Z"),
+      }),
+    ).toMatchObject({ label: "Pending Approval" });
   });
 
   it("shows plan ready when a settled plan turn has a proposed plan ready for follow-up", () => {

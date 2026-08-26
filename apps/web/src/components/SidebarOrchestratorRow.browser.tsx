@@ -184,7 +184,9 @@ describe("SidebarOrchestratorRow on mobile", () => {
         id: LATEST_THREAD_ID,
         title: "Plan the week",
         updatedAt: "2026-08-24T10:00:00.000Z",
-        session: { status: "running" },
+        // Fresh: a session that has been silent for an hour reads as stalled,
+        // not as working, and a fixed date would drift into that.
+        session: { status: "running", updatedAt: new Date().toISOString() },
       }),
     ];
 
@@ -208,7 +210,33 @@ describe("SidebarOrchestratorRow on mobile", () => {
     await expect.element(page.getByLabelText("Completed")).toBeVisible();
   });
 
-  it("prefers the signal that needs you over the one that does not", async () => {
+  it("ignores the state of conversations the row does not open", async () => {
+    threadsRef.current = [
+      orchestratorThread({
+        id: LATEST_THREAD_ID,
+        title: "Plan the week",
+        updatedAt: "2026-08-24T10:00:00.000Z",
+        latestTurn: { completedAt: "2026-08-24T10:00:00.000Z" },
+      }),
+      orchestratorThread({
+        id: EARLIER_THREAD_ID,
+        title: "Earlier chat",
+        updatedAt: "2026-08-23T10:00:00.000Z",
+        hasPendingUserInput: true,
+        hasPendingFollowups: true,
+      }),
+    ];
+
+    await mountRow();
+
+    // The older conversation is the one waiting and holding the suggestion;
+    // the row speaks only for the one a click would open.
+    await expect.element(page.getByLabelText("Completed")).toBeVisible();
+    expect(page.getByLabelText("Awaiting Input").elements()).toHaveLength(0);
+    expect(page.getByLabelText("Suggested task waiting").elements()).toHaveLength(0);
+  });
+
+  it("shows each conversation's state in the dropdown", async () => {
     threadsRef.current = [
       orchestratorThread({
         id: LATEST_THREAD_ID,
@@ -225,6 +253,7 @@ describe("SidebarOrchestratorRow on mobile", () => {
     ];
 
     await mountRow();
+    await page.getByLabelText("Orchestrator conversations").click();
 
     await expect.element(page.getByLabelText("Awaiting Input")).toBeVisible();
   });

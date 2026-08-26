@@ -81,23 +81,29 @@ than hedging about what might not be shared.
 Revoking takes effect immediately: all three settings are re-read on every tool
 call, not cached for the life of the session.
 
-Conversations inside the orchestrator's own project are never listed, searchable
-or readable, whatever the default says — an orchestrator reading its own past
-conversations is not useful, and two of them steering each other is worse.
+Its own earlier conversations are the one thing outside all of this. They are
+always listed, searchable and readable, whatever the sharing settings say — they
+are your meta conversations, sitting behind the same sidebar row, and without
+them every new orchestrator conversation starts from nothing and re-decides what
+the last one already settled with you. They are never sendable, at any setting:
+two orchestrators steering each other is the one thing no override may enable.
+The conversation you are in is left out of its own results.
 
 ## Tools
 
-| Tool                     | What it does                                                                                                                                                                                                                   |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `list_threads`           | Your conversations with their agent state, branch, model and pending counts. Filter by project, or to only those needing attention. Returns a page at a time, with the true total alongside it.                                |
-| `search_threads`         | Find the thread that owns a topic, by keyword and by meaning, across titles and message content. Pass `exact` to grep for a literal string instead — an identifier, a file path, an error message.                             |
-| `read_thread`            | One conversation's recent messages, current state and open follow-ups. Message text is truncated by default for orientation; raise `messageChars` to read a long one in full.                                                  |
-| `list_pending`           | Everything waiting on you: approvals, questions, failures, turns you interrupted, and follow-up chips nobody has acted on. Each section is counted in full and returned a page at a time, and can be narrowed to a date range. |
-| `send_to_thread`         | Post a message into a conversation as you, starting a turn there.                                                                                                                                                              |
-| `create_thread`          | Open a new conversation in one of your projects and start it with an opening prompt.                                                                                                                                           |
-| `answer_thread_question` | Answer the question a conversation is stopped on, exactly as if you had clicked the option there.                                                                                                                              |
-| `resolve_followup`       | Mark a follow-up to-do done or dismissed, so it stops being reported as waiting on you.                                                                                                                                        |
-| `read_thread_changes`    | What changed on disk while a conversation ran: files with line counts per turn, and optionally the diff. Reports how far that is attributable to the conversation.                                                             |
+| Tool                     | What it does                                                                                                                                                                                                                                                               |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list_threads`           | Your conversations with their agent state, branch, model and pending counts. Filter by project, or to only those needing attention. Returns a page at a time, with the true total alongside it.                                                                            |
+| `search_threads`         | Find the thread that owns a topic, by keyword and by meaning, across titles and message content. Pass `exact` to grep for a literal string instead — an identifier, a file path, an error message.                                                                         |
+| `read_thread`            | One conversation's recent messages, current state, open follow-ups, and the last few it has already closed — including which conversation picked up a spun-off one. Message text is truncated by default for orientation; raise `messageChars` to read a long one in full. |
+| `list_pending`           | Everything waiting on you: approvals, questions, failures, turns you interrupted, and follow-up chips nobody has acted on. Each section is counted in full and returned a page at a time, and can be narrowed to a date range.                                             |
+| `send_to_thread`         | Post a message into a conversation as you, starting a turn there.                                                                                                                                                                                                          |
+| `create_thread`          | Open a new conversation in one of your projects and start it with an opening prompt.                                                                                                                                                                                       |
+| `answer_thread_question` | Answer the question a conversation is stopped on, exactly as if you had clicked the option there.                                                                                                                                                                          |
+| `respond_to_approval`    | Allow or refuse what a conversation is asking permission to do — run a command, read a file, write a change — exactly as if you had answered the dialog there.                                                                                                             |
+| `stop_thread`            | Interrupt the turn a conversation is running. Nothing already done is undone; the turn just ends where it is.                                                                                                                                                              |
+| `resolve_followup`       | Mark a follow-up to-do done, dismissed, or spun off into a named conversation, so it stops being reported as waiting on you and the link to whoever picked it up survives.                                                                                                 |
+| `read_thread_changes`    | What changed on disk while a conversation ran: files with line counts per turn, and optionally the diff. Reports how far that is attributable to the conversation.                                                                                                         |
 
 ## Evidence, not testimony
 
@@ -150,10 +156,43 @@ conversation in **approval-required** mode and each answer raises a real
 approve/deny dialog first. Unlike a message, an answer cannot be taken back: the
 other agent acts on it immediately.
 
-**Approvals are not covered by this.** A conversation waiting for permission to
-run a command or write a file shows up in `list_pending`, but granting it is
-still yours to do in that conversation — the orchestrator can only tell you it
-is waiting.
+## Answering a conversation's approvals
+
+The same applies to a conversation stopped on an approval — permission to run a
+command, read a file, or write a change — and this is usually the thing actually
+blocking you while you are away from your desk.
+
+- `read_thread` returns them as `pendingApprovals` and `list_pending` as
+  `pendingApprovalRequests`, both carrying the detail of the request: the
+  command line, the file path, the change. That detail is the point — an
+  approval you have not read is not one you can give.
+- `respond_to_approval` sends your decision back, exactly as if you had answered
+  the dialog in that conversation. It takes effect immediately: the command
+  runs, the file is written.
+- **Allow for the session** is available but deliberately awkward: it stops that
+  conversation asking again at all for the rest of its session, so the
+  orchestrator only uses it when you say to stop being asked.
+
+It needs **Watch and control**, like answering a question. On a **Watch**
+conversation the orchestrator reads the request out to you and nothing more.
+
+## Stalled conversations
+
+A turn only stops being "running" because an event says so, and that event is
+lost whenever the app is killed, a provider dies, or a machine sleeps. The
+conversation then sits marked as working forever, with nothing behind it.
+
+Anything still marked running but silent for over an hour is now reported as
+**stalled** rather than working — in the sidebar, on the board, and to the
+orchestrator as `phase: "stale"`. It is the difference between "five
+conversations are working" and the truth, which is usually that none of them
+are.
+
+`stop_thread` clears one: it ends the turn so the conversation is usable again.
+Nothing already done is undone — the files an agent wrote before it died stay
+written — so the orchestrator checks `read_thread_changes` for what it actually
+got done before and after. It asks first, because a conversation that really is
+mid-task loses whatever it had not finished.
 
 ## The board
 
@@ -163,12 +202,23 @@ each one needs:
 
 - **Needs you** — waiting on an approval, asking a question, failed, interrupted
   and never resumed, or holding a plan to review
-- **Working** — running now
+- **Stalled** — marked running, but silent long enough that the turn is almost
+  certainly dead
+- **Working** — genuinely running now
 - **Settled** — finished, never run, or carrying open follow-ups
 
 Interrupted-and-forgotten is deliberately filed under "needs you": nothing else
-in the app nags about it, which is exactly why it gets lost. Clicking a row
-opens that conversation.
+in the app nags about it, which is exactly why it gets lost.
+
+Each row says when, phrased for what the group means — `waiting 12m`,
+`running 3m`, `silent for 6d`, or when it finished. A question asked two minutes
+ago and one asked on Tuesday need very different things from you, and that is
+the whole reason to look at a board rather than a list.
+
+Clicking a row opens that conversation. The **⋯** menu on it writes the sentence
+you were about to type into the orchestrator's composer instead — "show me the
+question this is asking", "clear the dead turn", "what did it actually change?"
+— ready to edit or send. It proposes; nothing is sent until you send it.
 
 ## Starting new conversations
 

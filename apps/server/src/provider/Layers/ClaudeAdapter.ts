@@ -61,15 +61,18 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
+import { CLAUDE_USAGE_METHOD } from "../ClaudeUsage.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
 import {
   getClaudeModelCapabilities,
@@ -221,6 +224,7 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
   readonly getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
+  readonly [CLAUDE_USAGE_METHOD]?: () => Promise<unknown>;
   readonly close: () => void;
 }
 
@@ -767,25 +771,66 @@ function isSuggestFollowupTool(toolName: string): boolean {
   return toolName === "mcp__t3-code__suggest_followup" || toolName === "suggest_followup";
 }
 
-function extractFollowupSuggestion(
-  input: unknown,
-): { title: string; detail?: string; rationale?: string } | null {
-  if (!input || typeof input !== "object") {
+interface FollowupSuggestion {
+  readonly title: string;
+  readonly detail?: string;
+  readonly rationale?: string;
+}
+
+/**
+ * Field names the model actually uses for the follow-up's body, beyond the
+ * `detail` the tool declares.
+ *
+ * Roughly a quarter of real `suggest_followup` calls put the description under
+ * `description`, `body`, `details`, `prompt` or `summary` instead. The MCP tool
+ * only requires `title`, so those calls SUCCEED with the body silently dropped:
+ * the user gets a bare title on the chip while the agent believes it wrote a
+ * full description. Reading the aliases costs nothing and keeps the text.
+ *
+ * Only the literal `title` key is accepted for the title, deliberately. A call
+ * without it fails the tool's own schema, the agent sees the error and calls
+ * again properly — synthesizing a title here would turn that retry into two
+ * chips for one follow-up.
+ */
+const FOLLOWUP_DETAIL_KEYS = [
+  "detail",
+  "description",
+  "body",
+  "details",
+  "prompt",
+  "text",
+  "notes",
+  "summary",
+] as const;
+const FOLLOWUP_RATIONALE_KEYS = ["rationale", "why", "reason"] as const;
+
+function readTrimmedString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function extractFollowupSuggestion(input: unknown): FollowupSuggestion | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
     return null;
   }
   const record = input as Record<string, unknown>;
-  const title = typeof record.title === "string" ? record.title.trim() : "";
-  if (title.length === 0) {
+  const title = readTrimmedString(record, "title");
+  if (title === undefined) {
     return null;
   }
-  const detail =
-    typeof record.detail === "string" && record.detail.trim().length > 0
-      ? record.detail.trim()
-      : undefined;
+  const detailKey = FOLLOWUP_DETAIL_KEYS.find(
+    (key) => readTrimmedString(record, key) !== undefined,
+  );
+  const detail = detailKey === undefined ? undefined : readTrimmedString(record, detailKey);
+  const rationaleKey = FOLLOWUP_RATIONALE_KEYS.find(
+    (key) => readTrimmedString(record, key) !== undefined,
+  );
   const rationale =
-    typeof record.rationale === "string" && record.rationale.trim().length > 0
-      ? record.rationale.trim()
-      : undefined;
+    rationaleKey === undefined ? undefined : readTrimmedString(record, rationaleKey);
   return {
     title,
     ...(detail ? { detail } : {}),
@@ -1061,7 +1106,13 @@ When no existing conversation owns the work, \`create_thread\` opens a new one i
 
 Both of those accept the turn rather than complete it: report what you started, and check back with \`read_thread\` instead of assuming it landed.
 
-A conversation that has stopped to ask a question is doing nothing until it gets an answer, and \`send_to_thread\` will not unblock it. \`read_thread\` and \`list_pending\` give you the question and its options; put them to the user in their own words, wait for them to choose in that turn, and relay the choice with \`answer_thread_question\`. Answer only what they decided, one request per approval — the other agent acts on the answer immediately and it cannot be taken back. If none of the options matches what they said, pass their wording as \`customAnswer\` rather than rounding it to the nearest option. Approvals are different: those you can see but not grant, so tell the user to handle it in the conversation itself.
+A conversation that has stopped to ask a question is doing nothing until it gets an answer, and \`send_to_thread\` will not unblock it. \`read_thread\` and \`list_pending\` give you the question and its options; put them to the user in their own words, wait for them to choose in that turn, and relay the choice with \`answer_thread_question\`. Answer only what they decided, one request per approval — the other agent acts on the answer immediately and it cannot be taken back. If none of the options matches what they said, pass their wording as \`customAnswer\` rather than rounding it to the nearest option.
+
+An approval parks a conversation just as hard, and \`respond_to_approval\` answers those. \`pendingApprovals\` on \`read_thread\` and \`pendingApprovalRequests\` on \`list_pending\` carry what is actually being asked — a command, a file to read, a change to write. Show the user that detail in the request's own words before you ask them anything; an approval they have not read is not one they can give. Then relay their decision and nothing beyond it, one request at a time. It takes effect the moment you send it: the command runs, the file is written. \`acceptForSession\` is a much larger thing to agree to than the request in front of them — it stops that conversation asking again at all — so use it only when they say to stop being asked.
+
+\`phase: "stale"\` means a conversation is still marked running but has been silent for over an hour: almost always a turn that died with nobody to notice. It is not working, and it will never finish on its own. \`stop_thread\` ends the turn and makes the conversation usable again, without undoing anything already done. Check what it managed with \`read_thread_changes\` first, and ask before stopping anything — a thread genuinely mid-task loses whatever it had not finished.
+
+Your own earlier conversations are visible to you in \`list_threads\`, \`search_threads\` and \`read_thread\`, flagged \`isOrchestratorConversation\`. They are read-only: search them before you plan anything substantial, so you build on what a previous session already worked out with the user instead of re-deciding it, and so you do not hand out work that was already handed out. You cannot send to them, and this conversation is not among them.
 
 Before you report work as finished — and before you close anything — check what actually changed on disk with \`read_thread_changes\`. \`read_thread\` only tells you what an agent said it did, and agents report work as done that was never written. Its file list is cheap; ask for the patch only when you are going to read it.
 
@@ -2061,6 +2112,45 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     return normalizeClaudeContextUsageApiSnapshot(usage, totalProcessedTokens);
   });
 
+  /**
+   * Pull the complete account limits after a turn while the SDK query is
+   * already alive. Sparse `rate_limit_event` pushes remain useful during a
+   * turn, but they are not guaranteed to carry every window (or to arrive at
+   * all), so relying on them alone can leave the composer several turns stale.
+   */
+  const refreshClaudePlanUsage = Effect.fn("refreshClaudePlanUsage")(function* (
+    context: ClaudeSessionContext,
+  ) {
+    const usageMethod = context.query[CLAUDE_USAGE_METHOD];
+    if (typeof usageMethod !== "function") return;
+
+    const result = yield* Effect.tryPromise(() => usageMethod.call(context.query)).pipe(
+      Effect.timeoutOption("2 seconds"),
+      Effect.result,
+    );
+    if (Result.isFailure(result) || Option.isNone(result.success)) return;
+
+    const rateLimits = result.success.value;
+    if (rateLimits === null || rateLimits === undefined) return;
+
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "account.rate-limits.updated",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+      payload: { rateLimits },
+      providerRefs: nativeProviderRefs(context),
+      raw: {
+        source: "claude.sdk.message",
+        method: "claude/control/get_usage",
+        payload: rateLimits,
+      },
+    });
+  });
+
   const emitProposedPlanCompleted = Effect.fn("emitProposedPlanCompleted")(function* (
     context: ClaudeSessionContext,
     input: {
@@ -2232,6 +2322,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       context,
       accumulatedTotalProcessedTokens ?? context.lastKnownTotalProcessedTokens,
     );
+    yield* refreshClaudePlanUsage(context);
     const resultUsageRecord =
       result?.usage && typeof result.usage === "object" && !Array.isArray(result.usage)
         ? (result.usage as Record<string, unknown>)
