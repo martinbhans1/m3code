@@ -39,27 +39,51 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   };
 });
 
-vi.mock("../store", () => ({
-  useStore: () => [
-    {
+function orchestratorThread(overrides: Record<string, unknown>) {
+  return {
+    environmentId: ENVIRONMENT_ID,
+    projectId: ORCHESTRATOR_PROJECT_ID,
+    interactionMode: "build",
+    session: null,
+    createdAt: "2026-08-20T10:00:00.000Z",
+    archivedAt: null,
+    pinnedAt: null,
+    latestTurn: null,
+    branch: null,
+    worktreePath: null,
+    latestUserMessageAt: null,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    hasPendingFollowups: false,
+    hasActionableProposedPlan: false,
+    handoffThreadId: null,
+    ...overrides,
+  };
+}
+
+const threadsRef: { current: ReadonlyArray<Record<string, unknown>> } = {
+  current: [
+    orchestratorThread({
       id: LATEST_THREAD_ID,
-      environmentId: ENVIRONMENT_ID,
-      projectId: ORCHESTRATOR_PROJECT_ID,
       title: "Plan the week",
-      archivedAt: null,
       updatedAt: "2026-08-24T10:00:00.000Z",
-    },
-    {
+    }),
+    orchestratorThread({
       id: EARLIER_THREAD_ID,
-      environmentId: ENVIRONMENT_ID,
-      projectId: ORCHESTRATOR_PROJECT_ID,
       title: "Earlier chat",
-      archivedAt: null,
       updatedAt: "2026-08-23T10:00:00.000Z",
-    },
+    }),
   ],
-  selectThreadShellsAcrossEnvironments: () => [],
-}));
+};
+
+vi.mock("../store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../store")>();
+  return {
+    ...actual,
+    useStore: () => threadsRef.current,
+    selectSidebarThreadsAcrossEnvironments: () => threadsRef.current,
+  };
+});
 
 function OpenMobileOnMount() {
   const { setOpenMobile } = useSidebar();
@@ -94,6 +118,18 @@ describe("SidebarOrchestratorRow on mobile", () => {
     cleanup();
     openSpy.mockClear();
     navigateSpy.mockClear();
+    threadsRef.current = [
+      orchestratorThread({
+        id: LATEST_THREAD_ID,
+        title: "Plan the week",
+        updatedAt: "2026-08-24T10:00:00.000Z",
+      }),
+      orchestratorThread({
+        id: EARLIER_THREAD_ID,
+        title: "Earlier chat",
+        updatedAt: "2026-08-23T10:00:00.000Z",
+      }),
+    ];
   });
 
   it("closes the sidebar sheet when the orchestrator row is tapped", async () => {
@@ -140,5 +176,56 @@ describe("SidebarOrchestratorRow on mobile", () => {
       },
     });
     await expect.element(page.getByTestId("mobile-sidebar-open")).toHaveTextContent("closed");
+  });
+
+  it("shows on the row itself that the orchestrator is working", async () => {
+    threadsRef.current = [
+      orchestratorThread({
+        id: LATEST_THREAD_ID,
+        title: "Plan the week",
+        updatedAt: "2026-08-24T10:00:00.000Z",
+        session: { status: "running" },
+      }),
+    ];
+
+    await mountRow();
+
+    await expect.element(page.getByLabelText("Working")).toBeVisible();
+  });
+
+  it("shows an unread finished turn until the conversation is opened", async () => {
+    threadsRef.current = [
+      orchestratorThread({
+        id: LATEST_THREAD_ID,
+        title: "Plan the week",
+        updatedAt: "2026-08-24T10:00:00.000Z",
+        latestTurn: { completedAt: "2026-08-24T10:00:00.000Z" },
+      }),
+    ];
+
+    await mountRow();
+
+    await expect.element(page.getByLabelText("Completed")).toBeVisible();
+  });
+
+  it("prefers the signal that needs you over the one that does not", async () => {
+    threadsRef.current = [
+      orchestratorThread({
+        id: LATEST_THREAD_ID,
+        title: "Plan the week",
+        updatedAt: "2026-08-24T10:00:00.000Z",
+        latestTurn: { completedAt: "2026-08-24T10:00:00.000Z" },
+      }),
+      orchestratorThread({
+        id: EARLIER_THREAD_ID,
+        title: "Earlier chat",
+        updatedAt: "2026-08-23T10:00:00.000Z",
+        hasPendingUserInput: true,
+      }),
+    ];
+
+    await mountRow();
+
+    await expect.element(page.getByLabelText("Awaiting Input")).toBeVisible();
   });
 });

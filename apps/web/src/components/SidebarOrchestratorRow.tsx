@@ -1,6 +1,6 @@
-import { scopeThreadRef } from "@t3tools/client-runtime";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { ChevronDownIcon, CompassIcon, PlusIcon } from "lucide-react";
+import { ChevronDownIcon, CompassIcon, LightbulbIcon, PlusIcon } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
@@ -8,10 +8,13 @@ import {
   useOpenOrchestratorConversation,
   useOrchestratorProjectId,
 } from "../hooks/useOrchestratorConversation";
-import { selectThreadShellsAcrossEnvironments, useStore } from "../store";
+import { selectSidebarThreadsAcrossEnvironments, useStore } from "../store";
 import { buildThreadRouteParams, resolveThreadRouteTarget } from "../threadRoutes";
 import { formatRelativeTimeLabel } from "../timestampFormat";
-import type { ThreadShell } from "../types";
+import type { SidebarThreadSummary } from "../types";
+import { useUiStateStore } from "../uiStateStore";
+import { resolveProjectStatusIndicator, resolveThreadStatusPill } from "./Sidebar.logic";
+import { ThreadStatusLabel } from "./ThreadStatusIndicators";
 import {
   Menu,
   MenuGroup,
@@ -57,7 +60,7 @@ export function SidebarOrchestratorRow() {
   const [isOpening, setIsOpening] = useState(false);
 
   const navigate = useNavigate();
-  const threadShells = useStore(useShallow(selectThreadShellsAcrossEnvironments));
+  const sidebarThreads = useStore(useShallow(selectSidebarThreadsAcrossEnvironments));
 
   // Its own history: the row points at one conversation at a time, so without
   // this the earlier ones are unreachable — the project they live in is
@@ -66,19 +69,55 @@ export function SidebarOrchestratorRow() {
     () =>
       orchestratorProjectId === null
         ? []
-        : threadShells
+        : sidebarThreads
             .filter(
               (thread) => thread.projectId === orchestratorProjectId && thread.archivedAt === null,
             )
             .toSorted((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""))
             .slice(0, 15),
-    [orchestratorProjectId, threadShells],
+    [orchestratorProjectId, sidebarThreads],
   );
+
+  // The row stands in for a project the tree never shows, so it has to carry
+  // the same signals a thread row does: whether the orchestrator is working,
+  // waiting on you, or has finished something you have not read yet.
+  const threadLastVisitedAts = useUiStateStore(
+    useShallow((state) =>
+      orchestratorThreads.map(
+        (thread) =>
+          state.threadLastVisitedAtById[
+            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))
+          ] ?? null,
+      ),
+    ),
+  );
+
+  const { rowStatus, statusByThreadId, hasPendingFollowups } = useMemo(() => {
+    const statusByThreadId = new Map(
+      orchestratorThreads.map((thread, index) => {
+        const lastVisitedAt = threadLastVisitedAts[index];
+        return [
+          thread.id,
+          resolveThreadStatusPill({
+            thread: {
+              ...thread,
+              ...(lastVisitedAt !== null && lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
+            },
+          }),
+        ] as const;
+      }),
+    );
+    return {
+      statusByThreadId,
+      rowStatus: resolveProjectStatusIndicator([...statusByThreadId.values()]),
+      hasPendingFollowups: orchestratorThreads.some((thread) => thread.hasPendingFollowups),
+    };
+  }, [orchestratorThreads, threadLastVisitedAts]);
 
   const isActive =
     routeThreadId !== null &&
     orchestratorProjectId !== null &&
-    threadShells.some(
+    sidebarThreads.some(
       (thread) => thread.id === routeThreadId && thread.projectId === orchestratorProjectId,
     );
 
@@ -114,7 +153,7 @@ export function SidebarOrchestratorRow() {
   );
 
   const openExistingThread = useCallback(
-    (thread: ThreadShell) => {
+    (thread: SidebarThreadSummary) => {
       closeMobileSidebar();
       void navigate({
         to: "/$environmentId/$threadId",
@@ -137,7 +176,23 @@ export function SidebarOrchestratorRow() {
             onClick={() => open(false)}
           >
             <CompassIcon className="size-4 shrink-0" />
-            <span className="truncate font-medium">Orchestrator</span>
+            <span className="min-w-0 flex-1 truncate font-medium">Orchestrator</span>
+            {hasPendingFollowups ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span
+                      aria-label="Suggested task waiting"
+                      className="inline-flex shrink-0 items-center justify-center text-amber-600 dark:text-amber-300/90"
+                    >
+                      <LightbulbIcon className="size-3" />
+                    </span>
+                  }
+                />
+                <TooltipPopup side="top">Suggested task waiting</TooltipPopup>
+              </Tooltip>
+            ) : null}
+            {rowStatus ? <ThreadStatusLabel status={rowStatus} compact /> : null}
           </SidebarMenuButton>
           {isMobile ? (
             <button
@@ -207,22 +262,30 @@ export function SidebarOrchestratorRow() {
                   <MenuSeparator />
                   <MenuGroup>
                     <MenuGroupLabel>Recent</MenuGroupLabel>
-                    {orchestratorThreads.map((thread) => (
-                      <MenuItem
-                        key={thread.id}
-                        className="justify-between gap-3"
-                        onClick={() => {
-                          openExistingThread(thread);
-                        }}
-                      >
-                        <span className="min-w-0 flex-1 truncate">{thread.title}</span>
-                        {thread.updatedAt ? (
-                          <span className="shrink-0 text-muted-foreground text-xs">
-                            {formatRelativeTimeLabel(thread.updatedAt)}
+                    {orchestratorThreads.map((thread) => {
+                      const threadStatus = statusByThreadId.get(thread.id) ?? null;
+                      return (
+                        <MenuItem
+                          key={thread.id}
+                          className="justify-between gap-3"
+                          onClick={() => {
+                            openExistingThread(thread);
+                          }}
+                        >
+                          <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                            {threadStatus ? (
+                              <ThreadStatusLabel status={threadStatus} compact />
+                            ) : null}
+                            <span className="min-w-0 flex-1 truncate">{thread.title}</span>
                           </span>
-                        ) : null}
-                      </MenuItem>
-                    ))}
+                          {thread.updatedAt ? (
+                            <span className="shrink-0 text-muted-foreground text-xs">
+                              {formatRelativeTimeLabel(thread.updatedAt)}
+                            </span>
+                          ) : null}
+                        </MenuItem>
+                      );
+                    })}
                   </MenuGroup>
                 </>
               ) : null}
