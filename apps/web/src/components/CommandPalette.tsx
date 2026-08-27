@@ -176,6 +176,9 @@ async function searchThreadsAcrossEnvironments(input: {
         environmentId: entry.value.environmentId,
       })),
     )
+    // The server hands back one score per relevance tier, so this reads as
+    // "loose matches last, everything else newest first" — the same order each
+    // environment decided on its own, preserved across the merge.
     .toSorted(
       (left, right) => right.score - left.score || right.updatedAt.localeCompare(left.updatedAt),
     )

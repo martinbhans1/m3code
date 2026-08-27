@@ -303,9 +303,10 @@ export const SEMANTIC_RELATIVE_FLOOR = 0.9;
  *
  * The relative floor still returns two dozen threads when the query is vague
  * and the archive answers it flatly, which is the case where the extra results
- * are least likely to be the one wanted. Semantic matches read below every
- * keyword match, so this cap trims a tail nobody scrolls to rather than
- * displacing anything.
+ * are least likely to be the one wanted. Since the read order is by date, a
+ * loose semantic match is no longer parked at the bottom where nobody scrolls —
+ * a fresh one sits near the top — so the cap is what keeps the vague tail from
+ * padding the list.
  */
 export const MAX_SEMANTIC_THREADS = 8;
 
@@ -338,15 +339,13 @@ export function fromEmbeddingBytes(bytes: Uint8Array): Float32Array {
 }
 
 /**
- * How results are ordered for reading, best band first.
+ * How strongly a thread matched, which decides which threads make the cut.
  *
- * The score decides which threads make the cut; the band decides how the ones
- * that made it are laid out. Inside a band the order is newest first, because
- * the differences the scorer draws there — bm25 between two threads that both
- * match every term, the fifth decimal of a cosine — are invisible to whoever is
- * reading the list, and a list whose dates jump around reads as unordered.
- * Between bands the score still rules: a verbatim hit never sits under a
- * fresher guess.
+ * It no longer decides how the survivors are laid out — see
+ * `toOrderedThreadSearchResults` for that. The differences the scorer draws
+ * between two threads that both answer the query — bm25 between two that match
+ * every term, the fifth decimal of a cosine — are invisible to whoever is
+ * reading the list, so a list ordered by them reads as unordered.
  */
 export const THREAD_SEARCH_BAND = {
   /** Contains the search string verbatim. */
@@ -371,11 +370,35 @@ export interface BandedThreadSearchResult extends OrchestrationThreadSearchResul
 }
 
 /**
- * Flatten each band to one score before the result leaves the server.
+ * The two tiers the read order is built on: results that answer the query, and
+ * the dregs that only exist because nothing better was found.
+ *
+ * Everything above `loose` shares a tier deliberately. A search is nearly always
+ * a search for something recent, and a list that jumps between last week and
+ * two years old because one thread quoted the query verbatim forces the reader
+ * to check every date rather than trust the order. So relevance decides who is
+ * in the list and recency decides where they sit in it.
+ *
+ * The loose band is the one exception. It only runs when the all-terms search
+ * found nothing, and it returns matches by the dozen — forty threads that merely
+ * share the word "fixing". Letting today's accidental word overlap sit above a
+ * thread the query actually described would be recency eating the result rather
+ * than ordering it, so the whole band stays underneath.
+ */
+const THREAD_SEARCH_TIER = { answering: 2, loose: 1 } as const;
+
+function threadSearchTier(band: ThreadSearchBand): number {
+  return band === THREAD_SEARCH_BAND.loose
+    ? THREAD_SEARCH_TIER.loose
+    : THREAD_SEARCH_TIER.answering;
+}
+
+/**
+ * Lay the surviving results out newest first, and flatten each tier to one score.
  *
  * The palette searches several environments and merges the responses by score,
- * so a score that still varied inside a band would resurrect the ordering this
- * function exists to replace. One score per band means any downstream sort of
+ * so a score that still varied inside a tier would resurrect the ordering this
+ * function exists to replace. One score per tier means the downstream sort of
  * "score, then recency" reproduces exactly what the server decided.
  */
 export function toOrderedThreadSearchResults(
@@ -383,9 +406,12 @@ export function toOrderedThreadSearchResults(
 ): OrchestrationThreadSearchResult[] {
   return results
     .toSorted(
-      (left, right) => right.band - left.band || right.updatedAt.localeCompare(left.updatedAt),
+      (left, right) =>
+        threadSearchTier(right.band) - threadSearchTier(left.band) ||
+        right.updatedAt.localeCompare(left.updatedAt) ||
+        right.band - left.band,
     )
-    .map(({ band, ...result }) => ({ ...result, score: band * 1_000 }));
+    .map(({ band, ...result }) => ({ ...result, score: threadSearchTier(band) * 1_000 }));
 }
 
 export function mergeHybridThreadSearchResults(input: {

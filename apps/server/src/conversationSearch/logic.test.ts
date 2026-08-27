@@ -180,10 +180,10 @@ describe("conversation search logic", () => {
     expect(MAX_SEMANTIC_THREADS).toBeGreaterThan(0);
   });
 
-  it("reads in date order inside a band, without letting a fresh guess pass a certain hit", () => {
-    // Within one band the scorer's differences are invisible to whoever reads
-    // the list, so the list is laid out newest first instead. Across bands the
-    // band still wins, however old the better match is.
+  it("reads newest first, however the surviving threads were matched", () => {
+    // Relevance decides who is in the list; the list itself reads by date, so
+    // the reader can trust the top is the most recent without checking four
+    // timestamps. A verbatim hit from 2020 does not jump the queue.
     const ordered = toOrderedThreadSearchResults([
       result("older-content", "content", 780, "2026-06-01T00:00:00.000Z"),
       result("newest-semantic", "semantic", 400, "2026-08-05T00:00:00.000Z"),
@@ -192,13 +192,31 @@ describe("conversation search logic", () => {
     ]);
 
     expect(ordered.map((entry) => entry.threadId)).toEqual([
-      ThreadId.make("oldest-exact"),
+      ThreadId.make("newest-semantic"),
       ThreadId.make("newer-content"),
       ThreadId.make("older-content"),
-      ThreadId.make("newest-semantic"),
+      ThreadId.make("oldest-exact"),
     ]);
-    // One score per band, so merging several environments by score client-side
-    // reproduces this order rather than the pre-band one.
-    expect(ordered[1]?.score).toBe(ordered[2]?.score);
+    // One score for every band that answers the query, so merging several
+    // environments by score client-side reproduces this order rather than
+    // reintroducing the one it replaced.
+    expect(new Set(ordered.map((entry) => entry.score)).size).toBe(1);
+  });
+
+  it("keeps the loose band underneath, where recency cannot promote a stray word", () => {
+    // The loose pass returns dozens of threads that merely share one word. A
+    // fresh accidental overlap must not outrank the thread the query described.
+    const ordered = toOrderedThreadSearchResults([
+      result("older-semantic", "semantic", 400, "2026-06-01T00:00:00.000Z"),
+      result("newest-loose", "content-loose", 150, "2026-08-05T00:00:00.000Z"),
+      result("older-loose", "content-loose", 150, "2026-05-01T00:00:00.000Z"),
+    ]);
+
+    expect(ordered.map((entry) => entry.threadId)).toEqual([
+      ThreadId.make("older-semantic"),
+      ThreadId.make("newest-loose"),
+      ThreadId.make("older-loose"),
+    ]);
+    expect(ordered[0]?.score).toBeGreaterThan(ordered[1]?.score ?? 0);
   });
 });
