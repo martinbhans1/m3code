@@ -9,6 +9,7 @@ import {
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
   makeClaudeEnvironment,
+  resolveClaudeConfigDirPath,
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
 
@@ -29,13 +30,16 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         const path = yield* Path.Path;
         const homePath = "~/.claude-work";
         const resolved = path.resolve(NodeOS.homedir(), ".claude-work");
+        const environment = {} satisfies NodeJS.ProcessEnv;
 
         expect(yield* resolveClaudeHomePath({ homePath })).toBe(resolved);
         expect((yield* makeClaudeEnvironment({ homePath })).HOME).toBe(resolved);
-        expect(yield* makeClaudeContinuationGroupKey({ homePath })).toBe(`claude:home:${resolved}`);
-        expect(yield* makeClaudeCapabilitiesCacheKey({ binaryPath: "claude", homePath })).toBe(
-          `claude\0${resolved}`,
+        expect(yield* makeClaudeContinuationGroupKey({ homePath }, environment)).toBe(
+          `claude:sessions:${path.join(resolved, ".claude", "projects")}`,
         );
+        expect(
+          yield* makeClaudeCapabilitiesCacheKey({ binaryPath: "claude", homePath }, environment),
+        ).toBe(`claude\0${resolved}\0${path.join(resolved, ".claude")}`);
       }),
     );
 
@@ -44,9 +48,56 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         const path = yield* Path.Path;
         const resolved = path.resolve(NodeOS.homedir());
 
-        expect(yield* makeClaudeContinuationGroupKey({ homePath: "" })).toBe(
-          `claude:home:${resolved}`,
+        expect(yield* makeClaudeContinuationGroupKey({ homePath: "" }, {})).toBe(
+          `claude:sessions:${path.join(resolved, ".claude", "projects")}`,
         );
+      }),
+    );
+  });
+
+  describe("CLAUDE_CONFIG_DIR", () => {
+    it.effect("wins over the HOME override when resolving the config dir", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const configDir = "~/.claude-personal";
+        const resolved = path.resolve(NodeOS.homedir(), ".claude-personal");
+
+        expect(
+          yield* resolveClaudeConfigDirPath(
+            { homePath: "~/.claude-work" },
+            { CLAUDE_CONFIG_DIR: configDir },
+          ),
+        ).toBe(resolved);
+      }),
+    );
+
+    it.effect("separates continuation for instances that differ only by config dir", () =>
+      Effect.gen(function* () {
+        const personal = yield* makeClaudeContinuationGroupKey(
+          { homePath: "" },
+          { CLAUDE_CONFIG_DIR: "~/.claude-personal" },
+        );
+        const work = yield* makeClaudeContinuationGroupKey(
+          { homePath: "" },
+          { CLAUDE_CONFIG_DIR: "~/.claude-dj" },
+        );
+
+        expect(personal).not.toBe(work);
+      }),
+    );
+
+    it.effect("separates the capabilities cache for two accounts sharing one home", () =>
+      Effect.gen(function* () {
+        const personal = yield* makeClaudeCapabilitiesCacheKey(
+          { binaryPath: "claude", homePath: "" },
+          { CLAUDE_CONFIG_DIR: "~/.claude-personal" },
+        );
+        const work = yield* makeClaudeCapabilitiesCacheKey(
+          { binaryPath: "claude", homePath: "" },
+          { CLAUDE_CONFIG_DIR: "~/.claude-dj" },
+        );
+
+        expect(personal).not.toBe(work);
       }),
     );
   });

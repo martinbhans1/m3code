@@ -133,7 +133,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         binaryPath: effectiveConfig.binaryPath,
         env: processEnv,
       });
-      const continuationGroupKey = yield* makeClaudeContinuationGroupKey(effectiveConfig);
+      const continuationGroupKey = yield* makeClaudeContinuationGroupKey(
+        effectiveConfig,
+        processEnv,
+      );
       const stampIdentity = withInstanceIdentity({
         instanceId,
         displayName,
@@ -149,8 +152,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       const adapter = yield* makeClaudeAdapter(effectiveConfig, adapterOptions);
       const textGeneration = yield* makeClaudeTextGeneration(effectiveConfig, processEnv);
 
-      // Per-instance capabilities cache: keyed on binary + resolved HOME so
-      // account-specific probes never share auth metadata across instances.
+      // Per-instance capabilities cache: keyed on binary + resolved HOME +
+      // CLAUDE_CONFIG_DIR so account-specific probes never share auth
+      // metadata across instances.
       const capabilitiesProbeCache = yield* Cache.make({
         capacity: 1,
         timeToLive: CAPABILITIES_PROBE_TTL,
@@ -159,7 +163,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             Effect.provideService(Path.Path, path),
           ),
       });
-      const capabilitiesCacheKey = yield* makeClaudeCapabilitiesCacheKey(effectiveConfig);
+      const capabilitiesCacheKey = yield* makeClaudeCapabilitiesCacheKey(
+        effectiveConfig,
+        processEnv,
+      );
 
       const checkProvider = checkClaudeProviderStatus(
         effectiveConfig,
