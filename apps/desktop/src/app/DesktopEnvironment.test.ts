@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import { DESKTOP_APP_ID, DESKTOP_DEVELOPMENT_APP_ID } from "@t3tools/shared/desktopIdentity";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -78,7 +79,7 @@ describe("DesktopEnvironment", () => {
       assertPath(environment.appRoot, "/repo");
       assertPath(environment.backendEntryPath, "/repo/apps/server/dist/bin.mjs");
       assertPath(environment.backendCwd, "/repo");
-      assert.equal(environment.appUserModelId, "com.t3tools.t3code.dev");
+      assert.equal(environment.appUserModelId, DESKTOP_DEVELOPMENT_APP_ID);
       assert.equal(environment.linuxWmClass, "t3code-dev");
       assert.deepEqual(
         Option.map(environment.devServerUrl, (url) => url.href),
@@ -121,6 +122,11 @@ describe("DesktopEnvironment", () => {
 
       assert.equal(environment.isDevelopment, false);
       assert.equal(environment.usesIsolatedStateStore, false);
+      // Windows resolves a toast's name and icon from the Start Menu shortcut
+      // carrying this id, and the installer writes that shortcut from the same
+      // constant. Drift here is invisible until notifications claim to be from
+      // Electron.
+      assert.equal(environment.appUserModelId, DESKTOP_APP_ID);
       assertPath(environment.stateDir, "/tmp/t3/userdata");
       assertPath(environment.logDir, "/tmp/t3/userdata/logs");
       assertPath(environment.browserArtifactsDir, "/tmp/t3/userdata/browser-artifacts");

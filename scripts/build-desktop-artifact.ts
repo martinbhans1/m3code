@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { fromYaml } from "@t3tools/shared/schemaYaml";
+import { DESKTOP_APP_ID } from "@t3tools/shared/desktopIdentity";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import rootPackageJson from "../package.json" with { type: "json" };
@@ -748,7 +749,7 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   mockUpdateServerPort: number | undefined,
 ) {
   const buildConfig: Record<string, unknown> = {
-    appId: "com.m3tools.m3code",
+    appId: DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version),
     artifactName: "M3-Code-${version}-${arch}.${ext}",
     asarUnpack: [...DESKTOP_ASAR_UNPACK],
@@ -806,7 +807,12 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     if (signed) {
       winConfig.azureSignOptions = yield* AzureTrustedSigningOptionsConfig;
     } else {
-      winConfig.signAndEditExecutable = false;
+      // `signAndEditExecutable` gates the rcedit pass as well as signing, so
+      // switching it off leaves the binary carrying Electron's own name, icon
+      // and version — which is what Windows then shows for the app's toasts
+      // and in Task Manager. Editing the executable needs Wine off Windows,
+      // so an unsigned build only gives that up when it cannot run rcedit.
+      winConfig.signAndEditExecutable = (yield* HostProcessPlatform) === "win32";
     }
     buildConfig.win = winConfig;
   }
