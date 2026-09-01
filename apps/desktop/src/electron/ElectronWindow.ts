@@ -104,6 +104,21 @@ const make = Effect.gen(function* () {
           Electron.app.focus({ steal: true });
         }
 
+        if (platform === "win32") {
+          // Windows only gives the foreground to a process that already holds
+          // it, so a background window asking for focus just flashes its
+          // taskbar button — which is not what someone clicking a notification
+          // asked for. Pinning the window on top raises it for real without
+          // needing foreground rights, and dropping the flag again right after
+          // keeps it from staying above every other window.
+          const wasAlwaysOnTop = window.isAlwaysOnTop();
+          window.setAlwaysOnTop(true);
+          window.moveTop();
+          window.focus();
+          window.setAlwaysOnTop(wasAlwaysOnTop);
+          return;
+        }
+
         window.focus();
       }),
     sendAll: (channel, ...args) =>
