@@ -199,7 +199,7 @@ export function SidebarOrchestratorRow() {
                 <TooltipPopup side="top">Suggested task waiting</TooltipPopup>
               </Tooltip>
             ) : null}
-            {rowStatus ? <ThreadStatusLabel status={rowStatus} compact /> : null}
+            {rowStatus ? <ThreadStatusLabel status={rowStatus} /> : null}
             <span className="min-w-0 flex-1 truncate font-medium">Orchestrator</span>
           </SidebarMenuButton>
           {isMobile ? (
@@ -286,9 +286,7 @@ export function SidebarOrchestratorRow() {
                           }}
                         >
                           <span className="flex min-w-0 flex-1 items-center gap-1.5">
-                            {threadStatus ? (
-                              <ThreadStatusLabel status={threadStatus} compact />
-                            ) : null}
+                            {threadStatus ? <ThreadStatusLabel status={threadStatus} /> : null}
                             <span className="min-w-0 flex-1 truncate">{thread.title}</span>
                           </span>
                           <span className="shrink-0 text-muted-foreground text-xs">

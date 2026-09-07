@@ -12,15 +12,18 @@ import {
   hasUnseenCompletion,
   isContextMenuPointerDown,
   isTrailingDoubleClick,
+  isUnreadThreadStatus,
   orderItemsByPreferredIds,
   resolveProjectStatusIndicator,
   resolveSidebarNewThreadSeedContext,
   resolveSidebarNewThreadEnvMode,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
+  selectThreadsVisibleWhileCollapsed,
   shouldClearThreadSelectionOnMouseDown,
   sortProjectsForSidebar,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
+  type ThreadStatusPill,
 } from "./Sidebar.logic";
 import {
   EnvironmentId,
@@ -615,7 +618,11 @@ describe("resolveThreadStatusPill", () => {
 
 describe("resolveThreadRowClassName", () => {
   it("uses the darker selected palette when a thread is both selected and active", () => {
-    const className = resolveThreadRowClassName({ isActive: true, isSelected: true });
+    const className = resolveThreadRowClassName({
+      isActive: true,
+      isSelected: true,
+      isUnread: false,
+    });
     expect(className).toContain("bg-primary/22");
     expect(className).toContain("hover:bg-primary/26");
     expect(className).toContain("dark:bg-primary/30");
@@ -623,7 +630,11 @@ describe("resolveThreadRowClassName", () => {
   });
 
   it("uses selected hover colors for selected threads", () => {
-    const className = resolveThreadRowClassName({ isActive: false, isSelected: true });
+    const className = resolveThreadRowClassName({
+      isActive: false,
+      isSelected: true,
+      isUnread: true,
+    });
     expect(className).toContain("bg-primary/15");
     expect(className).toContain("hover:bg-primary/19");
     expect(className).toContain("dark:bg-primary/22");
@@ -631,9 +642,87 @@ describe("resolveThreadRowClassName", () => {
   });
 
   it("keeps the accent palette for active-only threads", () => {
-    const className = resolveThreadRowClassName({ isActive: true, isSelected: false });
+    const className = resolveThreadRowClassName({
+      isActive: true,
+      isSelected: false,
+      isUnread: false,
+    });
     expect(className).toContain("bg-accent/85");
     expect(className).toContain("hover:bg-accent");
+  });
+
+  it("brightens and bolds unread threads that are neither active nor selected", () => {
+    const className = resolveThreadRowClassName({
+      isActive: false,
+      isSelected: false,
+      isUnread: true,
+    });
+    expect(className).toContain("text-foreground");
+    expect(className).toContain("font-medium");
+    expect(className).not.toContain("text-muted-foreground");
+  });
+
+  it("leaves read threads muted", () => {
+    const className = resolveThreadRowClassName({
+      isActive: false,
+      isSelected: false,
+      isUnread: false,
+    });
+    expect(className).toContain("text-muted-foreground");
+    expect(className).not.toContain("font-medium");
+  });
+});
+
+describe("isUnreadThreadStatus", () => {
+  const pill = (label: ThreadStatusPill["label"]): ThreadStatusPill => ({
+    label,
+    colorClass: "",
+    dotClass: "",
+    pulse: false,
+  });
+
+  it("treats states that hold something to read as unread", () => {
+    expect(isUnreadThreadStatus(pill("Completed"))).toBe(true);
+    expect(isUnreadThreadStatus(pill("Awaiting Input"))).toBe(true);
+    expect(isUnreadThreadStatus(pill("Pending Approval"))).toBe(true);
+    expect(isUnreadThreadStatus(pill("Plan Ready"))).toBe(true);
+  });
+
+  it("does not treat in-flight or stalled work as unread", () => {
+    expect(isUnreadThreadStatus(pill("Working"))).toBe(false);
+    expect(isUnreadThreadStatus(pill("Connecting"))).toBe(false);
+    expect(isUnreadThreadStatus(pill("Stalled"))).toBe(false);
+    expect(isUnreadThreadStatus(null)).toBe(false);
+  });
+});
+
+describe("selectThreadsVisibleWhileCollapsed", () => {
+  const threads = [
+    { key: "done-and-read" },
+    { key: "working" },
+    { key: "unread" },
+    { key: "open" },
+  ];
+  const statusByKey: Record<string, ThreadStatusPill | null> = {
+    "done-and-read": null,
+    working: { label: "Working", colorClass: "", dotClass: "", pulse: true },
+    unread: { label: "Completed", colorClass: "", dotClass: "", pulse: false },
+    open: null,
+  };
+  const select = (activeThreadKey: string | null) =>
+    selectThreadsVisibleWhileCollapsed({
+      threads,
+      activeThreadKey,
+      getThreadKey: (thread) => thread.key,
+      getStatus: (thread) => statusByKey[thread.key] ?? null,
+    }).map((thread) => thread.key);
+
+  it("keeps every thread that still carries a status dot, plus the open one", () => {
+    expect(select("open")).toEqual(["working", "unread", "open"]);
+  });
+
+  it("drops finished, read threads when nothing is open", () => {
+    expect(select(null)).toEqual(["working", "unread"]);
   });
 });
 

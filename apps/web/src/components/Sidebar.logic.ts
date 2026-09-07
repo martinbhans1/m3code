@@ -159,6 +159,44 @@ export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
   return completedAt > lastVisitedAt;
 }
 
+/**
+ * Statuses that mean the thread is holding something the user has not read yet.
+ * Working/Connecting/Stalled are excluded: an agent still churning has produced
+ * nothing to read, so the row stays quiet until it settles.
+ */
+const UNREAD_THREAD_STATUS_LABELS: ReadonlySet<ThreadStatusPill["label"]> = new Set([
+  "Pending Approval",
+  "Awaiting Input",
+  "Plan Ready",
+  "Completed",
+]);
+
+export function isUnreadThreadStatus(status: ThreadStatusPill | null): boolean {
+  return status !== null && UNREAD_THREAD_STATUS_LABELS.has(status.label);
+}
+
+/**
+ * Collapsing a project hides the threads that are finished and already read.
+ * Anything still carrying a status dot — working, waiting on the user, or
+ * completed but unseen — stays in view, so collapsing every project leaves
+ * exactly the list of threads that still want attention. The open thread is
+ * kept too, otherwise the row would vanish from under the cursor the moment
+ * reading it cleared its unread state.
+ */
+export function selectThreadsVisibleWhileCollapsed<T>(input: {
+  threads: readonly T[];
+  activeThreadKey: string | null;
+  getThreadKey: (thread: T) => string;
+  getStatus: (thread: T) => ThreadStatusPill | null;
+}): T[] {
+  const { activeThreadKey, getStatus, getThreadKey, threads } = input;
+  return threads.filter(
+    (thread) =>
+      getStatus(thread) !== null ||
+      (activeThreadKey !== null && getThreadKey(thread) === activeThreadKey),
+  );
+}
+
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
   if (target === null) return true;
   return !target.closest(THREAD_SELECTION_SAFE_SELECTOR);
@@ -311,6 +349,7 @@ export function isContextMenuPointerDown(input: {
 export function resolveThreadRowClassName(input: {
   isActive: boolean;
   isSelected: boolean;
+  isUnread: boolean;
 }): string {
   const baseClassName =
     "h-8 w-full translate-x-0 cursor-pointer justify-start px-2 text-left select-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring sm:h-7";
@@ -334,6 +373,10 @@ export function resolveThreadRowClassName(input: {
       baseClassName,
       "bg-accent/85 text-foreground font-medium hover:bg-accent hover:text-foreground dark:bg-accent/55 dark:hover:bg-accent/70",
     );
+  }
+
+  if (input.isUnread) {
+    return cn(baseClassName, "text-foreground font-medium hover:bg-accent hover:text-foreground");
   }
 
   return cn(baseClassName, "text-muted-foreground hover:bg-accent hover:text-foreground");
@@ -425,6 +468,22 @@ export function resolveThreadStatusPill(input: {
   }
 
   return null;
+}
+
+/**
+ * `resolveThreadStatusPill` with the row's last-visited timestamp folded in —
+ * the "Completed" dot only means "completed since you last looked".
+ */
+export function resolveVisitedThreadStatusPill(
+  thread: ThreadStatusInput,
+  lastVisitedAt: string | null | undefined,
+): ThreadStatusPill | null {
+  return resolveThreadStatusPill({
+    thread: {
+      ...thread,
+      ...(lastVisitedAt !== null && lastVisitedAt !== undefined ? { lastVisitedAt } : {}),
+    },
+  });
 }
 
 export function resolveProjectStatusIndicator(
