@@ -20,6 +20,11 @@ import {
 } from "./ProcessDiagnostics.ts";
 
 const SAMPLE_INTERVAL_MS = 5_000;
+// Sampling shells out to a process listing (a PowerShell WMI query on Windows),
+// so it only runs while a client is actually reading the history. Without this
+// the monitor enumerates every process on the machine every 5s, forever, to
+// feed a diagnostics panel nobody has open.
+const SAMPLE_IDLE_TIMEOUT_MS = 60_000;
 const RETENTION_MS = 60 * 60_000;
 const MAX_RETAINED_SAMPLES = 20_000;
 
@@ -248,6 +253,7 @@ export function aggregateProcessResourceHistory(input: {
 export const make = Effect.fn("makeProcessResourceMonitor")(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const state = yield* Ref.make<MonitorState>({ samples: [], lastError: null });
+  const lastReadAtMs = yield* Ref.make<number>(0);
 
   const sampleOnce = Effect.gen(function* () {
     const sampledAt = yield* DateTime.now;
@@ -274,14 +280,30 @@ export const make = Effect.fn("makeProcessResourceMonitor")(function* () {
     ),
   );
 
-  yield* Effect.forever(sampleOnce.pipe(Effect.andThen(Effect.sleep(SAMPLE_INTERVAL_MS)))).pipe(
-    Effect.forkScoped,
-  );
+  const sampleWhenObserved = Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const lastRead = yield* Ref.get(lastReadAtMs);
+    if (DateTime.toEpochMillis(now) - lastRead > SAMPLE_IDLE_TIMEOUT_MS) {
+      return;
+    }
+    yield* sampleOnce;
+  });
+
+  yield* Effect.forever(
+    sampleWhenObserved.pipe(Effect.andThen(Effect.sleep(SAMPLE_INTERVAL_MS))),
+  ).pipe(Effect.forkScoped);
 
   const readHistory: ProcessResourceMonitorShape["readHistory"] = (input) =>
     Effect.gen(function* () {
       const readAt = yield* DateTime.now;
       const readAtMs = DateTime.toEpochMillis(readAt);
+      // Reading is what keeps the sampler awake; a first read after an idle
+      // period also primes it so the panel fills in rather than staying blank.
+      const wasIdle = readAtMs - (yield* Ref.get(lastReadAtMs)) > SAMPLE_IDLE_TIMEOUT_MS;
+      yield* Ref.set(lastReadAtMs, readAtMs);
+      if (wasIdle) {
+        yield* sampleOnce;
+      }
       const current = yield* Ref.get(state);
       return aggregateProcessResourceHistory({
         samples: current.samples,
