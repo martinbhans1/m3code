@@ -46,6 +46,7 @@ export interface WatchdogPaths {
   readonly wakeStateFile: string;
   readonly wrapperStateFile: string;
   readonly consoleAuditFile: string;
+  readonly outagesFile: string;
   readonly runnerFile: string;
   readonly runLogFile: string;
 }
@@ -71,6 +72,7 @@ export function watchdogPaths(baseDir = resolveBaseDir()): WatchdogPaths {
     wakeStateFile: join(root, "wake-task.json"),
     wrapperStateFile: join(root, "hidden-wrapper.json"),
     consoleAuditFile: join(root, "console-popup-audit.json"),
+    outagesFile: join(root, "app-outages.json"),
     runnerFile: join(root, "run-scan.cmd"),
     runLogFile: join(root, "scan-runs.log"),
   };

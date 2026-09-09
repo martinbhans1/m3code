@@ -36,6 +36,12 @@ import {
 } from "./lib/watchdog-abandoned.ts";
 import { decide, type ScanDecision, type ThreadVerdict } from "./lib/watchdog-decide.ts";
 import {
+  formatOutages,
+  recordOutage,
+  summariseOutages,
+  type Outage,
+} from "./lib/watchdog-outages.ts";
+import {
   buildRunnerScript,
   buildTaskXml,
   consolePopupHelperExists,
@@ -213,6 +219,24 @@ async function runScan({ dryRun, simulate }: ScanOptions): Promise<number> {
     const decision = decide(snapshot, ledger, startedAt);
     const abandoned = findAbandoned(snapshot.stoppedMidWork, startedAt);
     const consolePopups = auditConsolePopups(paths, startedAt);
+
+    // The watchdog cannot start the app, so when the app is down it can only
+    // record what that cost. See watchdog-outages.ts.
+    if (!snapshot.serverRunning && !dryRun && !simulate) {
+      const restartable = decision.verdicts.filter(
+        (verdict) => verdict.verdict === "restart",
+      ).length;
+      writeJsonFile(
+        paths.outagesFile,
+        recordOutage(readJsonFile<readonly Outage[]>(paths.outagesFile) ?? [], startedAt, restartable),
+      );
+      if (restartable > 0) {
+        appendLogLine(
+          paths,
+          `app is down and ${restartable} conversation(s) are waiting on a limit that has lifted`,
+        );
+      }
+    }
     let delivery: DeliveryRecord | null = null;
 
     if (decision.action.kind === "nudge") {
@@ -363,6 +387,9 @@ function printStatus(): number {
   // The point of this section is that nothing else in the app will ever tell
   // him: a conversation that died on a crash is invisible from every surface.
   process.stdout.write(`\n${formatAbandoned(latest?.abandoned ?? [])}`);
+
+  const outages = readJsonFile<readonly Outage[]>(paths.outagesFile) ?? [];
+  process.stdout.write(`\n${formatOutages(summariseOutages(outages, new Date()))}`);
 
   const offenders = latest?.consolePopups?.repeatingOffenders ?? [];
   if (offenders.length > 0) {

@@ -110,6 +110,18 @@ they went unseen.
 
 Nothing on that list is ever restarted. Seeing it is the point.
 
+## When the app itself is down
+
+The wake-up is delivered through the running app, so a crashed app leaves the
+watchdog with nothing to do. It does not relaunch the app - that is a bigger
+liberty than sending a message, and the decision is Martin's.
+
+What it does instead is keep the bill. Every scan that finds the app down is
+recorded as part of a stretch, along with how many conversations were sitting
+there with a lifted limit at the time, and `pnpm watchdog:status` reports the
+total. So the question "should it be allowed to relaunch the app" gets answered
+against what it has actually cost rather than a hypothetical.
+
 ## Artefacts
 
 Everything lands under `~/.t3/watchdog`:
@@ -123,6 +135,7 @@ Everything lands under `~/.t3/watchdog`:
 | `watchdog.log` | One line per cycle |
 | `scan-runs.log` | Raw output of the scheduled runs |
 | `config.json`, `wake-task.json` | Whether waking is allowed, and what the wake is currently armed for |
+| `app-outages.json` | Every stretch where the app was down and the watchdog could do nothing |
 
 Each scan record also carries the abandoned list as it stood at that moment.
 
