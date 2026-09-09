@@ -3,6 +3,7 @@ import { definePlugin } from "@oxlint/plugins";
 import noGlobalProcessRuntime from "./rules/no-global-process-runtime.ts";
 import noInlineSchemaCompile from "./rules/no-inline-schema-compile.ts";
 import noManualEffectRuntimeInTests from "./rules/no-manual-effect-runtime-in-tests.ts";
+import requireWindowsHide from "./rules/require-windows-hide.ts";
 
 export default definePlugin({
   meta: {
@@ -12,5 +13,6 @@ export default definePlugin({
     "no-global-process-runtime": noGlobalProcessRuntime,
     "no-inline-schema-compile": noInlineSchemaCompile,
     "no-manual-effect-runtime-in-tests": noManualEffectRuntimeInTests,
+    "require-windows-hide": requireWindowsHide,
   },
 });

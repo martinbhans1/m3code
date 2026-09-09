@@ -10,6 +10,9 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Lint-plugin test harness; it cannot depend on the app's own runtime services.
+const IS_WINDOWS = process.platform === "win32";
+
 class OxlintFixtureFailure extends Data.TaggedError("OxlintFixtureFailure")<{
   readonly exitCode: number;
   readonly stdout: string;
@@ -93,13 +96,16 @@ export const createOxlintRuleHarness = (
     const configPath = path.join(fixtureDir, ".oxlintrc.json");
     const sourcePath = path.join(fixtureDir, options.filename ?? "fixture.ts");
     const repoRoot = path.join(import.meta.dirname, "..", "..");
+    // On Windows the extensionless bin is a shell script that CreateProcess
+    // cannot run, so these tests could never execute here - which is how a
+    // lint rule with no working test got written in the first place.
     const oxlintBin = path.join(
       repoRoot,
       "node_modules",
       ".pnpm",
       "node_modules",
       ".bin",
-      "oxlint",
+      IS_WINDOWS ? "oxlint.CMD" : "oxlint",
     );
     const pluginPath = path.join(repoRoot, "oxlint-plugin-t3code", "index.ts");
 
@@ -113,7 +119,11 @@ export const createOxlintRuleHarness = (
     yield* fs.writeFileString(sourcePath, source);
 
     const output = yield* spawnAndCollectOutput(
-      ChildProcess.make(oxlintBin, ["--config", configPath, sourcePath], { cwd: repoRoot }),
+      // Node refuses to spawn a .CMD without a shell, so Windows needs one.
+      ChildProcess.make(oxlintBin, ["--config", configPath, sourcePath], {
+        cwd: repoRoot,
+        shell: IS_WINDOWS,
+      }),
     );
 
     if (output.exitCode !== 0) {
