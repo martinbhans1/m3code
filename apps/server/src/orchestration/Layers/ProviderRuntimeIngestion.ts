@@ -1,5 +1,7 @@
 import {
   ApprovalRequestId,
+  type ProviderInstanceId,
+  type ServerProviderUsage,
   type AssistantDeliveryMode,
   buildFollowupActivity,
   CommandId,
@@ -35,6 +37,11 @@ import { normalizeClaudeUsage } from "../../provider/ClaudeUsage.ts";
 import { normalizeCodexUsage } from "../../provider/CodexUsage.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
+import { ProviderUsageReadingRepositoryLive } from "../../persistence/Layers/ProviderUsageReadings.ts";
+import {
+  ProviderUsageReadingRepository,
+  type ProviderUsageReading,
+} from "../../persistence/Services/ProviderUsageReadings.ts";
 import { isGitRepository } from "../../git/Utils.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -669,6 +676,7 @@ const make = Effect.gen(function* () {
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
   const usageRegistry = yield* ProviderUsageRegistry;
+  const usageReadingRepository = yield* ProviderUsageReadingRepository;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
     crypto.randomUUIDv4.pipe(
       Effect.map((uuid) => CommandId.make(`provider:${event.eventId}:${tag}:${uuid}`)),
@@ -1239,6 +1247,38 @@ const make = Effect.gen(function* () {
   );
 
   /**
+   * Persist every window in an observation, one row each.
+   *
+   * `readingId` is the runtime event id plus the window id, which makes the
+   * insert idempotent under event replay without needing a uniqueness rule
+   * that depends on wall-clock time.
+   */
+  const recordUsageReadings = (input: {
+    readonly event: Extract<ProviderRuntimeEvent, { type: "account.rate-limits.updated" }>;
+    readonly instanceId: ProviderInstanceId;
+    readonly usage: ServerProviderUsage;
+  }) =>
+    Effect.suspend(() => {
+      const { event, instanceId, usage } = input;
+      const threadId = event.threadId ?? null;
+      const turnId = toTurnId(event.turnId) ?? null;
+      const rows: Array<ProviderUsageReading> = usage.windows.map((window) => ({
+        readingId: `${event.eventId}:${window.id}`,
+        instanceId,
+        windowId: window.id,
+        planLabel: usage.planLabel,
+        percent: window.percent,
+        windowMinutes: window.windowMinutes ?? null,
+        resetsAt: window.resetsAt,
+        capturedAt: usage.capturedAt,
+        source: usage.source,
+        threadId,
+        turnId,
+      }));
+      return rows.length === 0 ? Effect.void : usageReadingRepository.append(rows);
+    });
+
+  /**
    * Route `account.rate-limits.updated` into the provider snapshot.
    *
    * Both Claude and Codex push plan rate limits through this one event type
@@ -1272,6 +1312,19 @@ const make = Effect.gen(function* () {
       if (!usage) return;
 
       yield* usageRegistry.publish({ instanceId, usage });
+
+      // Append the same observation to the durable tape. Deliberately after
+      // the publish and deliberately non-fatal: the composer meter is the
+      // user-visible obligation here, and a write failure must never cost an
+      // update. Losing one reading only widens the interval the next one is
+      // attributed over.
+      yield* recordUsageReadings({ event, instanceId, usage }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Failed to record provider usage reading").pipe(
+            Effect.annotateLogs({ instanceId, eventId: event.eventId, cause }),
+          ),
+        ),
+      );
     });
 
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
@@ -1793,4 +1846,4 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive));
+).pipe(Layer.provide([ProjectionTurnRepositoryLive, ProviderUsageReadingRepositoryLive]));
