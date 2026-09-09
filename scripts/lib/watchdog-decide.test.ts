@@ -59,6 +59,7 @@ function snapshot(threads: readonly ThreadObservation[], serverRunning = true): 
     orchestratorProjectId: "orchestrator-project",
     threadsWithFailedLatestTurn: threads.length,
     threads,
+    stoppedMidWork: threads,
   };
 }
 

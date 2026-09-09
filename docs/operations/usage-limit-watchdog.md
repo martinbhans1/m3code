@@ -83,6 +83,22 @@ pnpm watchdog:uninstall              # remove both tasks entirely
 the wake task from then on. With waking off, a reset that lands while the
 machine sleeps simply waits until you wake it up.
 
+## What it lists but never touches
+
+The watchdog restarts one thing only: work stopped by a usage limit that has
+lifted. A conversation that died on a crash is deliberately left alone - the
+repository may be in a state nobody should resume blind.
+
+Left alone, though, turned into invisible: nothing anywhere surfaces a
+conversation that stopped mid-turn, and one was found with real work in it after
+29 days. So `pnpm watchdog:status` ends with every conversation left mid-work and
+quiet for more than two days, longest-forgotten first, with what stopped it. A
+turn that is still marked `running` after weeks is the fingerprint of the app
+being killed under it; those never produce an error at all, which is exactly why
+they went unseen.
+
+Nothing on that list is ever restarted. Seeing it is the point.
+
 ## Artefacts
 
 Everything lands under `~/.t3/watchdog`:
@@ -96,6 +112,8 @@ Everything lands under `~/.t3/watchdog`:
 | `watchdog.log` | One line per cycle |
 | `scan-runs.log` | Raw output of the scheduled runs |
 | `config.json`, `wake-task.json` | Whether waking is allowed, and what the wake is currently armed for |
+
+Each scan record also carries the abandoned list as it stood at that moment.
 
 ## Rehearsing it
 

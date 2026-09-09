@@ -29,6 +29,11 @@ import { userInfo } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  findAbandoned,
+  formatAbandoned,
+  type AbandonedConversation,
+} from "./lib/watchdog-abandoned.ts";
 import { decide, type ScanDecision, type ThreadVerdict } from "./lib/watchdog-decide.ts";
 import {
   buildHiddenLauncherVbs,
@@ -92,6 +97,8 @@ interface ScanRecord {
   readonly decision: ScanDecision;
   readonly delivery: DeliveryRecord | null;
   readonly wake: WakeTaskOutcome;
+  /** Never acted on; recorded so the status output can surface them. */
+  readonly abandoned: readonly AbandonedConversation[];
 }
 
 /** One line per conversation the watchdog formed an opinion about. */
@@ -163,6 +170,7 @@ async function runScan({ dryRun, simulate }: ScanOptions): Promise<number> {
     const snapshot = observe(paths, startedAt);
     const ledger = readLedger(paths).entries;
     const decision = decide(snapshot, ledger, startedAt);
+    const abandoned = findAbandoned(snapshot.stoppedMidWork, startedAt);
     let delivery: DeliveryRecord | null = null;
 
     if (decision.action.kind === "nudge") {
@@ -246,6 +254,7 @@ async function runScan({ dryRun, simulate }: ScanOptions): Promise<number> {
       decision,
       delivery,
       wake,
+      abandoned,
     };
     writeJsonFile(scanRecordPath(paths, scanId), record);
     writeJsonFile(paths.latestScanFile, {
@@ -257,6 +266,7 @@ async function runScan({ dryRun, simulate }: ScanOptions): Promise<number> {
       delivery,
       waitingUntil: decision.waitingUntil,
       wake,
+      abandoned,
     });
 
     const action = decision.action;
@@ -292,7 +302,10 @@ async function runScan({ dryRun, simulate }: ScanOptions): Promise<number> {
 
 function printStatus(): number {
   const paths = watchdogPaths();
-  const latest = readJsonFile<Record<string, unknown>>(paths.latestScanFile);
+  const latest = readJsonFile<{
+    readonly abandoned?: readonly AbandonedConversation[];
+    readonly [key: string]: unknown;
+  }>(paths.latestScanFile);
   const ledger = readLedger(paths).entries.slice(-10);
   process.stdout.write(`watchdog artefacts: ${paths.root}\n`);
   process.stdout.write(
@@ -303,6 +316,9 @@ function printStatus(): number {
       ? `recent nudges:\n${ledger.map((entry) => `  ${entry.at} ${entry.outcome} ${entry.threadTitle} (${entry.threadId})`).join("\n")}\n`
       : "recent nudges: none\n",
   );
+  // The point of this section is that nothing else in the app will ever tell
+  // him: a conversation that died on a crash is invisible from every surface.
+  process.stdout.write(`\n${formatAbandoned(latest?.abandoned ?? [])}`);
   return 0;
 }
 

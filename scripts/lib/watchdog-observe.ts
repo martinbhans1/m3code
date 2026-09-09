@@ -57,7 +57,14 @@ export interface Snapshot {
   readonly serverRunning: boolean;
   readonly orchestratorProjectId: string | null;
   readonly threadsWithFailedLatestTurn: number;
+  /** Conversations whose newest turn failed. The only ones eligible for a restart. */
   readonly threads: readonly ThreadObservation[];
+  /**
+   * Everything left mid-turn, failures included: a turn that never finished
+   * because the app was killed looks nothing like a failure in the data, and is
+   * the shape that goes unnoticed for weeks. Never restarted, only listed.
+   */
+  readonly stoppedMidWork: readonly ThreadObservation[];
 }
 
 interface ServerRuntime {
@@ -85,6 +92,12 @@ export function readOrchestratorProjectId(paths: WatchdogPaths): string | null {
 }
 
 const FAILED_TURN_STATE = "error";
+/**
+ * Turn states that mean the work stopped without finishing. `running` and
+ * `pending` are in here because a turn interrupted by a crash or a forced quit
+ * is never marked as anything else - it simply stops being true.
+ */
+const UNFINISHED_TURN_STATES = ["error", "running", "pending", "interrupted"] as const;
 
 const CANDIDATE_THREADS_SQL = `select t.thread_id      as threadId,
         t.title          as title,
@@ -116,7 +129,7 @@ const CANDIDATE_THREADS_SQL = `select t.thread_id      as threadId,
    left join projection_thread_sessions s on s.thread_id = t.thread_id
   where t.deleted_at is null
     and t.archived_at is null
-    and lt.state = ?`;
+    and lt.state in (SELECT value FROM json_each(?))`;
 
 function parseJsonOrNull(raw: string | null | undefined): unknown {
   if (!raw) return null;
@@ -132,7 +145,9 @@ export function observe(paths: WatchdogPaths, now = new Date()): Snapshot {
   const orchestratorProjectId = readOrchestratorProjectId(paths);
   const database = new DatabaseSync(paths.databaseFile, { readOnly: true });
   try {
-    const rows = database.prepare(CANDIDATE_THREADS_SQL).all(FAILED_TURN_STATE) as readonly Record<
+    const rows = database
+      .prepare(CANDIDATE_THREADS_SQL)
+      .all(JSON.stringify(UNFINISHED_TURN_STATES)) as readonly Record<
       string,
       string | number | null
     >[];
@@ -210,6 +225,7 @@ export function observe(paths: WatchdogPaths, now = new Date()): Snapshot {
       };
     });
 
+    const failed = threads.filter((thread) => thread.latestTurn?.state === FAILED_TURN_STATE);
     return {
       takenAt: now.toISOString(),
       databaseFile: paths.databaseFile,
@@ -217,8 +233,9 @@ export function observe(paths: WatchdogPaths, now = new Date()): Snapshot {
       serverOrigin: runtime?.origin ?? null,
       serverRunning: running,
       orchestratorProjectId,
-      threadsWithFailedLatestTurn: threads.length,
-      threads,
+      threadsWithFailedLatestTurn: failed.length,
+      threads: failed,
+      stoppedMidWork: threads,
     };
   } finally {
     database.close();

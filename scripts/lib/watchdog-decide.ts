@@ -176,6 +176,9 @@ function classify(
   if (now.getTime() - failedAt.getTime() > limits.maxFailureAgeMs) {
     return ignore("stalled-too-long-ago-to-resume-unattended");
   }
+  // Belt and braces: the snapshot only offers failed turns, but a turn that is
+  // merely unfinished must never be restarted on the strength of an old error.
+  if (thread.latestTurn?.state !== "error") return ignore("last-turn-did-not-end-in-a-failure");
   if (thread.doneAt) return ignore("conversation-marked-done");
   // A conversation waiting on an approval or a question needs an answer, not a
   // new turn, and the watchdog is not entitled to give it one.
