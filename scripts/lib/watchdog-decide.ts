@@ -177,6 +177,10 @@ function classify(
     return ignore("stalled-too-long-ago-to-resume-unattended");
   }
   if (thread.doneAt) return ignore("conversation-marked-done");
+  // A conversation waiting on an approval or a question needs an answer, not a
+  // new turn, and the watchdog is not entitled to give it one.
+  if (thread.pendingApprovalCount > 0) return ignore("waiting-on-an-approval");
+  if (thread.pendingUserInputCount > 0) return ignore("waiting-on-an-answer");
   if (thread.archivedAt) return ignore("conversation-archived");
   if (thread.sessionStatus === "running" || thread.sessionStatus === "starting") {
     return ignore("already-running");

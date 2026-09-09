@@ -27,6 +27,8 @@ function thread(overrides: Partial<ThreadObservation> = {}): ThreadObservation {
     doneAt: null,
     latestUserMessageAt: "2026-09-08T22:00:00.000Z",
     threadUpdatedAt: STOPPED_AT,
+    pendingApprovalCount: 0,
+    pendingUserInputCount: 0,
     latestTurn: {
       turnId: "turn-1",
       state: "error",
@@ -103,6 +105,8 @@ it("leaves conversations that stopped for any other reason completely alone", ()
     thread({ threadId: "f", latestUserMessageAt: "2026-09-09T01:30:00.000Z" }),
     thread({ threadId: "g", newestTurnRequestedAt: "2026-09-09T01:30:00.000Z" }),
     thread({ threadId: "h", runtimeErrorTurnId: "turn-0" }),
+    thread({ threadId: "i", pendingApprovalCount: 1 }),
+    thread({ threadId: "j", pendingUserInputCount: 1 }),
   ];
   const decision = decide(snapshot(others), [], AFTER_RESET);
   assert.equal(decision.action.kind, "none");

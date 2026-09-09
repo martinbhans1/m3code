@@ -21,7 +21,9 @@ const SCHEMA = [
      thread_id text primary key, project_id text not null, title text not null,
      runtime_mode text not null default 'full-access', interaction_mode text not null default 'default',
      model_selection_json text, archived_at text, done_at text, latest_user_message_at text,
-     updated_at text not null, deleted_at text)`,
+     updated_at text not null, deleted_at text,
+     pending_approval_count integer not null default 0,
+     pending_user_input_count integer not null default 0)`,
   `create table projection_projects (
      project_id text primary key, title text not null, workspace_root text not null)`,
   `create table projection_thread_sessions (

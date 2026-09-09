@@ -35,6 +35,8 @@ export interface ThreadObservation {
   readonly doneAt: string | null;
   readonly latestUserMessageAt: string | null;
   readonly threadUpdatedAt: string;
+  readonly pendingApprovalCount: number;
+  readonly pendingUserInputCount: number;
   readonly latestTurn: TurnObservation | null;
   readonly newestTurnRequestedAt: string | null;
   readonly sessionStatus: string | null;
@@ -94,6 +96,8 @@ const CANDIDATE_THREADS_SQL = `select t.thread_id      as threadId,
         t.done_at        as doneAt,
         t.latest_user_message_at as latestUserMessageAt,
         t.updated_at     as threadUpdatedAt,
+        t.pending_approval_count as pendingApprovalCount,
+        t.pending_user_input_count as pendingUserInputCount,
         p.title          as projectTitle,
         p.workspace_root as workspaceRoot,
         s.status         as sessionStatus,
@@ -130,7 +134,7 @@ export function observe(paths: WatchdogPaths, now = new Date()): Snapshot {
   try {
     const rows = database.prepare(CANDIDATE_THREADS_SQL).all(FAILED_TURN_STATE) as readonly Record<
       string,
-      string | null
+      string | number | null
     >[];
 
     const latestRuntimeError = database.prepare(
@@ -151,6 +155,14 @@ export function observe(paths: WatchdogPaths, now = new Date()): Snapshot {
 
     const threads = rows.map((row): ThreadObservation => {
       const threadId = row["threadId"] as string;
+      const text = (column: string): string | null => {
+        const value = row[column];
+        return typeof value === "string" ? value : null;
+      };
+      const count = (column: string): number => {
+        const value = row[column];
+        return typeof value === "number" ? value : 0;
+      };
       const errorRow = latestRuntimeError.get(threadId) as
         | { readonly payloadJson: string; readonly createdAt: string; readonly turnId: string | null }
         | undefined;
@@ -165,30 +177,32 @@ export function observe(paths: WatchdogPaths, now = new Date()): Snapshot {
       };
       return {
         threadId,
-        title: row["title"] ?? "",
-        projectId: row["projectId"] ?? "",
-        projectTitle: row["projectTitle"] ?? null,
-        workspaceRoot: row["workspaceRoot"] ?? null,
-        isOrchestrator: orchestratorProjectId !== null && row["projectId"] === orchestratorProjectId,
-        runtimeMode: row["runtimeMode"] ?? "full-access",
-        interactionMode: row["interactionMode"] ?? "default",
-        modelSelection: parseJsonOrNull(row["modelSelectionJson"]),
-        archivedAt: row["archivedAt"] ?? null,
-        doneAt: row["doneAt"] ?? null,
-        latestUserMessageAt: row["latestUserMessageAt"] ?? null,
-        threadUpdatedAt: row["threadUpdatedAt"] ?? "",
+        title: text("title") ?? "",
+        projectId: text("projectId") ?? "",
+        projectTitle: text("projectTitle") ?? null,
+        workspaceRoot: text("workspaceRoot") ?? null,
+        isOrchestrator: orchestratorProjectId !== null && text("projectId") === orchestratorProjectId,
+        runtimeMode: text("runtimeMode") ?? "full-access",
+        interactionMode: text("interactionMode") ?? "default",
+        modelSelection: parseJsonOrNull(text("modelSelectionJson")),
+        archivedAt: text("archivedAt") ?? null,
+        doneAt: text("doneAt") ?? null,
+        latestUserMessageAt: text("latestUserMessageAt") ?? null,
+        threadUpdatedAt: text("threadUpdatedAt") ?? "",
+        pendingApprovalCount: count("pendingApprovalCount"),
+        pendingUserInputCount: count("pendingUserInputCount"),
         latestTurn: {
-          turnId: row["turnId"] ?? null,
-          state: row["turnState"] as string,
-          requestedAt: row["turnRequestedAt"] as string,
-          startedAt: row["turnStartedAt"] ?? null,
-          completedAt: row["turnCompletedAt"] ?? null,
+          turnId: text("turnId") ?? null,
+          state: text("turnState") ?? "error",
+          requestedAt: text("turnRequestedAt") ?? "",
+          startedAt: text("turnStartedAt") ?? null,
+          completedAt: text("turnCompletedAt") ?? null,
         },
         newestTurnRequestedAt: turnRow.newestTurnRequestedAt,
-        sessionStatus: row["sessionStatus"] ?? null,
-        sessionUpdatedAt: row["sessionUpdatedAt"] ?? null,
-        providerName: row["providerName"] ?? null,
-        providerInstanceId: row["providerInstanceId"] ?? null,
+        sessionStatus: text("sessionStatus") ?? null,
+        sessionUpdatedAt: text("sessionUpdatedAt") ?? null,
+        providerName: text("providerName") ?? null,
+        providerInstanceId: text("providerInstanceId") ?? null,
         runtimeErrorMessage: errorPayload?.message ?? null,
         runtimeErrorAt: errorRow?.createdAt ?? null,
         runtimeErrorTurnId: errorRow?.turnId ?? null,
