@@ -146,6 +146,39 @@ it("wakes one conversation per scan and waits for it to show life before the nex
   assert.include(held.action.reason, "show-life");
 });
 
+it("lets a separate account recover in parallel, because they share no limit", () => {
+  const stalled = [
+    // Still stalled and still silent: the Claude account is mid-recovery.
+    thread({ threadId: "claude-one", providerInstanceId: "claudeAgent" }),
+    thread({ threadId: "claude-two", providerInstanceId: "claudeAgent" }),
+    thread({ threadId: "codex-one", providerInstanceId: "codex" }),
+  ];
+  const decision = decide(
+    snapshot(stalled),
+    [sentEntry({ threadId: "claude-one", providerInstanceId: "claudeAgent" })],
+    new Date("2026-09-09T01:50:00.000Z"),
+  );
+  assert.equal(decision.action.kind, "nudge");
+  if (decision.action.kind !== "nudge") return;
+  assert.equal(decision.action.threadId, "codex-one");
+});
+
+it("still holds every conversation on the account that is waiting on its last nudge", () => {
+  const stalled = [
+    thread({ threadId: "claude-one", providerInstanceId: "claudeAgent" }),
+    thread({ threadId: "claude-two", providerInstanceId: "claudeAgent" }),
+    thread({ threadId: "claude-three", providerInstanceId: "claudeAgent" }),
+  ];
+  const decision = decide(
+    snapshot(stalled),
+    [sentEntry({ threadId: "claude-one", providerInstanceId: "claudeAgent" })],
+    new Date("2026-09-09T01:50:00.000Z"),
+  );
+  assert.equal(decision.action.kind, "none");
+  if (decision.action.kind !== "none") return;
+  assert.include(decision.action.reason, "claude-one");
+});
+
 it("releases the next conversation once the woken one has moved", () => {
   const moved = [
     thread({ threadId: "one", latestActivityAt: "2026-09-09T01:47:00.000Z" }),

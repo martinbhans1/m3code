@@ -10,9 +10,9 @@
  * Three ideas do the safety work:
  *  - a conversation is only ever a candidate if its own last turn died with a
  *    usage-limit message we could read a reset time out of;
- *  - at most one conversation is woken per scan, and the next one waits until
- *    the previous one visibly moved, so a limit that has not really lifted
- *    costs one nudge rather than five;
+ *  - at most one conversation is woken per scan, and the next one on that
+ *    account waits until the previous one visibly moved, so a limit that has
+ *    not really lifted costs one nudge rather than five;
  *  - hard caps per conversation, per window and per day, counted from the
  *    ledger on disk, which survives this process being killed.
  */
@@ -222,38 +222,47 @@ function classify(
   };
 }
 
+/** Accounts have separate budgets, so they queue separately. Null is its own bucket. */
+function budgetKey(providerInstanceId: string | null): string {
+  return providerInstanceId ?? "unknown-provider";
+}
+
 /**
- * Did the conversation we woke last actually wake up?
+ * Did the conversation we woke last on this account actually wake up?
  *
  * Absence from the snapshot is the strongest yes: the snapshot only contains
  * conversations whose newest turn failed, so a woken one that is no longer
  * there has started a turn. Otherwise, any activity newer than the nudge counts
  * - including a fresh failure, which is how "the limit had not really lifted"
  * gets turned back into a wait rather than another nudge.
+ *
+ * Asked per account rather than globally: waiting one out is caution about a
+ * limit that might not have lifted, and two accounts do not share a limit, so
+ * making a Codex conversation queue behind a Claude one protects nothing.
  */
-function previousNudgeProgress(
+function accountIsWaitingOnItsLastNudge(
   snapshot: Snapshot,
   ledger: readonly LedgerEntry[],
+  budget: string,
   now: Date,
   limits: WatchdogLimits,
-): { readonly settled: true } | { readonly settled: false; readonly reason: string } {
-  const lastSent = ledger.toReversed().find((entry) => entry.outcome === "sent");
-  if (!lastSent) return { settled: true };
+): string | null {
+  const lastSent = ledger
+    .toReversed()
+    .find((entry) => entry.outcome === "sent" && budgetKey(entry.providerInstanceId) === budget);
+  if (!lastSent) return null;
   const nudgedAt = new Date(lastSent.at);
-  if (!Number.isFinite(nudgedAt.getTime())) return { settled: true };
+  if (!Number.isFinite(nudgedAt.getTime())) return null;
   if (now.getTime() - nudgedAt.getTime() > limits.canaryProgressTimeoutMs) {
     // Waiting forever on a conversation that never woke would disable the
     // watchdog entirely; the spend caps are what bound us from here.
-    return { settled: true };
+    return null;
   }
   const target = snapshot.threads.find((thread) => thread.threadId === lastSent.threadId);
-  if (!target) return { settled: true };
-  if (isAfter(target.latestActivityAt, nudgedAt)) return { settled: true };
-  if (isAfter(target.newestTurnRequestedAt, nudgedAt)) return { settled: true };
-  return {
-    settled: false,
-    reason: `waiting-for-${lastSent.threadId}-to-show-life-after-its-nudge`,
-  };
+  if (!target) return null;
+  if (isAfter(target.latestActivityAt, nudgedAt)) return null;
+  if (isAfter(target.newestTurnRequestedAt, nudgedAt)) return null;
+  return lastSent.threadId;
 }
 
 export function decide(
@@ -296,11 +305,23 @@ export function decide(
   if (nudgesSince(ledger, now.getTime() - 24 * 60 * 60_000) >= limits.maxNudgesPerDay) {
     return none("daily-nudge-cap-reached");
   }
-  const progress = previousNudgeProgress(snapshot, ledger, now, limits);
-  if (!progress.settled) return none(progress.reason);
+  const blockedBudgets = new Map<string, string>();
+  const ready = candidates.filter((candidate) => {
+    const budget = budgetKey(candidate.thread.providerInstanceId);
+    const waitingOn =
+      blockedBudgets.get(budget) ??
+      accountIsWaitingOnItsLastNudge(snapshot, ledger, budget, now, limits);
+    if (waitingOn === null) return true;
+    blockedBudgets.set(budget, waitingOn);
+    return false;
+  });
+  if (ready.length === 0) {
+    const waitingOn = [...blockedBudgets.values()].join(", ");
+    return none(`waiting-for-${waitingOn}-to-show-life-after-its-nudge`);
+  }
 
   // Supervisors first: whatever they were watching stays stopped until they are.
-  const chosen = [...candidates].sort((left, right) => {
+  const chosen = [...ready].sort((left, right) => {
     if (left.thread.isOrchestrator !== right.thread.isOrchestrator) {
       return left.thread.isOrchestrator ? -1 : 1;
     }
