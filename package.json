@@ -4,6 +4,10 @@
   "type": "module",
   "scripts": {
     "prepare": "effect-tsgo patch",
+    "watchdog": "node scripts/usage-limit-watchdog.ts scan",
+    "watchdog:status": "node scripts/usage-limit-watchdog.ts status",
+    "watchdog:install": "node scripts/usage-limit-watchdog.ts install",
+    "watchdog:uninstall": "node scripts/usage-limit-watchdog.ts uninstall",
     "dev": "node scripts/dev-runner.ts dev",
     "dev:server": "node scripts/dev-runner.ts dev:server",
     "dev:web": "node scripts/dev-runner.ts dev:web",
