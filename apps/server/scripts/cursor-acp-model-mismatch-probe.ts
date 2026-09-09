@@ -132,6 +132,7 @@ class JsonRpcChild {
   constructor(bin: string, args: string[], cwd: string) {
     const spawnCommand = Effect.runSync(resolveSpawnCommand(bin, args));
     this.child = spawn(spawnCommand.command, spawnCommand.args, {
+      windowsHide: true,
       cwd,
       shell: spawnCommand.shell,
       stdio: ["pipe", "pipe", "pipe"],

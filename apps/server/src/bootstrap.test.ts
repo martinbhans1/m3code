@@ -109,11 +109,12 @@ it.layer(NodeServices.layer)("readBootstrapEnvelope", (it) => {
       const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-bootstrap-" });
       const fifoPath = path.join(tempDir, "bootstrap.pipe");
 
-      yield* Effect.sync(() => execFileSync("mkfifo", [fifoPath]));
+      yield* Effect.sync(() => execFileSync("mkfifo", [fifoPath], { windowsHide: true }));
 
       const _writer = yield* Effect.acquireRelease(
         Effect.sync(() =>
           spawn("sh", ["-c", 'exec 3>"$1"; sleep 60', "sh", fifoPath], {
+            windowsHide: true,
             stdio: ["ignore", "ignore", "ignore"],
           }),
         ),

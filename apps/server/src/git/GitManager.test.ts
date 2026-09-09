@@ -176,6 +176,7 @@ function normalizeFakePullRequestSummary(raw: unknown): GitHubPullRequestSummary
 
 function runGitSyncForFakeGh(cwd: string, args: readonly string[]): void {
   const result = spawnSync("git", args, {
+    windowsHide: true,
     cwd,
     encoding: "utf8",
   });
@@ -474,6 +475,7 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
               {
                 cwd: input.cwd,
                 encoding: "utf8",
+                windowsHide: true,
               },
             );
             if (existingBranch.status === 0) {

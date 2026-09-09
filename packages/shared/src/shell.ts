@@ -21,7 +21,11 @@ const WINDOWS_SHELL_CANDIDATES = ["pwsh.exe", "powershell.exe"] as const;
 type ExecFileSyncLike = (
   file: string,
   args: ReadonlyArray<string>,
-  options: { encoding: "utf8"; timeout: number },
+  // windowsHide is part of the contract, not an optional nicety: this is the one
+  // production path that spawns a process without going through the shared
+  // spawner, and on Windows it launches PowerShell, which opens a real console
+  // window over whatever the user is doing unless every caller passes it.
+  options: { encoding: "utf8"; timeout: number; windowsHide: true },
 ) => string;
 
 function canExecuteFile(filePath: string): boolean {
@@ -203,6 +207,7 @@ export function readPathFromLaunchctl(
   try {
     return trimNonEmpty(
       execFile("/bin/launchctl", ["getenv", "PATH"], {
+        windowsHide: true,
         encoding: "utf8",
         timeout: 2000,
       }),
@@ -312,6 +317,7 @@ export const readEnvironmentFromLoginShell: ShellEnvironmentReader = (
   }
 
   const output = execFile(shell, ["-ilc", buildEnvironmentCaptureCommand(names)], {
+    windowsHide: true,
     encoding: "utf8",
     timeout: 5000,
   });
@@ -382,7 +388,11 @@ export function readEnvironmentFromWindowsShell(
   ];
   for (const shell of WINDOWS_SHELL_CANDIDATES) {
     try {
-      const output = execFile(shell, args, { encoding: "utf8", timeout: 5000 });
+      const output = execFile(shell, args, {
+        windowsHide: true,
+        encoding: "utf8",
+        timeout: 5000,
+      });
 
       const environment: Partial<Record<string, string>> = {};
       for (const name of names) {

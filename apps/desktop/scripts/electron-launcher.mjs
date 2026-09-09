@@ -47,6 +47,7 @@ function resolveDevelopmentProtocolCallbackPort() {
 
 function setPlistString(plistPath, key, value) {
   const replaceResult = spawnSync("plutil", ["-replace", key, "-string", value, plistPath], {
+    windowsHide: true,
     encoding: "utf8",
   });
   if (replaceResult.status === 0) {
@@ -54,6 +55,7 @@ function setPlistString(plistPath, key, value) {
   }
 
   const insertResult = spawnSync("plutil", ["-insert", key, "-string", value, plistPath], {
+    windowsHide: true,
     encoding: "utf8",
   });
   if (insertResult.status === 0) {
@@ -67,6 +69,7 @@ function setPlistString(plistPath, key, value) {
 function setPlistJson(plistPath, key, value) {
   const serialized = JSON.stringify(value);
   const replaceResult = spawnSync("plutil", ["-replace", key, "-json", serialized, plistPath], {
+    windowsHide: true,
     encoding: "utf8",
   });
   if (replaceResult.status === 0) {
@@ -74,6 +77,7 @@ function setPlistJson(plistPath, key, value) {
   }
 
   const insertResult = spawnSync("plutil", ["-insert", key, "-json", serialized, plistPath], {
+    windowsHide: true,
     encoding: "utf8",
   });
   if (insertResult.status === 0) {
@@ -85,7 +89,10 @@ function setPlistJson(plistPath, key, value) {
 }
 
 function runChecked(command, args) {
-  const result = spawnSync(command, args, { encoding: "utf8" });
+  const result = spawnSync(command, args, {
+    windowsHide: true,
+    encoding: "utf8",
+  });
   if (result.status === 0) {
     return;
   }

@@ -102,6 +102,7 @@ function renderIcon(token, symbol, color) {
     `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="${symbol.viewBox}" style="color:${color}">${symbol.body}</svg>`,
   );
   execFileSync("sips", ["-s", "format", "png", svgPath, "--out", pngPath], {
+    windowsHide: true,
     stdio: "ignore",
   });
   rmSync(svgPath);

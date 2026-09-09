@@ -64,7 +64,10 @@ function killChildTreeByPid(pid, signal) {
     return;
   }
 
-  spawnSync("pkill", [`-${signal}`, "-P", String(pid)], { stdio: "ignore" });
+  spawnSync("pkill", [`-${signal}`, "-P", String(pid)], {
+    windowsHide: true,
+    stdio: "ignore",
+  });
 }
 
 function cleanupStaleDevApps() {
@@ -72,7 +75,10 @@ function cleanupStaleDevApps() {
     return;
   }
 
-  spawnSync("pkill", ["-f", "--", `--t3code-dev-root=${desktopDir}`], { stdio: "ignore" });
+  spawnSync("pkill", ["-f", "--", `--t3code-dev-root=${desktopDir}`], {
+    windowsHide: true,
+    stdio: "ignore",
+  });
 }
 
 function startApp() {
@@ -88,6 +94,7 @@ function startApp() {
     : [...electronArgs, `--t3code-dev-root=${desktopDir}`, "dist-electron/main.cjs"];
   const electronCommand = resolveElectronLaunchCommand(launchArgs);
   const app = spawn(electronCommand.electronPath, electronCommand.args, {
+    windowsHide: true,
     cwd: desktopDir,
     env: childEnv,
     stdio: "inherit",
@@ -202,7 +209,10 @@ function killChildTree(signal) {
   }
 
   // Kill direct children as a final fallback in case normal shutdown leaves stragglers.
-  spawnSync("pkill", [`-${signal}`, "-P", String(process.pid)], { stdio: "ignore" });
+  spawnSync("pkill", [`-${signal}`, "-P", String(process.pid)], {
+    windowsHide: true,
+    stdio: "ignore",
+  });
 }
 
 async function shutdown(exitCode) {

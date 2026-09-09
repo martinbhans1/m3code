@@ -209,12 +209,14 @@ try {
     {
       cwd: repoRoot,
       stdio: "inherit",
+      windowsHide: true,
     },
   );
 
   rmSync(resolve(tempRoot, "pnpm-lock.yaml"), { force: true });
 
   execFileSync("vp", ["install", "--lockfile-only", "--ignore-scripts"], {
+    windowsHide: true,
     cwd: tempRoot,
     stdio: "inherit",
   });
@@ -247,6 +249,7 @@ try {
     {
       cwd: repoRoot,
       encoding: "utf8",
+      windowsHide: true,
     },
   );
   assertContains(
@@ -278,6 +281,7 @@ try {
     {
       cwd: repoRoot,
       stdio: "inherit",
+      windowsHide: true,
     },
   );
 
@@ -343,6 +347,7 @@ try {
     {
       cwd: repoRoot,
       stdio: "inherit",
+      windowsHide: true,
     },
   );
 

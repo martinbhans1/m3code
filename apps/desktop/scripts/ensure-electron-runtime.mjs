@@ -67,6 +67,7 @@ function isMachO(filePath) {
   }
 
   const result = spawnSync("file", ["-b", filePath], {
+    windowsHide: true,
     encoding: "utf8",
   });
 
@@ -100,6 +101,7 @@ function invalidRuntimePaths(electronDir, platformPath) {
 
 function runChecked(command, args) {
   const result = spawnSync(command, args, {
+    windowsHide: true,
     encoding: "utf8",
     stdio: "inherit",
   });

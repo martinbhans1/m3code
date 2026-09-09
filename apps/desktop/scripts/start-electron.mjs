@@ -38,6 +38,7 @@ delete childEnv.ELECTRON_RUN_AS_NODE;
 
 const electronCommand = resolveElectronLaunchCommand([MAIN_ENTRY]);
 const child = spawn(electronCommand.electronPath, electronCommand.args, {
+  windowsHide: true,
   stdio: "inherit",
   cwd: desktopDir,
   env: childEnv,

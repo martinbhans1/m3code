@@ -11,6 +11,7 @@ console.log("\nLaunching Electron smoke test...");
 
 const electronCommand = resolveElectronLaunchCommand([mainJs]);
 const child = spawn(electronCommand.electronPath, electronCommand.args, {
+  windowsHide: true,
   stdio: ["pipe", "pipe", "pipe"],
   env: {
     ...process.env,

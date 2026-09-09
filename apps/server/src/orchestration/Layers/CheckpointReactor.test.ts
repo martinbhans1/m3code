@@ -200,6 +200,7 @@ async function waitForEvent(
 
 function runGit(cwd: string, args: ReadonlyArray<string>) {
   return execFileSync("git", args, {
+    windowsHide: true,
     cwd,
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",

@@ -124,7 +124,7 @@ const runBuild = Effect.fn("runBuild")(function* (input: {
     const child = spawn(
       process.execPath,
       [scriptPath, "--platform", input.buildPlatform, "--target", input.buildTarget],
-      { cwd: input.repoRoot, stdio: "inherit" },
+      { cwd: input.repoRoot, stdio: "inherit", windowsHide: true },
     );
     child.on("error", () => resume(Effect.succeed(1)));
     child.on("close", (code) => resume(Effect.succeed(code ?? 1)));
