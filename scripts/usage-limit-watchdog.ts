@@ -36,6 +36,7 @@ import {
 } from "./lib/watchdog-abandoned.ts";
 import { decide, type ScanDecision, type ThreadVerdict } from "./lib/watchdog-decide.ts";
 import {
+  buildRunnerScript,
   buildTaskXml,
   consolePopupHelperExists,
   parseConsolePopupAudit,
@@ -381,7 +382,7 @@ function printStatus(): number {
  */
 function writeRunnerScript(paths: WatchdogPaths): void {
   const scanCommand = `"${process.execPath}" --no-warnings "${join(REPO_ROOT, "scripts", "usage-limit-watchdog.ts")}" scan >> "${paths.runLogFile}" 2>&1`;
-  writeFileSync(paths.runnerFile, ["@echo off", scanCommand, ""].join("\\r\\n"));
+  writeFileSync(paths.runnerFile, buildRunnerScript(scanCommand));
 }
 
 /** `DOMAIN\user`, which is what Task Scheduler resolves to an account. */

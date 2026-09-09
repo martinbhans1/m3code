@@ -138,6 +138,18 @@ export function buildTaskXml(task: TaskDefinition): string {
  * how this defect came back: the audit only recognises the house shape, so a
  * private variant is invisible to the thing meant to police it.
  */
+/**
+ * The batch file the wrapper runs.
+ *
+ * Batch files are line-oriented and Windows wants CRLF: a version of this that
+ * wrote the escape sequences literally produced a single line, which cmd
+ * happily echoed instead of running, so every scheduled scan quietly did
+ * nothing while still reporting success.
+ */
+export function buildRunnerScript(command: string): string {
+  return ["@echo off", command, ""].join("\r\n");
+}
+
 export const CONSOLE_POPUP_HELPER = join(
   homedir(),
   ".claude",

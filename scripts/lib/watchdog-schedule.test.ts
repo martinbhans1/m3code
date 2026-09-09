@@ -2,6 +2,7 @@
 import { assert, it } from "@effect/vitest";
 
 import {
+  buildRunnerScript,
   buildTaskXml,
   parseConsolePopupAudit,
   taskLaunchesHidden,
@@ -95,4 +96,10 @@ it("knows when the machine is clean", () => {
   );
   assert.isTrue(audit.clean);
   assert.deepStrictEqual(audit.repeatingOffenders, []);
+});
+
+it("writes the batch file as real lines, not escape sequences", () => {
+  const script = buildRunnerScript('"node.exe" scan >> "log" 2>&1');
+  assert.deepStrictEqual(script.split("\r\n"), ["@echo off", '"node.exe" scan >> "log" 2>&1', ""]);
+  assert.notInclude(script, String.raw`\r\n`);
 });
