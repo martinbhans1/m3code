@@ -36,12 +36,18 @@ import {
 } from "./lib/watchdog-abandoned.ts";
 import { decide, type ScanDecision, type ThreadVerdict } from "./lib/watchdog-decide.ts";
 import {
-  buildHiddenLauncherVbs,
   buildTaskXml,
+  consolePopupHelperExists,
+  parseConsolePopupAudit,
+  type ConsolePopupAudit,
+  CONSOLE_POPUP_HELPER,
   deleteTask,
+  readTaskAction,
   registerTaskFromXml,
+  runConsolePopupHelper,
   SCAN_TASK_NAME,
   taskExists,
+  taskLaunchesHidden,
   toTaskBoundary,
   WAKE_TASK_NAME,
   wakeTimeFor,
@@ -74,6 +80,8 @@ const IS_WINDOWS = process.platform === "win32";
 const SCAN_INTERVAL_MINUTES = 5;
 /** Get up a couple of minutes after the limit lifts, not on the dot. */
 const WAKE_GRACE_MS = 3 * 60_000;
+/** The scheduled-task audit is machine-wide and slow-ish; once a day is plenty. */
+const CONSOLE_AUDIT_INTERVAL_MS = 24 * 60 * 60_000;
 
 interface WakeTaskOutcome {
   readonly armedFor: string | null;
@@ -99,6 +107,8 @@ interface ScanRecord {
   readonly wake: WakeTaskOutcome;
   /** Never acted on; recorded so the status output can surface them. */
   readonly abandoned: readonly AbandonedConversation[];
+  /** Daily check that nothing on this machine has been given a window-flashing task. */
+  readonly consolePopups: ConsolePopupAudit | null;
 }
 
 /** One line per conversation the watchdog formed an opinion about. */
@@ -155,6 +165,36 @@ interface ScanOptions {
   readonly simulate: boolean;
 }
 
+/**
+ * Once a day, ask whether anything on this machine has been given a task that
+ * will flash a console window.
+ *
+ * The watchdog is the only thing here that runs unattended all day, so it is
+ * the natural place to keep asking. Whoever creates the next bad task will not
+ * be looking for it - this is.
+ */
+function auditConsolePopups(paths: WatchdogPaths, now: Date): ConsolePopupAudit | null {
+  if (!IS_WINDOWS || !consolePopupHelperExists()) return null;
+  const previous = readJsonFile<ConsolePopupAudit>(paths.consoleAuditFile);
+  if (previous && now.getTime() - new Date(previous.ranAt).getTime() < CONSOLE_AUDIT_INTERVAL_MS) {
+    return previous;
+  }
+  try {
+    const audit = parseConsolePopupAudit(runConsolePopupHelper(false), now.toISOString());
+    writeJsonFile(paths.consoleAuditFile, audit);
+    if (audit.repeatingOffenders.length > 0) {
+      appendLogLine(
+        paths,
+        `scheduled tasks that will flash a console window: ${audit.repeatingOffenders.join(", ")}`,
+      );
+    }
+    return audit;
+  } catch {
+    // silent-ok: an audit that cannot run must not stop the watchdog working
+    return previous;
+  }
+}
+
 async function runScan({ dryRun, simulate }: ScanOptions): Promise<number> {
   const paths = watchdogPaths();
   ensureWatchdogDirs(paths);
@@ -171,6 +211,7 @@ async function runScan({ dryRun, simulate }: ScanOptions): Promise<number> {
     const ledger = readLedger(paths).entries;
     const decision = decide(snapshot, ledger, startedAt);
     const abandoned = findAbandoned(snapshot.stoppedMidWork, startedAt);
+    const consolePopups = auditConsolePopups(paths, startedAt);
     let delivery: DeliveryRecord | null = null;
 
     if (decision.action.kind === "nudge") {
@@ -255,6 +296,7 @@ async function runScan({ dryRun, simulate }: ScanOptions): Promise<number> {
       delivery,
       wake,
       abandoned,
+      consolePopups,
     };
     writeJsonFile(scanRecordPath(paths, scanId), record);
     writeJsonFile(paths.latestScanFile, {
@@ -267,6 +309,7 @@ async function runScan({ dryRun, simulate }: ScanOptions): Promise<number> {
       waitingUntil: decision.waitingUntil,
       wake,
       abandoned,
+      consolePopups,
     });
 
     const action = decision.action;
@@ -319,21 +362,26 @@ function printStatus(): number {
   // The point of this section is that nothing else in the app will ever tell
   // him: a conversation that died on a crash is invisible from every surface.
   process.stdout.write(`\n${formatAbandoned(latest?.abandoned ?? [])}`);
+
+  const offenders = latest?.consolePopups?.repeatingOffenders ?? [];
+  if (offenders.length > 0) {
+    process.stdout.write(
+      `\nScheduled tasks that will flash a console window and steal focus:\n${offenders
+        .map((task) => `  ${task}`)
+        .join("\n")}\nFix them with: powershell -File ${CONSOLE_POPUP_HELPER} -Fix\n`,
+    );
+  }
   return 0;
 }
 
 /**
- * The launcher pair the scheduled tasks point at.
- *
- * The `.cmd` holds the actual command and the redirection, so every unattended
- * run leaves its output somewhere readable; the `.vbs` exists purely to run
- * that `.cmd` with no window, because a task aimed at a console program flashes
- * a black box over whatever is on screen every time it fires.
+ * The command the tasks run, in a `.cmd` so every unattended run leaves its
+ * output somewhere readable. Nothing points a task at this file directly - see
+ * install().
  */
-function writeLauncherScripts(paths: WatchdogPaths): void {
+function writeRunnerScript(paths: WatchdogPaths): void {
   const scanCommand = `"${process.execPath}" --no-warnings "${join(REPO_ROOT, "scripts", "usage-limit-watchdog.ts")}" scan >> "${paths.runLogFile}" 2>&1`;
-  writeFileSync(paths.runnerFile, ["@echo off", scanCommand, ""].join("\r\n"));
-  writeFileSync(paths.launcherFile, buildHiddenLauncherVbs(`"${paths.runnerFile}"`));
+  writeFileSync(paths.runnerFile, ["@echo off", scanCommand, ""].join("\\r\\n"));
 }
 
 /** `DOMAIN\user`, which is what Task Scheduler resolves to an account. */
@@ -405,6 +453,17 @@ function armWakeTask(
     } satisfies WakeTaskState);
     return { armedFor: null, changed: true, detail: "nothing-is-waiting-so-the-wake-was-cleared" };
   }
+  // Reuses the wrapper the house helper wrote for the heartbeat: same command,
+  // and the helper only wraps repeating tasks, so a single-shot task of our own
+  // making would otherwise be the one thing on the machine still flashing.
+  const wrapper = readJsonFile<{ readonly wrapper: string }>(paths.wrapperStateFile)?.wrapper;
+  if (!wrapper) {
+    return {
+      armedFor: null,
+      changed: false,
+      detail: "no-hidden-wrapper-recorded-run-install-again",
+    };
+  }
   const xmlFile = join(paths.root, "wake-task.xml");
   writeTaskXmlFile(
     xmlFile,
@@ -413,7 +472,7 @@ function armWakeTask(
         "Wakes this machine once, when a usage limit that stopped work is due to lift.",
       userId: currentUserId(),
       scriptHost: SCRIPT_HOST,
-      scriptPath: paths.launcherFile,
+      scriptPath: wrapper,
       startBoundary: desired,
       wakeToRun: true,
     }),
@@ -426,10 +485,43 @@ function armWakeTask(
   return { armedFor: desired, changed: true, detail: "armed" };
 }
 
+/**
+ * Register the heartbeat, then hand it to the house helper to be wrapped.
+ *
+ * The task is deliberately registered pointing at the `.cmd` - the shape that
+ * flashes - and immediately handed to `Check-ConsolePopupTasks.ps1 -Fix`, which
+ * writes the wrapper and repoints it. Going through the helper rather than
+ * writing a wrapper here means there is exactly one wrapper pattern on the
+ * machine and the audit can see this task the same way it sees every other.
+ *
+ * If the helper is missing, the task is removed again rather than left in the
+ * flashing shape: a watchdog that steals focus twelve times an hour is worse
+ * than no watchdog.
+ */
+function wrapScanTaskHidden(): string {
+  if (!consolePopupHelperExists()) {
+    deleteTask(SCAN_TASK_NAME);
+    throw new Error(
+      `The scheduled task would open a console window on every run, and the wrapper helper is missing at ${CONSOLE_POPUP_HELPER}. Nothing was left registered.`,
+    );
+  }
+  runConsolePopupHelper(true);
+  const action = readTaskAction(SCAN_TASK_NAME);
+  if (!taskLaunchesHidden(action)) {
+    deleteTask(SCAN_TASK_NAME);
+    throw new Error(
+      `The wrapper helper did not repoint the task at the script host (it still runs ${action?.execute ?? "nothing"}). Nothing was left registered.`,
+    );
+  }
+  // The single-shot wake task runs the same command, so it reuses the wrapper
+  // the helper just wrote. The helper itself only wraps repeating tasks.
+  return (action as { readonly arguments: string }).arguments.replaceAll('"', "");
+}
+
 function install(noWake: boolean): number {
   const paths = watchdogPaths();
   ensureWatchdogDirs(paths);
-  writeLauncherScripts(paths);
+  writeRunnerScript(paths);
   writeJsonFile(paths.configFile, { wakeMachine: !noWake });
   if (!IS_WINDOWS) {
     process.stdout.write(
@@ -444,8 +536,8 @@ function install(noWake: boolean): number {
     buildTaskXml({
       description: "Restarts conversations that a usage limit stopped, once the limit lifts.",
       userId: currentUserId(),
-      scriptHost: SCRIPT_HOST,
-      scriptPath: paths.launcherFile,
+      scriptHost: paths.runnerFile,
+      scriptPath: "",
       startBoundary,
       repeatEveryMinutes: SCAN_INTERVAL_MINUTES,
       // The heartbeat never wakes the machine; the single-shot task does.
@@ -453,6 +545,8 @@ function install(noWake: boolean): number {
     }),
   );
   registerTaskFromXml(SCAN_TASK_NAME, xmlFile);
+  const wrapper = wrapScanTaskHidden();
+  writeJsonFile(paths.wrapperStateFile, { wrapper, wrappedAt: new Date().toISOString() });
   if (noWake) {
     deleteTask(WAKE_TASK_NAME);
     writeJsonFile(paths.wakeStateFile, { armedFor: null, updatedAt: new Date().toISOString() });

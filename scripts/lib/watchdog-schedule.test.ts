@@ -1,13 +1,19 @@
 // @effect-diagnostics globalDate:off - Fixtures for a standalone watchdog process.
 import { assert, it } from "@effect/vitest";
 
-import { buildHiddenLauncherVbs, buildTaskXml, toTaskBoundary, wakeTimeFor } from "./watchdog-schedule.ts";
+import {
+  buildTaskXml,
+  parseConsolePopupAudit,
+  taskLaunchesHidden,
+  toTaskBoundary,
+  wakeTimeFor,
+} from "./watchdog-schedule.ts";
 
 const BASE = {
   description: "test",
   userId: "DOMAIN\\user",
   scriptHost: "C:\\Windows\\System32\\wscript.exe",
-  scriptPath: "C:\\Users\\Martin\\.t3\\watchdog\\run-scan.vbs",
+  scriptPath: "C:\\Users\\Martin\\.claude\\hidden-task-wrappers\\M3CodeUsageLimitWatchdog.vbs",
   startBoundary: "2026-09-09T03:43:00",
 } as const;
 
@@ -30,12 +36,23 @@ it("lets the single-shot task wake the machine, and gives it no repetition", () 
 it("runs through the script host so no console window appears", () => {
   const xml = buildTaskXml({ ...BASE, repeatEveryMinutes: 5, wakeToRun: false });
   assert.include(xml, "<Command>C:\\Windows\\System32\\wscript.exe</Command>");
-  assert.include(xml, "run-scan.vbs");
+  assert.include(xml, "M3CodeUsageLimitWatchdog.vbs");
 });
 
-it("hides the window it launches", () => {
-  const vbs = buildHiddenLauncherVbs('"C:\\path with spaces\\run-scan.cmd"');
-  assert.include(vbs, 'shell.Run """C:\\path with spaces\\run-scan.cmd""", 0, False');
+it("can tell a wrapped task from one that will flash", () => {
+  assert.isTrue(
+    taskLaunchesHidden({
+      execute: "C:\\WINDOWS\\System32\\wscript.exe",
+      arguments: '"C:\\wrapper.vbs"',
+    }),
+  );
+  assert.isFalse(taskLaunchesHidden({ execute: "C:\\Users\\Martin\\run-scan.cmd", arguments: "" }));
+  assert.isFalse(taskLaunchesHidden(null));
+});
+
+it("omits the arguments element when the action is the program itself", () => {
+  const xml = buildTaskXml({ ...BASE, scriptPath: "", repeatEveryMinutes: 5, wakeToRun: false });
+  assert.notInclude(xml, "<Arguments>");
 });
 
 it("writes task boundaries as local wall-clock time, which is what the scheduler expects", () => {
@@ -53,4 +70,29 @@ it("arms the wake shortly after the reset, and not at all when nothing is waitin
 it("refuses to arm a wake for a moment that has already gone by", () => {
   const now = new Date("2026-09-09T02:00:00.000Z");
   assert.isNull(wakeTimeFor("2026-09-09T01:40:00.000Z", now, 3 * 60_000));
+});
+
+it("reads repeating offenders out of the audit's own table", () => {
+  const audit = parseConsolePopupAudit(
+    [
+      "TaskName                  Repeats     LastRun             NextRun Execute",
+      "--------                  -------     -------             ------- -------",
+      "SomeNoisyTask             PT5M        09/09/2026 08:00:00         C:\thing.cmd",
+      "ClaudeRemoteHost          (no repeat) 08/09/2026 06:54:41         C:/launch.bat",
+      "",
+      "Re-run with -Fix to wrap the repeating ones so they run hidden.",
+    ].join("\n"),
+    "2026-09-09T07:00:00.000Z",
+  );
+  assert.deepStrictEqual(audit.repeatingOffenders, ["SomeNoisyTask"]);
+  assert.isFalse(audit.clean);
+});
+
+it("knows when the machine is clean", () => {
+  const audit = parseConsolePopupAudit(
+    "No interactive console-spawning tasks found.",
+    "2026-09-09T07:00:00.000Z",
+  );
+  assert.isTrue(audit.clean);
+  assert.deepStrictEqual(audit.repeatingOffenders, []);
 });

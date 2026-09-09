@@ -68,9 +68,20 @@ waiting on, and deletes it when nothing is waiting. That is the difference
 between a machine that gets up when there is something specific to do and one
 that is woken every five minutes all night for nothing.
 
-Both tasks run on battery, start late if the machine was off at the appointed
-minute, and launch through `wscript.exe` and a hidden-window script - a task
-pointed straight at a console program flashes a black window on every run.
+Both tasks run on battery and start late if the machine was off at the appointed
+minute.
+
+Neither points at a console program. A task that does opens a real window on
+every run and steals focus, and nothing can suppress it after the fact - by the
+time anything could hide the window, it has already appeared. `install`
+therefore hands the task to `~/.claude/scripts/Check-ConsolePopupTasks.ps1
+-Fix`, the machine's own wrapper tool, rather than writing a wrapper of its own:
+one pattern on the machine means the audit can see every task, including this
+one. If that helper is missing, `install` removes the task again rather than
+leave a window-flashing one behind.
+
+Each scan also re-runs that audit once a day and reports anything on the machine
+that would flash, in `pnpm watchdog:status`.
 
 **If you decide you hate the machine waking itself:**
 

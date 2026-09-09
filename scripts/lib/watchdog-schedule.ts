@@ -22,7 +22,9 @@
  */
 // @effect-diagnostics nodeBuiltinImport:off - must run standalone of the app runtime
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export const SCAN_TASK_NAME = "M3CodeUsageLimitWatchdog";
 export const WAKE_TASK_NAME = "M3CodeUsageLimitWatchdogWake";
@@ -48,7 +50,9 @@ export function toTaskBoundary(when: Date): string {
 export interface TaskDefinition {
   readonly description: string;
   readonly userId: string;
+  /** The program the scheduler launches. */
   readonly scriptHost: string;
+  /** Its argument, if any. Empty when the program is itself the whole action. */
   readonly scriptPath: string;
   readonly startBoundary: string;
   /** Present for the heartbeat task, absent for the single-shot wake task. */
@@ -110,8 +114,10 @@ export function buildTaskXml(task: TaskDefinition): string {
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>${task.scriptHost}</Command>
-      <Arguments>"${task.scriptPath}"</Arguments>
+      <Command>${task.scriptHost}</Command>${
+        task.scriptPath === "" ? "" : `
+      <Arguments>"${task.scriptPath}"</Arguments>`
+      }
     </Exec>
   </Actions>
 </Task>
@@ -119,20 +125,105 @@ export function buildTaskXml(task: TaskDefinition): string {
 }
 
 /**
- * A window-less launcher for the scan.
+ * The house wrapper that keeps a scheduled task from opening a console.
  *
- * `wscript` with window style 0 is the only reliable way to run a console
- * command from Task Scheduler without a black box flashing over whatever is on
- * screen at the time.
+ * There is no way to hide a console after the fact: by the time anything could
+ * hide it, the window has already been created and has already taken focus.
+ * The only cure is for it never to be created, which means the task must launch
+ * the script host, and the script host launches the real command with window
+ * style 0.
+ *
+ * This delegates to Martin's own `Check-ConsolePopupTasks.ps1 -Fix` rather than
+ * writing a wrapper of its own. A second, subtly different wrapper is exactly
+ * how this defect came back: the audit only recognises the house shape, so a
+ * private variant is invisible to the thing meant to police it.
  */
-export function buildHiddenLauncherVbs(command: string): string {
-  const escaped = command.replaceAll('"', '""');
-  return [
-    "' Written by usage-limit-watchdog install. Runs the scan with no console window.",
-    "Set shell = CreateObject(\"WScript.Shell\")",
-    `shell.Run "${escaped}", 0, False`,
-    "",
-  ].join("\r\n");
+export const CONSOLE_POPUP_HELPER = join(
+  homedir(),
+  ".claude",
+  "scripts",
+  "Check-ConsolePopupTasks.ps1",
+);
+
+export function consolePopupHelperExists(): boolean {
+  return existsSync(CONSOLE_POPUP_HELPER);
+}
+
+/** Run the house audit. `fix` rewraps every repeating task that would flash. */
+export function runConsolePopupHelper(fix: boolean): string {
+  return execFileSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      CONSOLE_POPUP_HELPER,
+      ...(fix ? ["-Fix"] : []),
+    ],
+    { encoding: "utf-8", windowsHide: true, timeout: 120_000 },
+  );
+}
+
+export interface ConsolePopupAudit {
+  readonly ranAt: string;
+  readonly clean: boolean;
+  /** Tasks that repeat AND would open a window - the ones that steal focus all day. */
+  readonly repeatingOffenders: readonly string[];
+  readonly output: string;
+}
+
+/**
+ * Read the audit's own table back.
+ *
+ * The check has to be able to fail on its own, without a human reading a table:
+ * this class has been fixed by hand three times, and each time it came back
+ * because nothing was watching for the next one.
+ */
+export function parseConsolePopupAudit(output: string, ranAt: string): ConsolePopupAudit {
+  const lines = output.split(/\r?\n/u);
+  const repeatingOffenders: string[] = [];
+  for (const line of lines) {
+    // The audit prints "TaskName   PT5M   ..." for anything that repeats.
+    const match = /^(?<task>\S+)\s+(?<repeat>PT\d+[MH])\s/u.exec(line.trim());
+    if (match?.groups?.["task"]) repeatingOffenders.push(match.groups["task"]);
+  }
+  return {
+    ranAt,
+    clean: output.includes("No interactive console-spawning tasks found"),
+    repeatingOffenders,
+    output: output.trim(),
+  };
+}
+
+export interface TaskAction {
+  readonly execute: string;
+  readonly arguments: string;
+}
+
+/** What a registered task actually launches, straight from the scheduler. */
+export function readTaskAction(taskName: string): TaskAction | null {
+  let xml: string;
+  try {
+    xml = execFileSync("schtasks", ["/Query", "/TN", taskName, "/XML", "ONE"], {
+      encoding: "utf-8",
+      windowsHide: true,
+    });
+  } catch {
+    return null;
+  }
+  // schtasks emits UTF-16, which arrives here as text riddled with NULs.
+  const clean = xml.replaceAll("\u0000", "");
+  const execute = /<Command>([^<]*)<\/Command>/u.exec(clean)?.[1]?.trim();
+  const args = /<Arguments>([^<]*)<\/Arguments>/u.exec(clean)?.[1]?.trim() ?? "";
+  return execute ? { execute, arguments: args } : null;
+}
+
+/** Does this task launch through the script host rather than a console program? */
+export function taskLaunchesHidden(action: TaskAction | null): boolean {
+  if (!action) return false;
+  const leaf = action.execute.replaceAll('"', "").split(/[\\/]/u).pop()?.toLowerCase() ?? "";
+  return leaf === "wscript.exe";
 }
 
 /** Task Scheduler only accepts UTF-16 XML. */
