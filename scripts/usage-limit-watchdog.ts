@@ -348,7 +348,7 @@ function printStatus(): number {
   const paths = watchdogPaths();
   const latest = readJsonFile<{
     readonly abandoned?: readonly AbandonedConversation[];
-    readonly [key: string]: unknown;
+    readonly consolePopups?: ConsolePopupAudit | null;
   }>(paths.latestScanFile);
   const ledger = readLedger(paths).entries.slice(-10);
   process.stdout.write(`watchdog artefacts: ${paths.root}\n`);
