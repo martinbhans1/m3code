@@ -25,26 +25,63 @@ Every five minutes `scripts/usage-limit-watchdog.ts scan` runs one cycle:
    message with a reset time that parses (`lib/usage-limit-signal.ts`) and that
    has since passed. Everything else - a genuine failure, a finished
    conversation, one someone has replied to since, one already running, one
-   stalled more than 12 hours ago - is recorded and left alone.
+   waiting on an approval or a question, one stalled more than 12 hours ago - is
+   recorded and left alone.
 3. **Act** (`lib/watchdog-nudge.ts`) - opens an authenticated WebSocket to the
    running app and dispatches an ordinary `thread.turn.start`, the same command
    the composer sends. The bearer token is minted headlessly from the bundled
    `t3 auth session issue` CLI and cached until shortly before it expires.
+4. **Re-arm the wake** - see below.
 
 Supervising conversations (those in the orchestrator project) are woken before
 the conversations they supervise, so supervision restarts first.
 
 ## What stops it spending in a loop
 
-- **One conversation per scan.** The next one waits until the woken one visibly
-  moved. If the limit had not really lifted, that costs one nudge, not five.
+- **One conversation per scan, per account.** The next conversation on that
+  account waits until the woken one visibly moved, so a limit that had not
+  really lifted costs one nudge rather than five. Separate provider instances
+  are separate budgets, so they recover in parallel rather than queueing behind
+  each other.
 - **Two attempts per conversation per reset window**, and never twice inside
   twenty minutes.
 - **Rolling caps**: eight nudges per six hours, twenty per day, counted from the
-  on-disk ledger, so a killed process does not reset the count.
+  on-disk ledger, so a killed process does not reset the count. These are global
+  across accounts.
 - **Refusals**: if the app is not running, if more than twelve conversations look
   stalled at once, or if the reset time cannot be read out of the message, it
   does nothing and says why.
+
+## Waking the machine
+
+A watchdog that only runs while the machine is awake still loses the night if
+the machine sleeps at 02:00 and the limit lifts at 03:40. So there are two
+scheduled tasks:
+
+| Task | When | Wakes the machine |
+| --- | --- | --- |
+| `M3CodeUsageLimitWatchdog` | Every 5 minutes | No |
+| `M3CodeUsageLimitWatchdogWake` | Once, at the next known reset (+3 min) | Yes |
+
+Every scan re-arms the single-shot task for the earliest reset it is currently
+waiting on, and deletes it when nothing is waiting. That is the difference
+between a machine that gets up when there is something specific to do and one
+that is woken every five minutes all night for nothing.
+
+Both tasks run on battery, start late if the machine was off at the appointed
+minute, and launch through `wscript.exe` and a hidden-window script - a task
+pointed straight at a console program flashes a black window on every run.
+
+**If you decide you hate the machine waking itself:**
+
+```
+pnpm watchdog:install -- --no-wake   # keep the watchdog, never wake the machine
+pnpm watchdog:uninstall              # remove both tasks entirely
+```
+
+`--no-wake` is remembered in `~/.t3/watchdog/config.json`, so scans stop arming
+the wake task from then on. With waking off, a reset that lands while the
+machine sleeps simply waits until you wake it up.
 
 ## Artefacts
 
@@ -52,12 +89,27 @@ Everything lands under `~/.t3/watchdog`:
 
 | File | What it holds |
 | --- | --- |
-| `scans/<id>.json` | The full snapshot and every per-conversation verdict for one cycle |
+| `scans/<id>.json` | The full snapshot, every per-conversation verdict, and the wake decision for one cycle |
 | `latest-scan.json` | The most recent cycle's summary |
 | `receipts/<threadId>.json` | Per-conversation history: what was seen, decided, and poked |
 | `ledger.json` | Every nudge ever sent; also what enforces the caps |
 | `watchdog.log` | One line per cycle |
-| `scan-runs.log` | Raw stdout/stderr of the scheduled runs |
+| `scan-runs.log` | Raw output of the scheduled runs |
+| `config.json`, `wake-task.json` | Whether waking is allowed, and what the wake is currently armed for |
+
+## Rehearsing it
+
+`pnpm watchdog:rehearse` stages the whole failure on demand: it copies the live
+schema and the conversations the watchdog would look at into a throwaway store,
+plants a stalled supervisor and two stalled workers (two accounts), and runs the
+real scan against the copy four times over. Nothing is ever sent - delivery is
+simulated so the sequence can advance - and it checks its own expectations, so
+it exits non-zero if the ordering, the one-at-a-time hold, or the per-account
+parallelism ever regress. Add `--keep` to leave the sandbox behind and read the
+receipts it wrote.
+
+Worth re-running after any change to the decision rules; it is the only thing
+that exercises the ordering claim without waiting for a real usage limit.
 
 ## Commands
 
@@ -65,14 +117,10 @@ Everything lands under `~/.t3/watchdog`:
 pnpm watchdog                 # one cycle by hand
 pnpm watchdog -- --dry-run    # decide and record, but send nothing
 pnpm watchdog:status          # last cycle and recent nudges
-pnpm watchdog:install         # register the scheduled task (every 5 minutes)
-pnpm watchdog:uninstall       # remove it
+pnpm watchdog:rehearse        # self-checking dress rehearsal
+pnpm watchdog:install         # register both scheduled tasks
+pnpm watchdog:uninstall       # remove them
 ```
-
-The Windows scheduled task is named `M3CodeUsageLimitWatchdog` and runs
-`~/.t3/watchdog/run-scan.cmd`, which is written by `install`. It runs while the
-user is logged on; it does not need the app, a terminal, or a Claude session to
-be alive, only the machine to be awake.
 
 Minting a token requires `apps/server/dist/bin.mjs`, so the server has to have
 been built at least once.

@@ -42,6 +42,11 @@ export interface WatchdogPaths {
   readonly lockFile: string;
   readonly logFile: string;
   readonly tokenFile: string;
+  readonly configFile: string;
+  readonly wakeStateFile: string;
+  readonly runnerFile: string;
+  readonly launcherFile: string;
+  readonly runLogFile: string;
 }
 
 export function watchdogPaths(baseDir = resolveBaseDir()): WatchdogPaths {
@@ -61,6 +66,11 @@ export function watchdogPaths(baseDir = resolveBaseDir()): WatchdogPaths {
     lockFile: join(root, "watchdog.lock"),
     logFile: join(root, "watchdog.log"),
     tokenFile: join(root, "access-token.json"),
+    configFile: join(root, "config.json"),
+    wakeStateFile: join(root, "wake-task.json"),
+    runnerFile: join(root, "run-scan.cmd"),
+    launcherFile: join(root, "run-scan.vbs"),
+    runLogFile: join(root, "scan-runs.log"),
   };
 }
 
@@ -190,6 +200,17 @@ export function pruneScans(paths: WatchdogPaths, keep = 400): void {
   } catch {
     // silent-ok: pruning is housekeeping, never a reason to fail a scan
   }
+}
+
+export interface WatchdogConfig {
+  /** May the watchdog arm a task that wakes the machine for a known reset? */
+  readonly wakeMachine: boolean;
+}
+
+export const DEFAULT_CONFIG: WatchdogConfig = { wakeMachine: true };
+
+export function readConfig(paths: WatchdogPaths): WatchdogConfig {
+  return { ...DEFAULT_CONFIG, ...readJsonFile<Partial<WatchdogConfig>>(paths.configFile) };
 }
 
 export function newScanId(now: Date): string {
