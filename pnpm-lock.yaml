@@ -61,7 +61,7 @@ packageExtensionsChecksum: sha256-FV3+2NW/9MFbunJaPsMxvO0LAzyfccoPtPiKoIXAwUU=
 
 patchedDependencies:
   '@effect/platform-node-shared@4.0.0-beta.78':
-    hash: 520e2f28c79f5223507a5e7efafcfa0953943b7538f1061d56a15a078b991a78
+    hash: 4a74a8fb38a05435f7473a2812441921488711223d9e26671f0f37bd707fef95
     path: patches/@effect__platform-node-shared@4.0.0-beta.78.patch
   '@effect/vitest@4.0.0-beta.78':
     hash: 42b87cc47e70d74e62496e7a8261b3fd298ecad4464d209348ab04b96f853a5f
@@ -406,7 +406,7 @@ importers:
         version: 4.0.0-beta.78(bufferutil@4.1.0)(effect@4.0.0-beta.78(patch_hash=046c8e4fe12bbf44b80edcccbcf706e8661e993d1fb0153dc54ee595f5aeee84))(ioredis@5.11.0)(utf-8-validate@6.0.6)
       '@effect/platform-node-shared':
         specifier: 4.0.0-beta.78
-        version: 4.0.0-beta.78(patch_hash=520e2f28c79f5223507a5e7efafcfa0953943b7538f1061d56a15a078b991a78)(bufferutil@4.1.0)(effect@4.0.0-beta.78(patch_hash=046c8e4fe12bbf44b80edcccbcf706e8661e993d1fb0153dc54ee595f5aeee84))(utf-8-validate@6.0.6)
+        version: 4.0.0-beta.78(patch_hash=4a74a8fb38a05435f7473a2812441921488711223d9e26671f0f37bd707fef95)(bufferutil@4.1.0)(effect@4.0.0-beta.78(patch_hash=046c8e4fe12bbf44b80edcccbcf706e8661e993d1fb0153dc54ee595f5aeee84))(utf-8-validate@6.0.6)
       '@effect/sql-sqlite-bun':
         specifier: 4.0.0-beta.78
         version: 4.0.0-beta.78(effect@4.0.0-beta.78(patch_hash=046c8e4fe12bbf44b80edcccbcf706e8661e993d1fb0153dc54ee595f5aeee84))
@@ -4923,6 +4923,7 @@ packages:
   '@xmldom/xmldom@0.9.10':
     resolution: {integrity: sha512-A9gOqLdi6cV4ibazAjcQufGj0B1y/vDqYrcuP6d/6x8P27gRS8643Dj9o1dEKtB6O7fwxb2FgBmJS2mX7gpvdw==}
     engines: {node: '>=14.6'}
+    deprecated: this version has critical issues, please update to the latest version
 
   '@xterm/addon-fit@0.11.0':
     resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
@@ -11185,13 +11186,13 @@ snapshots:
 
   '@effect/platform-bun@4.0.0-beta.78(bufferutil@4.1.0)(effect@4.0.0-beta.78(patch_hash=046c8e4fe12bbf44b80edcccbcf706e8661e993d1fb0153dc54ee595f5aeee84))(utf-8-validate@6.0.6)':
     dependencies:
-      '@effect/platform-node-shared': 4.0.0-beta.78(patch_hash=520e2f28c79f5223507a5e7efafcfa0953943b7538f1061d56a15a078b991a78)(bufferutil@4.1.0)(effect@4.0.0-beta.78(patch_hash=046c8e4fe12bbf44b80edcccbcf706e8661e993d1fb0153dc54ee595f5aeee84))(utf-8-validate@6.0.6)
+      '@effect/platform-node-shared': 4.0.0-beta.78(patch_hash=4a74a8fb38a05435f7473a2812441921488711223d9e26671f0f37bd707fef95)(bufferutil@4.1.0)(effect@4.0.0-beta.78(patch_hash=046c8e4fe12bbf44b80edcccbcf706e8661e993d1fb0153dc54ee595f5aeee84))(utf-8-validate@6.0.6)
       effect: 4.0.0-beta.78(patch_hash=046c8e4fe12bbf44b80edcccbcf706e8661e993d1fb0153dc54ee595f5aeee84)
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
 
-  '@effect/platform-node-shared@4.0.0-beta.78(patch_hash=520e2f28c79f5223507a5e7efafcfa0953943b7538f1061d56a15a078b991a78)(bufferutil@4.1.0)(effect@4.0.0-beta.78(patch_hash=046c8e4fe12bbf44b80edcccbcf706e8661e993d1fb0153dc54ee595f5aeee84))(utf-8-validate@6.0.6)':
+  '@effect/platform-node-shared@4.0.0-beta.78(patch_hash=4a74a8fb38a05435f7473a2812441921488711223d9e26671f0f37bd707fef95)(bufferutil@4.1.0)(effect@4.0.0-beta.78(patch_hash=046c8e4fe12bbf44b80edcccbcf706e8661e993d1fb0153dc54ee595f5aeee84))(utf-8-validate@6.0.6)':
     dependencies:
       '@types/ws': 8.18.1
       effect: 4.0.0-beta.78(patch_hash=046c8e4fe12bbf44b80edcccbcf706e8661e993d1fb0153dc54ee595f5aeee84)
@@ -11202,7 +11203,7 @@ snapshots:
 
   '@effect/platform-node@4.0.0-beta.78(bufferutil@4.1.0)(effect@4.0.0-beta.78(patch_hash=046c8e4fe12bbf44b80edcccbcf706e8661e993d1fb0153dc54ee595f5aeee84))(ioredis@5.11.0)(utf-8-validate@6.0.6)':
     dependencies:
-      '@effect/platform-node-shared': 4.0.0-beta.78(patch_hash=520e2f28c79f5223507a5e7efafcfa0953943b7538f1061d56a15a078b991a78)(bufferutil@4.1.0)(effect@4.0.0-beta.78(patch_hash=046c8e4fe12bbf44b80edcccbcf706e8661e993d1fb0153dc54ee595f5aeee84))(utf-8-validate@6.0.6)
+      '@effect/platform-node-shared': 4.0.0-beta.78(patch_hash=4a74a8fb38a05435f7473a2812441921488711223d9e26671f0f37bd707fef95)(bufferutil@4.1.0)(effect@4.0.0-beta.78(patch_hash=046c8e4fe12bbf44b80edcccbcf706e8661e993d1fb0153dc54ee595f5aeee84))(utf-8-validate@6.0.6)
       effect: 4.0.0-beta.78(patch_hash=046c8e4fe12bbf44b80edcccbcf706e8661e993d1fb0153dc54ee595f5aeee84)
       ioredis: 5.11.0
       mime: 4.1.0
