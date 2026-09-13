@@ -13,7 +13,19 @@
  * watches is wedged, so it shares no runtime with it.
  */
 // @effect-diagnostics nodeBuiltinImport:off - must run standalone of the app runtime
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync, appendFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+  writeSync,
+  appendFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -218,9 +230,10 @@ export function readConfig(paths: WatchdogPaths): WatchdogConfig {
 }
 
 export function newScanId(now: Date): string {
-  return `${now.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}-${Math.random()
-    .toString(36)
-    .slice(2, 8)}`;
+  return `${now
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d+Z$/, "Z")}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 export function fileExists(file: string): boolean {

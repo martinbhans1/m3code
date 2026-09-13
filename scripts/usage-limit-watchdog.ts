@@ -150,7 +150,7 @@ function upsertReceipt(
     title: verdict.title,
     projectTitle: verdict.projectTitle,
     isOrchestrator: verdict.isOrchestrator,
-    firstSeenStalledAt: previous?.firstSeenStalledAt ?? (verdict.failedAt ?? now.toISOString()),
+    firstSeenStalledAt: previous?.firstSeenStalledAt ?? verdict.failedAt ?? now.toISOString(),
     lastSeenAt: now.toISOString(),
     lastScanId: scanId,
     lastVerdict: verdict,
@@ -228,7 +228,11 @@ async function runScan({ dryRun, simulate }: ScanOptions): Promise<number> {
       ).length;
       writeJsonFile(
         paths.outagesFile,
-        recordOutage(readJsonFile<readonly Outage[]>(paths.outagesFile) ?? [], startedAt, restartable),
+        recordOutage(
+          readJsonFile<readonly Outage[]>(paths.outagesFile) ?? [],
+          startedAt,
+          restartable,
+        ),
       );
       if (restartable > 0) {
         appendLogLine(
@@ -297,7 +301,8 @@ async function runScan({ dryRun, simulate }: ScanOptions): Promise<number> {
         resetWindow: action.resetWindow,
         attempt: action.attempt,
         scanId,
-        outcome: delivery.outcome === "sent" || delivery.outcome === "simulated" ? "sent" : "failed",
+        outcome:
+          delivery.outcome === "sent" || delivery.outcome === "simulated" ? "sent" : "failed",
         ...(delivery.outcome === "simulated" ? { detail: "simulated, nothing was sent" } : {}),
         ...(delivery.detail ? { detail: delivery.detail } : {}),
       };
@@ -306,9 +311,10 @@ async function runScan({ dryRun, simulate }: ScanOptions): Promise<number> {
 
     // Re-arm the wake before anything else that could fail: a scan that dies
     // writing artefacts must still have pointed the machine at the next reset.
-    const wake = dryRun || simulate
-      ? ({ armedFor: null, changed: false, detail: "skipped-dry-run" } satisfies WakeTaskOutcome)
-      : syncWakeTask(paths, decision.waitingUntil, startedAt);
+    const wake =
+      dryRun || simulate
+        ? ({ armedFor: null, changed: false, detail: "skipped-dry-run" } satisfies WakeTaskOutcome)
+        : syncWakeTask(paths, decision.waitingUntil, startedAt);
 
     const finishedAt = new Date();
     const record: ScanRecord = {
@@ -496,8 +502,7 @@ function armWakeTask(
   writeTaskXmlFile(
     xmlFile,
     buildTaskXml({
-      description:
-        "Wakes this machine once, when a usage limit that stopped work is due to lift.",
+      description: "Wakes this machine once, when a usage limit that stopped work is due to lift.",
       userId: currentUserId(),
       scriptHost: SCRIPT_HOST,
       scriptPath: wrapper,
@@ -633,7 +638,9 @@ try {
       process.exitCode = uninstall();
       break;
     default:
-      process.stderr.write(`Unknown command: ${command}\nUse scan | status | install | uninstall\n`);
+      process.stderr.write(
+        `Unknown command: ${command}\nUse scan | status | install | uninstall\n`,
+      );
       process.exitCode = 2;
   }
 } catch (error) {

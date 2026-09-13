@@ -179,7 +179,11 @@ export function observe(paths: WatchdogPaths, now = new Date()): Snapshot {
         return typeof value === "number" ? value : 0;
       };
       const errorRow = latestRuntimeError.get(threadId) as
-        | { readonly payloadJson: string; readonly createdAt: string; readonly turnId: string | null }
+        | {
+            readonly payloadJson: string;
+            readonly createdAt: string;
+            readonly turnId: string | null;
+          }
         | undefined;
       const errorPayload = errorRow
         ? (parseJsonOrNull(errorRow.payloadJson) as { message?: string } | null)
@@ -196,7 +200,8 @@ export function observe(paths: WatchdogPaths, now = new Date()): Snapshot {
         projectId: text("projectId") ?? "",
         projectTitle: text("projectTitle") ?? null,
         workspaceRoot: text("workspaceRoot") ?? null,
-        isOrchestrator: orchestratorProjectId !== null && text("projectId") === orchestratorProjectId,
+        isOrchestrator:
+          orchestratorProjectId !== null && text("projectId") === orchestratorProjectId,
         runtimeMode: text("runtimeMode") ?? "full-access",
         interactionMode: text("interactionMode") ?? "default",
         modelSelection: parseJsonOrNull(text("modelSelectionJson")),

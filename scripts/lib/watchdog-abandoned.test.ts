@@ -68,7 +68,10 @@ it("says what a recorded failure actually was, without the adapter's boilerplate
     ],
     NOW,
   );
-  assert.equal(entry?.stoppedBecause, "Claude Code returned an error result: No conversation found");
+  assert.equal(
+    entry?.stoppedBecause,
+    "Claude Code returned an error result: No conversation found",
+  );
 });
 
 it("names a usage-limit stall that is far too old for the watchdog to touch", () => {

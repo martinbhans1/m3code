@@ -82,10 +82,9 @@ function buildSandboxStore(): number {
     const placeholders = threadIds.map(() => "?").join(", ");
 
     const copy = (table: string, where: string, parameters: readonly string[]) => {
-      const rows = source.prepare(`select * from ${table} ${where}`).all(...parameters) as readonly Record<
-        string,
-        unknown
-      >[];
+      const rows = source
+        .prepare(`select * from ${table} ${where}`)
+        .all(...parameters) as readonly Record<string, unknown>[];
       if (rows.length === 0) return;
       const columns = Object.keys(rows[0] as Record<string, unknown>);
       const insert = target.prepare(
@@ -148,7 +147,9 @@ function plantStalledConversations(now: Date): readonly PlantedThread[] {
   );
   const orchestratorProjectId = settings?.orchestratorProjectId;
   if (!orchestratorProjectId) {
-    throw new Error("No orchestrator project is configured, so there is no supervisor to rehearse.");
+    throw new Error(
+      "No orchestrator project is configured, so there is no supervisor to rehearse.",
+    );
   }
 
   const database = new DatabaseSync(sandbox.databaseFile);
@@ -303,11 +304,7 @@ step("\nScan 1 - everything is stalled, nothing has been woken yet.");
 expect("first conversation woken", describe(runScan()), "nudged rehearsal-supervisor");
 
 step("\nScan 2 - the supervisor has not stirred yet.");
-expect(
-  "second conversation woken",
-  describe(runScan()),
-  "nudged rehearsal-worker-codex",
-);
+expect("second conversation woken", describe(runScan()), "nudged rehearsal-worker-codex");
 
 step("\nScan 3 - both accounts are now waiting on a conversation that has not stirred.");
 const third = runScan();

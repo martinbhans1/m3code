@@ -115,7 +115,9 @@ export function buildTaskXml(task: TaskDefinition): string {
   <Actions Context="Author">
     <Exec>
       <Command>${task.scriptHost}</Command>${
-        task.scriptPath === "" ? "" : `
+        task.scriptPath === ""
+          ? ""
+          : `
       <Arguments>"${task.scriptPath}"</Arguments>`
       }
     </Exec>
@@ -279,11 +281,7 @@ export function taskExists(taskName: string): boolean {
  * will happily accept a boundary that has already gone by and then fire
  * immediately, which would waste the wake on nothing.
  */
-export function wakeTimeFor(
-  waitingUntil: string | null,
-  now: Date,
-  graceMs: number,
-): Date | null {
+export function wakeTimeFor(waitingUntil: string | null, now: Date, graceMs: number): Date | null {
   if (!waitingUntil) return null;
   const resetsAt = new Date(waitingUntil);
   if (!Number.isFinite(resetsAt.getTime())) return null;

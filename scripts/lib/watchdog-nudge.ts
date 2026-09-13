@@ -70,7 +70,11 @@ function tokenExpiry(token: string): Date | null {
   }
 }
 
-export function ensureAccessToken(paths: WatchdogPaths, repoRoot: string, now = new Date()): string {
+export function ensureAccessToken(
+  paths: WatchdogPaths,
+  repoRoot: string,
+  now = new Date(),
+): string {
   const cached = readJsonFile<CachedToken>(paths.tokenFile);
   if (cached && new Date(cached.expiresAt).getTime() - now.getTime() > TOKEN_RENEW_MARGIN_MS) {
     return cached.token;
@@ -101,7 +105,10 @@ export function ensureAccessToken(paths: WatchdogPaths, repoRoot: string, now = 
   const token = stdout.trim().split(/\r?\n/).at(-1)?.trim() ?? "";
   if (token.length === 0) throw new NudgeError("The auth CLI returned no token.");
   const expiresAt = tokenExpiry(token) ?? new Date(now.getTime() + 6 * 60 * 60_000);
-  writeJsonFile(paths.tokenFile, { token, expiresAt: expiresAt.toISOString() } satisfies CachedToken);
+  writeJsonFile(paths.tokenFile, {
+    token,
+    expiresAt: expiresAt.toISOString(),
+  } satisfies CachedToken);
   return token;
 }
 
@@ -159,9 +166,9 @@ export async function dispatchNudge(
 
   const program = RpcClient.make(WsRpcGroup).pipe(
     Effect.flatMap((client) =>
-      (
-        client as unknown as Record<string, (input: unknown) => Effect.Effect<unknown, unknown>>
-      )[ORCHESTRATION_WS_METHODS.dispatchCommand]!(payload),
+      (client as unknown as Record<string, (input: unknown) => Effect.Effect<unknown, unknown>>)[
+        ORCHESTRATION_WS_METHODS.dispatchCommand
+      ]!(payload),
     ),
     Effect.timeout(DISPATCH_TIMEOUT_MS),
     Effect.scoped,

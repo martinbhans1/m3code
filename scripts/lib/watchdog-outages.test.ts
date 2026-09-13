@@ -1,12 +1,7 @@
 // @effect-diagnostics globalDate:off - Fixtures for a standalone watchdog process.
 import { assert, it } from "@effect/vitest";
 
-import {
-  formatOutages,
-  recordOutage,
-  summariseOutages,
-  type Outage,
-} from "./watchdog-outages.ts";
+import { formatOutages, recordOutage, summariseOutages, type Outage } from "./watchdog-outages.ts";
 
 it("collapses consecutive scans into one stretch, because nights are what matter", () => {
   let outages: readonly Outage[] = [];

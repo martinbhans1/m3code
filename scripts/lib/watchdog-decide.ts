@@ -112,9 +112,8 @@ function isAfter(a: string | null, b: Date): boolean {
 }
 
 function nudgesSince(ledger: readonly LedgerEntry[], since: number): number {
-  return ledger.filter(
-    (entry) => entry.outcome === "sent" && new Date(entry.at).getTime() >= since,
-  ).length;
+  return ledger.filter((entry) => entry.outcome === "sent" && new Date(entry.at).getTime() >= since)
+    .length;
 }
 
 /**
@@ -220,7 +219,12 @@ function classify(
   }
 
   return {
-    verdict: { ...base, verdict: "restart", reason: "stopped-by-usage-limit-that-has-lifted", attemptsThisWindow },
+    verdict: {
+      ...base,
+      verdict: "restart",
+      reason: "stopped-by-usage-limit-that-has-lifted",
+      attemptsThisWindow,
+    },
     candidate: { thread, signal, failedAt, attemptsThisWindow },
   };
 }
@@ -281,11 +285,12 @@ export function decide(
     .map((entry) => entry.candidate)
     .filter((candidate): candidate is Candidate => candidate !== null);
 
-  const waitingUntil = verdicts
-    .filter((verdict) => verdict.verdict === "hold" && verdict.resetsAt !== null)
-    .map((verdict) => verdict.resetsAt as string)
-    .sort()
-    .at(0) ?? null;
+  const waitingUntil =
+    verdicts
+      .filter((verdict) => verdict.verdict === "hold" && verdict.resetsAt !== null)
+      .map((verdict) => verdict.resetsAt as string)
+      .sort()
+      .at(0) ?? null;
 
   const none = (reason: string): ScanDecision => ({
     action: { kind: "none", reason },

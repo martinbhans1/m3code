@@ -36,7 +36,13 @@ const SPAWNING_FUNCTIONS = new Set([
  * than an import. `exec` and `fork` are left out on purpose: too many ordinary
  * functions are called that.
  */
-const INJECTED_SPAWN_NAMES = new Set(["spawn", "spawnSync", "execFile", "execFileSync", "execSync"]);
+const INJECTED_SPAWN_NAMES = new Set([
+  "spawn",
+  "spawnSync",
+  "execFile",
+  "execFileSync",
+  "execSync",
+]);
 
 const message = (name: string) =>
   `${name}() must pass windowsHide explicitly; without it every call opens a console window on Windows, and the flag is not inherited from the parent process.`;
@@ -89,7 +95,8 @@ export default defineRule({
       if (!("specifiers" in node) || !Array.isArray(node.specifiers)) return;
 
       for (const specifier of node.specifiers) {
-        if (typeof specifier !== "object" || specifier === null || !("local" in specifier)) continue;
+        if (typeof specifier !== "object" || specifier === null || !("local" in specifier))
+          continue;
         const local = unwrapExpression(specifier.local);
         if (Option.isNone(local) || local.value.type !== "Identifier") continue;
         const localName = local.value.name;
