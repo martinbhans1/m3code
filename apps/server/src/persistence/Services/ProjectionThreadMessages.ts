@@ -81,6 +81,16 @@ export interface ProjectionThreadMessageRepositoryShape {
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadMessage>, ProjectionRepositoryError>;
 
   /**
+   * When the user last wrote in this thread, or null if they never have.
+   *
+   * Reads backwards from the newest message and stops at the first one the
+   * user wrote, so the cost is the messages since then, not the conversation.
+   */
+  readonly getLatestUserMessageCreatedAt: (
+    input: ListProjectionThreadMessagesInput,
+  ) => Effect.Effect<ProjectionThreadMessage["createdAt"] | null, ProjectionRepositoryError>;
+
+  /**
    * Delete projected thread messages by thread.
    */
   readonly deleteByThreadId: (

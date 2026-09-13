@@ -6,15 +6,15 @@ changed; this is an investigation and a recommendation.
 
 ## Where the space is
 
-| | Size | What it is |
-| --- | --- | --- |
-| `orchestration_events` | 2,546 MB | The event log: the source of truth |
-| ↳ its indexes | 530 MB | |
-| `projection_thread_activities` | 1,764 MB | The conversation history the UI reads |
-| ↳ its indexes | 290 MB | |
-| `orchestration_command_receipts` | 405 MB | One row per command ever dispatched, with its index |
-| Search (FTS, trigram, semantic) | 130 MB | |
-| Messages, turns, everything else | ~170 MB | |
+|                                  | Size     | What it is                                          |
+| -------------------------------- | -------- | --------------------------------------------------- |
+| `orchestration_events`           | 2,546 MB | The event log: the source of truth                  |
+| ↳ its indexes                    | 530 MB   |                                                     |
+| `projection_thread_activities`   | 1,764 MB | The conversation history the UI reads               |
+| ↳ its indexes                    | 290 MB   |                                                     |
+| `orchestration_command_receipts` | 405 MB   | One row per command ever dispatched, with its index |
+| Search (FTS, trigram, semantic)  | 130 MB   |                                                     |
+| Messages, turns, everything else | ~170 MB  |                                                     |
 
 1.27 M events, 999 k activity rows, 1.27 M command receipts, 49 k messages,
 1,166 conversations, going back to 2026-03-24.
@@ -39,12 +39,19 @@ What the size actually costs is disk, backup and copy time (a full copy takes
 about two minutes), and write amplification - every activity row appended
 maintains four indexes on a 1.7 GB table.
 
-The real latency problem is elsewhere and is not about size:
-`refreshThreadShellSummary` runs on **every** appended activity and re-reads all
+The real latency problem was elsewhere and was not about size:
+`refreshThreadShellSummary` ran on **every** appended activity and re-read all
 of that conversation's messages, plans, activities and approvals to recompute
-its counts. That is O(history) work per appended row, so a long conversation
-gets slower the longer it runs, regardless of how big the store is. Worth its
-own fix, separately from anything here.
+its counts. That was O(history) work per appended row - about 108 ms per
+append on the busiest conversation (21,463 activity rows) - so a long
+conversation got slower the longer it ran, regardless of how big the store is.
+
+**Fixed 2026-09-13.** The summary is now recomputed one part at a time, only
+for the parts an event can move (`apps/server/src/orchestration/threadShellSummary.ts`).
+An ordinary activity - 99.8% of them - reads no history at all. The rare ones
+that matter read only their own kinds, which on that same conversation is about
+15 ms, because SQLite still has to walk the conversation's rows to filter by
+kind without an index on it. That residue is a separate, optional decision.
 
 ## What could go, and what it would cost
 
@@ -65,7 +72,7 @@ Traced through every reader of each table.
 
 - **`thread.activity-appended` events below the projection cursor** (~1.6 GB
   today, and the fastest-growing thing in the store). Each projector records how
-  far it has applied, in `projection_state`; startup reads only events *after*
+  far it has applied, in `projection_state`; startup reads only events _after_
   that cursor, capped at 1,000 per projector. Nothing else reads old activity
   events - the only other reader of history is the usage report, which reads a
   different, tiny event type, and a replay endpoint no first-party client calls.
@@ -75,7 +82,7 @@ Traced through every reader of each table.
 
 **Do not touch:**
 
-- `projection_thread_activities` is not a cache: it *is* the conversation
+- `projection_thread_activities` is not a cache: it _is_ the conversation
   history shown in the app. Pruning it deletes what you can read on screen.
 - Search structures rebuild themselves - the text indexes are maintained by
   triggers off the messages table, and the semantic chunks are wiped and rebuilt

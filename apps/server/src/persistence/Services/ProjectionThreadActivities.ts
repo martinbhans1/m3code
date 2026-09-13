@@ -38,6 +38,13 @@ export const ListProjectionThreadActivitiesInput = Schema.Struct({
 });
 export type ListProjectionThreadActivitiesInput = typeof ListProjectionThreadActivitiesInput.Type;
 
+export const ListProjectionThreadActivitiesByKindsInput = Schema.Struct({
+  threadId: ThreadId,
+  kinds: Schema.Array(Schema.String),
+});
+export type ListProjectionThreadActivitiesByKindsInput =
+  typeof ListProjectionThreadActivitiesByKindsInput.Type;
+
 export const DeleteProjectionThreadActivitiesInput = Schema.Struct({
   threadId: ThreadId,
 });
@@ -65,6 +72,20 @@ export interface ProjectionThreadActivityRepositoryShape {
    */
   readonly listByThreadId: (
     input: ListProjectionThreadActivitiesInput,
+  ) => Effect.Effect<ReadonlyArray<ProjectionThreadActivity>, ProjectionRepositoryError>;
+
+  /**
+   * List a thread's activity rows of the given kinds, and nothing else.
+   *
+   * For readers that derive state from a handful of kinds. The activity log is
+   * sized for rendering a timeline - every command, read and edit a
+   * conversation ever ran - so loading and decoding all of it to look at a few
+   * rows is what made projecting a long conversation slow.
+   *
+   * Same ordering as `listByThreadId`. An empty `kinds` list returns no rows.
+   */
+  readonly listByThreadIdAndKinds: (
+    input: ListProjectionThreadActivitiesByKindsInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadActivity>, ProjectionRepositoryError>;
 
   /**

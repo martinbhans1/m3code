@@ -1,8 +1,5 @@
 import {
-  ApprovalRequestId,
   type ChatAttachment,
-  FOLLOWUP_ACTIVITY_KIND,
-  HANDOFF_ACTIVITY_KIND,
   type OrchestrationEvent,
   type OrchestrationSessionStatus,
   ThreadId,
@@ -56,6 +53,14 @@ import {
   parseThreadSegmentFromAttachmentId,
   toSafeThreadAttachmentSegment,
 } from "../../attachmentStore.ts";
+import {
+  deriveHasActionableProposedPlan,
+  deriveThreadShellActivitySummary,
+  extractActivityRequestId,
+  SHELL_SUMMARY_ACTIVITY_KINDS,
+  shellSummaryScopeForEvent,
+  type ShellSummaryScope,
+} from "../threadShellSummary.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -113,14 +118,6 @@ const materializeAttachmentsForProjection = Effect.fn("materializeAttachmentsFor
     Effect.succeed(input.attachments.length === 0 ? [] : input.attachments),
 );
 
-function extractActivityRequestId(payload: unknown): ApprovalRequestId | null {
-  if (typeof payload !== "object" || payload === null) {
-    return null;
-  }
-  const requestId = (payload as Record<string, unknown>).requestId;
-  return typeof requestId === "string" ? ApprovalRequestId.make(requestId) : null;
-}
-
 function isStalePendingApprovalFailureDetail(detail: string | null): boolean {
   if (detail === null) {
     return false;
@@ -130,170 +127,6 @@ function isStalePendingApprovalFailureDetail(detail: string | null): boolean {
     detail.includes("unknown pending approval request") ||
     detail.includes("unknown pending permission request")
   );
-}
-
-function derivePendingUserInputCountFromActivities(
-  activities: ReadonlyArray<ProjectionThreadActivity>,
-): number {
-  const openRequestIds = new Set<string>();
-  const ordered = [...activities].toSorted(
-    (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) ||
-      left.activityId.localeCompare(right.activityId),
-  );
-
-  for (const activity of ordered) {
-    const requestId = extractActivityRequestId(activity.payload);
-    if (requestId === null) {
-      continue;
-    }
-    const payload =
-      typeof activity.payload === "object" && activity.payload !== null
-        ? (activity.payload as Record<string, unknown>)
-        : null;
-    const detail = typeof payload?.detail === "string" ? payload.detail.toLowerCase() : null;
-
-    if (activity.kind === "user-input.requested") {
-      openRequestIds.add(requestId);
-      continue;
-    }
-
-    if (activity.kind === "user-input.resolved") {
-      openRequestIds.delete(requestId);
-      continue;
-    }
-
-    if (
-      activity.kind === "provider.user-input.respond.failed" &&
-      detail !== null &&
-      (detail.includes("stale pending user-input request") ||
-        detail.includes("unknown pending user-input request") ||
-        detail.includes("unknown pending user input request") ||
-        detail.includes("unknown pending codex user input request"))
-    ) {
-      openRequestIds.delete(requestId);
-    }
-  }
-
-  return openRequestIds.size;
-}
-
-/**
- * Agent-suggested follow-ups are event-sourced the same way the web client
- * reads them (see deriveFollowups): each create/update appends another
- * turn.followup.suggested activity carrying the whole record, and the latest
- * activity per follow-up id wins. Anything not explicitly resolved counts as
- * still pending.
- */
-function derivePendingFollowupCountFromActivities(
-  activities: ReadonlyArray<ProjectionThreadActivity>,
-): number {
-  const ordered = [...activities].toSorted(
-    (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) ||
-      left.activityId.localeCompare(right.activityId),
-  );
-
-  const statusByFollowupId = new Map<string, string>();
-  for (const activity of ordered) {
-    if (activity.kind !== FOLLOWUP_ACTIVITY_KIND) {
-      continue;
-    }
-    const payload =
-      typeof activity.payload === "object" && activity.payload !== null
-        ? (activity.payload as Record<string, unknown>)
-        : null;
-    const followup =
-      payload?.followup && typeof payload.followup === "object"
-        ? (payload.followup as Record<string, unknown>)
-        : null;
-    const followupId = typeof followup?.id === "string" ? followup.id : null;
-    if (followupId === null || followupId.length === 0) {
-      continue;
-    }
-    statusByFollowupId.set(
-      followupId,
-      typeof followup?.status === "string" ? followup.status : "pending",
-    );
-  }
-
-  let pending = 0;
-  for (const status of statusByFollowupId.values()) {
-    if (status === "pending") {
-      pending += 1;
-    }
-  }
-  return pending;
-}
-
-/**
- * Handoffs are event-sourced the same way follow-ups are: each one appends a
- * thread.handoff activity carrying the whole record, and the latest activity per
- * direction wins. Mirrors deriveHandoffs on the web side — keep the two in sync.
- */
-function deriveHandoffThreadIdsFromActivities(
-  activities: ReadonlyArray<ProjectionThreadActivity>,
-): { readonly handoffThreadId: ThreadId | null; readonly sourceThreadId: ThreadId | null } {
-  const ordered = [...activities].toSorted(
-    (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) ||
-      left.activityId.localeCompare(right.activityId),
-  );
-
-  let handoffThreadId: ThreadId | null = null;
-  let sourceThreadId: ThreadId | null = null;
-  for (const activity of ordered) {
-    if (activity.kind !== HANDOFF_ACTIVITY_KIND) {
-      continue;
-    }
-    const payload =
-      typeof activity.payload === "object" && activity.payload !== null
-        ? (activity.payload as Record<string, unknown>)
-        : null;
-    const handoff =
-      payload?.handoff && typeof payload.handoff === "object"
-        ? (payload.handoff as Record<string, unknown>)
-        : null;
-    const counterpartThreadId =
-      typeof handoff?.counterpartThreadId === "string" ? handoff.counterpartThreadId : null;
-    if (counterpartThreadId === null || counterpartThreadId.length === 0) {
-      continue;
-    }
-    if (handoff?.direction === "continuedIn") {
-      handoffThreadId = ThreadId.make(counterpartThreadId);
-    } else if (handoff?.direction === "spunOffFrom") {
-      sourceThreadId = ThreadId.make(counterpartThreadId);
-    }
-  }
-
-  return { handoffThreadId, sourceThreadId };
-}
-
-function deriveHasActionableProposedPlan(input: {
-  readonly latestTurnId: string | null;
-  readonly proposedPlans: ReadonlyArray<ProjectionThreadProposedPlan>;
-}): boolean {
-  const sorted = [...input.proposedPlans].toSorted(
-    (left, right) =>
-      left.updatedAt.localeCompare(right.updatedAt) || left.planId.localeCompare(right.planId),
-  );
-
-  let latestForTurn: ProjectionThreadProposedPlan | null = null;
-  if (input.latestTurnId !== null) {
-    for (let index = sorted.length - 1; index >= 0; index -= 1) {
-      const plan = sorted[index];
-      if (plan?.turnId === input.latestTurnId) {
-        latestForTurn = plan;
-        break;
-      }
-    }
-  }
-  if (latestForTurn !== null) {
-    return latestForTurn.implementedAt === null;
-  }
-
-  const latestPlan = sorted.at(-1) ?? null;
-  return latestPlan !== null && latestPlan.implementedAt === null;
 }
 
 function retainProjectionMessagesAfterRevert(
@@ -636,8 +469,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       }
     });
 
+    /**
+     * Recompute a thread's shell summary - only the parts this event can move.
+     *
+     * Each part has one source table and changes on a known set of events
+     * (see `shellSummaryScopeForEvent`). A part outside the scope keeps the value
+     * already on the row, which is exactly what recomputing it would produce,
+     * because nothing it reads has changed. This used to reload and decode the
+     * whole conversation - every message, plan, approval and activity - on every
+     * projected event, which on a long conversation was over a hundred
+     * milliseconds per ordinary tool call, and grew with every one.
+     *
+     * The row write below still happens for every event, so the done-stamp rule
+     * applies against the row's own `latestUserMessageAt` exactly as before.
+     */
     const refreshThreadShellSummary = Effect.fn("refreshThreadShellSummary")(function* (
       threadId: ThreadId,
+      scope: ShellSummaryScope,
     ) {
       const existingRow = yield* projectionThreadRepository.getById({
         threadId,
@@ -645,34 +493,43 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       if (Option.isNone(existingRow)) {
         return;
       }
+      const current = existingRow.value;
 
-      const [messages, proposedPlans, activities, pendingApprovals] = yield* Effect.all([
-        projectionThreadMessageRepository.listByThreadId({ threadId }),
-        projectionThreadProposedPlanRepository.listByThreadId({ threadId }),
-        projectionThreadActivityRepository.listByThreadId({ threadId }),
-        projectionPendingApprovalRepository.listByThreadId({ threadId }),
+      const [
+        latestUserMessageAt,
+        pendingApprovalCount,
+        activitySummary,
+        hasActionableProposedPlan,
+      ] = yield* Effect.all([
+        scope.latestUserMessage
+          ? projectionThreadMessageRepository.getLatestUserMessageCreatedAt({ threadId })
+          : Effect.succeed(current.latestUserMessageAt),
+        scope.pendingApprovals
+          ? projectionPendingApprovalRepository.countPendingByThreadId({ threadId })
+          : Effect.succeed(current.pendingApprovalCount),
+        scope.activities
+          ? projectionThreadActivityRepository
+              .listByThreadIdAndKinds({ threadId, kinds: SHELL_SUMMARY_ACTIVITY_KINDS })
+              .pipe(Effect.map(deriveThreadShellActivitySummary))
+          : Effect.succeed({
+              pendingUserInputCount: current.pendingUserInputCount,
+              pendingFollowupCount: current.pendingFollowupCount,
+              handoffThreadId: current.handoffThreadId,
+              sourceThreadId: current.sourceThreadId,
+            }),
+        scope.proposedPlan
+          ? projectionThreadProposedPlanRepository.listByThreadId({ threadId }).pipe(
+              Effect.map((proposedPlans) =>
+                deriveHasActionableProposedPlan({
+                  latestTurnId: current.latestTurnId,
+                  proposedPlans,
+                }),
+              ),
+            )
+          : Effect.succeed(current.hasActionableProposedPlan === 1),
       ]);
-
-      let latestUserMessageAt: string | null = null;
-      for (const message of messages) {
-        if (
-          message.role === "user" &&
-          (latestUserMessageAt === null || message.createdAt > latestUserMessageAt)
-        ) {
-          latestUserMessageAt = message.createdAt;
-        }
-      }
-
-      const pendingApprovalCount = pendingApprovals.filter(
-        (approval) => approval.status === "pending",
-      ).length;
-      const pendingUserInputCount = derivePendingUserInputCountFromActivities(activities);
-      const pendingFollowupCount = derivePendingFollowupCountFromActivities(activities);
-      const { handoffThreadId, sourceThreadId } = deriveHandoffThreadIdsFromActivities(activities);
-      const hasActionableProposedPlan = deriveHasActionableProposedPlan({
-        latestTurnId: existingRow.value.latestTurnId,
-        proposedPlans,
-      });
+      const { pendingUserInputCount, pendingFollowupCount, handoffThreadId, sourceThreadId } =
+        activitySummary;
 
       yield* projectionThreadRepository.upsert({
         ...existingRow.value,
@@ -859,7 +716,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...existingRow.value,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          yield* refreshThreadShellSummary(
+            event.payload.threadId,
+            shellSummaryScopeForEvent(event),
+          );
           return;
         }
 
@@ -870,6 +730,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           if (Option.isNone(existingRow)) {
             return;
           }
+          const latestTurnId = event.payload.session.activeTurnId ?? existingRow.value.latestTurnId;
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             // `latest_turn_id` means the most recent turn, not the in-flight
@@ -889,10 +750,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             //
             // Only advance the pointer; never clear it. The in-memory projector
             // has always done it this way (projector.ts, thread.session-set).
-            latestTurnId: event.payload.session.activeTurnId ?? existingRow.value.latestTurnId,
+            latestTurnId,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          yield* refreshThreadShellSummary(
+            event.payload.threadId,
+            shellSummaryScopeForEvent(event, {
+              latestTurnIdChanged: latestTurnId !== existingRow.value.latestTurnId,
+            }),
+          );
           return;
         }
 
@@ -908,7 +774,12 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestTurnId: event.payload.turnId,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          yield* refreshThreadShellSummary(
+            event.payload.threadId,
+            shellSummaryScopeForEvent(event, {
+              latestTurnIdChanged: event.payload.turnId !== existingRow.value.latestTurnId,
+            }),
+          );
           return;
         }
 
@@ -946,7 +817,10 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             latestTurnId,
             updatedAt: event.occurredAt,
           });
-          yield* refreshThreadShellSummary(event.payload.threadId);
+          yield* refreshThreadShellSummary(
+            event.payload.threadId,
+            shellSummaryScopeForEvent(event),
+          );
           return;
         }
 
