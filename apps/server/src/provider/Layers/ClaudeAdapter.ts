@@ -476,6 +476,20 @@ function claudeUsageInputTokens(usage: Record<string, unknown>): number {
   );
 }
 
+/**
+ * The part of the input the model re-read from cache rather than processing
+ * fresh.
+ *
+ * Kept apart from `claudeUsageInputTokens`, which deliberately sums the two:
+ * the context meter wants the whole context, while anything reasoning about
+ * cost needs to know that re-read context is billed at a fraction. Codex has
+ * always reported the split; Claude reports it too, it was simply being folded
+ * away here.
+ */
+function claudeUsageCachedInputTokens(usage: Record<string, unknown>): number {
+  return finiteNonNegativeInteger(usage.cache_read_input_tokens) ?? 0;
+}
+
 function claudeUsageOutputTokens(usage: Record<string, unknown>): number {
   return finiteNonNegativeInteger(usage.output_tokens) ?? 0;
 }
@@ -508,6 +522,7 @@ function claudeTotalProcessedTokens(value: unknown): number | undefined {
 function makeClaudeTokenUsageSnapshot(input: {
   readonly activeTokens: number;
   readonly inputTokens?: number;
+  readonly cachedInputTokens?: number;
   readonly outputTokens?: number;
   readonly contextWindow?: number;
   readonly totalProcessedTokens?: number;
@@ -526,6 +541,7 @@ function makeClaudeTokenUsageSnapshot(input: {
     (maxTokens !== undefined ? Math.min(activeTokens, maxTokens) : activeTokens);
   const totalProcessedTokens = finiteNonNegativeInteger(input.totalProcessedTokens);
   const inputTokens = finiteNonNegativeInteger(input.inputTokens);
+  const cachedInputTokens = finiteNonNegativeInteger(input.cachedInputTokens);
   const outputTokens = finiteNonNegativeInteger(input.outputTokens);
 
   return {
@@ -535,6 +551,7 @@ function makeClaudeTokenUsageSnapshot(input: {
       ? { totalProcessedTokens }
       : {}),
     ...(inputTokens !== undefined && inputTokens > 0 ? { inputTokens } : {}),
+    ...(cachedInputTokens !== undefined && cachedInputTokens > 0 ? { cachedInputTokens } : {}),
     ...(outputTokens !== undefined && outputTokens > 0 ? { outputTokens } : {}),
     ...(maxTokens !== undefined ? { maxTokens } : {}),
     ...(input.compactsAutomatically !== undefined
@@ -555,6 +572,7 @@ function normalizeClaudeActiveTokenUsage(
   const usage = value as Record<string, unknown>;
   const activeUsage = lastClaudeUsageIteration(usage) ?? usage;
   const inputTokens = claudeUsageInputTokens(activeUsage);
+  const cachedInputTokens = claudeUsageCachedInputTokens(activeUsage);
   const outputTokens = claudeUsageOutputTokens(activeUsage);
   const activeTokens = claudeTotalProcessedTokens(activeUsage) ?? inputTokens + outputTokens;
   if (activeTokens <= 0) {
@@ -564,6 +582,7 @@ function normalizeClaudeActiveTokenUsage(
   return makeClaudeTokenUsageSnapshot({
     activeTokens,
     inputTokens,
+    cachedInputTokens,
     outputTokens,
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(totalProcessedTokens !== undefined ? { totalProcessedTokens } : {}),
