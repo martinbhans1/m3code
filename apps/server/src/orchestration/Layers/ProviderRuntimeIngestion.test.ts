@@ -1993,6 +1993,67 @@ describe("ProviderRuntimeIngestion", () => {
     expect(assistantEvents[3]?.payload.text).toBe("");
   });
 
+  it("keeps streaming while async user input remains pending", async () => {
+    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const base = {
+      provider: ProviderDriverKind.make("codex"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("async-turn"),
+    };
+    harness.emit({ ...base, type: "turn.started", eventId: asEventId("async-turn-start") });
+    await waitForThread(harness.readModel, (thread) => thread.session?.status === "running");
+    harness.emit({
+      ...base,
+      type: "content.delta",
+      eventId: asEventId("async-delta-before"),
+      itemId: asItemId("async-working"),
+      payload: { streamKind: "assistant_text", delta: "Working" },
+    });
+    await waitForThread(harness.readModel, (thread) =>
+      thread.messages.some((message: ProviderRuntimeTestMessage) => message.text === "Working"),
+    );
+    harness.emit({
+      ...base,
+      type: "user-input.requested",
+      eventId: asEventId("async-request"),
+      requestId: ApprovalRequestId.make("async-request"),
+      payload: {
+        responseMode: "message",
+        questions: [{ id: "q1", header: "Question", question: "Which fruit?", options: [] }],
+      },
+    });
+    const requested = await waitForThread(harness.readModel, (thread) =>
+      thread.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "user-input.requested",
+      ),
+    );
+    expect(requested.session?.status).toBe("running");
+    expect(
+      requested.messages.find(
+        (message: ProviderRuntimeTestMessage) => message.id === "assistant:async-working",
+      )?.streaming,
+    ).toBe(true);
+    expect(
+      requested.activities.find(
+        (activity: ProviderRuntimeTestActivity) => activity.kind === "user-input.requested",
+      )?.payload,
+    ).toMatchObject({ responseMode: "message" });
+    harness.emit({
+      ...base,
+      type: "content.delta",
+      eventId: asEventId("async-delta-after"),
+      itemId: asItemId("async-working"),
+      payload: { streamKind: "assistant_text", delta: " independently" },
+    });
+    await waitForThread(harness.readModel, (thread) =>
+      thread.messages.some(
+        (message: ProviderRuntimeTestMessage) =>
+          message.text === "Working independently" && message.streaming,
+      ),
+    );
+  });
+
   it("starts a new streaming assistant message segment after approval", async () => {
     const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
     const startedAt = "2026-03-28T07:00:00.000Z";

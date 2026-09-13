@@ -97,6 +97,7 @@ export interface PendingUserInput {
   requestId: ApprovalRequestId;
   createdAt: string;
   questions: ReadonlyArray<UserInputQuestion>;
+  responseMode?: "tool" | "message";
 }
 
 export interface ActivePlanState {
@@ -472,15 +473,17 @@ function parseUserInputQuestions(
           };
         })
         .filter((option): option is UserInputQuestion["options"][number] => option !== null);
-      if (options.length === 0) {
-        return null;
-      }
       return {
         id: question.id,
         header: question.header,
         question: question.question,
         options,
         multiSelect: question.multiSelect === true,
+        ...(question.multiSelect !== true &&
+        typeof question.defaultOptionLabel === "string" &&
+        options.some((option) => option.label === question.defaultOptionLabel)
+          ? { defaultOptionLabel: question.defaultOptionLabel }
+          : {}),
       };
     })
     .filter((question): question is UserInputQuestion => question !== null);
@@ -513,6 +516,7 @@ export function derivePendingUserInputs(
         requestId,
         createdAt: activity.createdAt,
         questions,
+        ...(payload?.responseMode === "message" ? { responseMode: "message" as const } : {}),
       });
       continue;
     }

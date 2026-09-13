@@ -1,5 +1,26 @@
 # Codex
 
+## Interactive questions
+
+When Codex exposes `request_user_input_async`, M3 Code displays its questions above
+the composer while the agent continues working. Choose an option or type your own
+answer, then submit. The first suggested option is preselected; selecting an option
+does not send it automatically. Questions without suggestions accept free text.
+
+Submitted answers become user messages: they steer the running agent or start a new
+turn when it is idle. Pending questions are stored with the conversation, so browser
+reloads and server restarts do not depend on a live tool callback.
+
+Codex 0.154 emits these questions as `agentMessage` items with `delivery: "async"`
+and a `questions` array. The message's text is a Markdown fallback, not the structured
+question interface. M3 preserves the extra protocol fields and maps the completed
+item to a `user-input.requested` activity with `responseMode: "message"`. The older
+blocking `request_user_input` flow still uses `item/tool/requestUserInput` and returns
+answers as a tool response. Tool availability depends on the installed Codex version,
+model, and collaboration mode.
+
+## Multiple accounts
+
 This guide is for people who want to use more than one Codex account in T3 Code.
 
 Common reasons:

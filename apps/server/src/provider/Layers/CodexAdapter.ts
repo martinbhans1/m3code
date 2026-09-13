@@ -39,6 +39,10 @@ import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
+import {
+  CodexAsyncUserInputNotification,
+  codexAsyncUserInputPayload,
+} from "../CodexAsyncUserInput.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 
 import {
@@ -827,11 +831,27 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "item/started") {
+    const asyncQuestion = readPayload(CodexAsyncUserInputNotification, event.payload);
+    if (asyncQuestion && codexAsyncUserInputPayload(asyncQuestion.item)) {
+      return [];
+    }
     const started = mapItemLifecycle(event, canonicalThreadId, "item.started");
     return started ? [started] : [];
   }
 
   if (event.method === "item/completed") {
+    const asyncQuestion = readPayload(CodexAsyncUserInputNotification, event.payload);
+    const questionRequest = asyncQuestion && codexAsyncUserInputPayload(asyncQuestion.item);
+    if (questionRequest) {
+      return [
+        {
+          ...runtimeEventBase(event, canonicalThreadId),
+          type: "user-input.requested",
+          requestId: RuntimeRequestId.make(questionRequest.requestId),
+          payload: questionRequest.payload,
+        },
+      ];
+    }
     const payload = readPayload(EffectCodexSchema.V2ItemCompletedNotification, event.payload);
     const item = payload?.item;
     if (!item) {

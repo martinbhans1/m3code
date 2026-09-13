@@ -1,4 +1,3 @@
-import { type ApprovalRequestId } from "@t3tools/contracts";
 import { memo, useEffect, useEffectEvent, useId, useRef, useState } from "react";
 import { type PendingUserInput } from "../../session-logic";
 import {
@@ -11,7 +10,7 @@ import { ComposerPendingCollapseToggle } from "./ComposerPendingCollapseToggle";
 
 interface PendingUserInputPanelProps {
   pendingUserInputs: PendingUserInput[];
-  respondingRequestIds: ApprovalRequestId[];
+  isResponding: boolean;
   answers: Record<string, PendingUserInputDraftAnswer>;
   questionIndex: number;
   onToggleOption: (questionId: string, optionLabel: string) => void;
@@ -20,7 +19,7 @@ interface PendingUserInputPanelProps {
 
 export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserInputPanel({
   pendingUserInputs,
-  respondingRequestIds,
+  isResponding,
   answers,
   questionIndex,
   onToggleOption,
@@ -34,7 +33,7 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
     <ComposerPendingUserInputCard
       key={activePrompt.requestId}
       prompt={activePrompt}
-      isResponding={respondingRequestIds.includes(activePrompt.requestId)}
+      isResponding={isResponding}
       answers={answers}
       questionIndex={questionIndex}
       onToggleOption={onToggleOption}
@@ -124,6 +123,17 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
     }
     setOptimisticSingleSelect({ questionId, optionLabel });
     onToggleOption(questionId, optionLabel);
+    if (prompt.responseMode === "message") {
+      return;
+    }
+    // Skipping ahead on a click is a convenience while questions remain. On the
+    // last question of a set "advance" means sending every answer, and that has
+    // to stay an explicit act — otherwise one click fires off a whole
+    // questionnaire you were still working through. A lone question is
+    // different: the click is the entire answer, so it still goes straight out.
+    if (progress.isLastQuestion && prompt.questions.length > 1) {
+      return;
+    }
     if (autoAdvanceTimerRef.current !== null) {
       window.clearTimeout(autoAdvanceTimerRef.current);
     }
@@ -170,6 +180,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   }
 
   const customAnswerActive = progress.customAnswer.trim().length > 0;
+  const selectedCount = customAnswerActive ? 0 : progress.selectedOptionLabels.length;
 
   return (
     <div className={cn("px-4 sm:px-5", isCollapsed ? "py-2" : "py-3")}>
@@ -200,7 +211,13 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
       <div id={optionsId} ref={optionsRef} hidden={isCollapsed}>
         <p className="text-sm text-foreground/90">{activeQuestion.question}</p>
         {activeQuestion.multiSelect ? (
-          <p className="mt-1 text-xs text-muted-foreground/65">Select one or more options.</p>
+          <p className="mt-1 text-xs text-muted-foreground/65">
+            {selectedCount > 0
+              ? `${selectedCount} selected — keep picking, then ${
+                  progress.isLastQuestion ? "submit" : "continue"
+                }.`
+              : "Select one or more options."}
+          </p>
         ) : null}
         {/* Cap the option list so a long set can never swallow the viewport on a
             phone; the list gets its own scroller instead of stealing every pixel
@@ -208,7 +225,11 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
         {/* dvh, not vh: on iOS Safari `vh` resolves against the large viewport
             and does not shrink when the keyboard opens — which is exactly the
             case this cap exists for. */}
-        <div className="mt-3 max-h-[38dvh] space-y-1.5 overflow-y-auto overscroll-contain pr-0.5 sm:max-h-[46dvh]">
+        <div
+          role={activeQuestion.multiSelect ? "group" : "radiogroup"}
+          aria-label={activeQuestion.question}
+          className="mt-3 max-h-[38dvh] space-y-1.5 overflow-y-auto overscroll-contain pr-0.5 sm:max-h-[46dvh]"
+        >
           {activeQuestion.options.map((option, index) => {
             const isOptimisticallySelected =
               optimisticSingleSelect?.questionId === activeQuestion.id &&
@@ -227,13 +248,28 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
             );
             const content = (
               <>
+                {/* A tick box, only on multi-select: the one thing that tells
+                    you at a glance that picking one does not close the list. */}
+                {activeQuestion.multiSelect ? (
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "flex size-4 shrink-0 items-center justify-center rounded-[5px] border transition-colors duration-150",
+                      isSelected
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border/70 bg-background/40 group-hover:border-border",
+                    )}
+                  >
+                    {isSelected ? <CheckIcon className="size-3" /> : null}
+                  </span>
+                ) : null}
                 <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                   <span className="text-sm font-medium">{option.label}</span>
                   {option.description && option.description !== option.label ? (
                     <span className="text-xs text-muted-foreground/50">{option.description}</span>
                   ) : null}
                 </div>
-                {isSelected ? (
+                {isSelected && !activeQuestion.multiSelect ? (
                   <CheckIcon className="size-3.5 shrink-0 text-primary" />
                 ) : shortcutKey !== null ? (
                   <kbd
@@ -250,7 +286,8 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
             return (
               <div
                 key={`${activeQuestion.id}:${option.label}`}
-                role="button"
+                role={activeQuestion.multiSelect ? "checkbox" : "radio"}
+                aria-checked={isSelected}
                 tabIndex={isResponding ? -1 : 0}
                 aria-disabled={isResponding}
                 onClick={() => {

@@ -41,6 +41,24 @@ const multiSelectQuestion = {
 } as const;
 
 describe("resolvePendingUserInputAnswer", () => {
+  it("preselects an async default but lets a custom answer override it", () => {
+    const question = { ...singleSelectQuestion, defaultOptionLabel: "Orchestration-first" };
+    expect(
+      findFirstUnansweredPendingUserInputQuestionIndex([question, { ...question, id: "q2" }], {}),
+    ).toBe(0);
+    expect(resolvePendingUserInputAnswer(question, undefined)).toBe("Orchestration-first");
+    expect(derivePendingUserInputProgress([question], {}, 0).selectedOptionLabels).toEqual([
+      "Orchestration-first",
+    ]);
+    expect(resolvePendingUserInputAnswer(question, { customAnswer: "Something else" })).toBe(
+      "Something else",
+    );
+  });
+  it("never pre-ticks an option on a multi-select, even with a default", () => {
+    const question = { ...multiSelectQuestion, defaultOptionLabel: "Server" };
+    expect(derivePendingUserInputProgress([question], {}, 0).selectedOptionLabels).toEqual([]);
+    expect(resolvePendingUserInputAnswer(question, undefined)).toBeNull();
+  });
   it("prefers a custom answer over selected options", () => {
     expect(
       resolvePendingUserInputAnswer(singleSelectQuestion, {

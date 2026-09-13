@@ -59,7 +59,7 @@ export function resolvePendingUserInputAnswer(
     return selectedOptionLabels.length > 0 ? selectedOptionLabels : null;
   }
 
-  return selectedOptionLabels[0] ?? null;
+  return selectedOptionLabels[0] ?? question.defaultOptionLabel ?? null;
 }
 
 export function setPendingUserInputCustomAnswer(
@@ -133,7 +133,9 @@ export function findFirstUnansweredPendingUserInputQuestionIndex(
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
 ): number {
   const unansweredIndex = questions.findIndex(
-    (question) => !resolvePendingUserInputAnswer(question, draftAnswers[question.id]),
+    (question) =>
+      !draftAnswers[question.id] ||
+      !resolvePendingUserInputAnswer(question, draftAnswers[question.id]),
   );
 
   return unansweredIndex === -1 ? Math.max(questions.length - 1, 0) : unansweredIndex;
@@ -160,7 +162,14 @@ export function derivePendingUserInputProgress(
     questionIndex: normalizedQuestionIndex,
     activeQuestion,
     activeDraft,
-    selectedOptionLabels: normalizeSelectedOptionLabels(activeDraft?.selectedOptionLabels),
+    // A default only ever stands in for a single choice. On a multi-select it
+    // would tick a box the answer never counts, so every box starts empty.
+    selectedOptionLabels: normalizeSelectedOptionLabels(
+      activeDraft?.selectedOptionLabels ??
+        (activeQuestion?.defaultOptionLabel && !activeQuestion.multiSelect
+          ? [activeQuestion.defaultOptionLabel]
+          : undefined),
+    ),
     customAnswer,
     resolvedAnswer,
     usingCustomAnswer: customAnswer.trim().length > 0,

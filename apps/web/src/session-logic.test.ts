@@ -181,6 +181,42 @@ describe("derivePendingApprovals", () => {
 });
 
 describe("derivePendingUserInputs", () => {
+  it("keeps async questions after turn completion and accepts free-text-only prompts", () => {
+    const requests = derivePendingUserInputs([
+      makeActivity({
+        id: "async-question",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "user-input.requested",
+        summary: "Question",
+        tone: "info",
+        payload: {
+          requestId: "async-1",
+          responseMode: "message",
+          questions: [
+            {
+              id: "q1",
+              header: "Question",
+              question: "Which fruit?",
+              options: [{ label: "Banana", description: "" }],
+              defaultOptionLabel: "Banana",
+            },
+            { id: "q2", header: "Question", question: "Anything else?", options: [] },
+          ],
+        },
+      }),
+      makeActivity({
+        id: "done",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "turn.completed",
+        summary: "Done",
+        tone: "info",
+      }),
+    ]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.responseMode).toBe("message");
+    expect(requests[0]?.questions[0]?.defaultOptionLabel).toBe("Banana");
+    expect(requests[0]?.questions[1]?.options).toEqual([]);
+  });
   it("tracks open structured prompts and removes resolved ones", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

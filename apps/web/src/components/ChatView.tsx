@@ -72,10 +72,15 @@ import { type LegendListRef } from "@legendapp/list/react";
 import {
   buildPendingUserInputAnswers,
   derivePendingUserInputProgress,
+  findFirstUnansweredPendingUserInputQuestionIndex,
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
+import {
+  selectPendingUserInputDraft,
+  usePendingUserInputDraftStore,
+} from "../pendingUserInputDraftStore";
 import { selectEnvironmentState, selectProjectsAcrossEnvironments, useStore } from "../store";
 import { createProjectSelectorByRef, createThreadSelectorByRef } from "../storeSelectors";
 import { useUiStateStore } from "../uiStateStore";
@@ -1197,11 +1202,19 @@ function ChatViewContent(props: ChatViewProps) {
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     ApprovalRequestId[]
   >([]);
-  const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
-    Record<string, Record<string, PendingUserInputDraftAnswer>>
-  >({});
-  const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
-    useState<Record<string, number>>({});
+  // Answers-in-progress live in a persisted store rather than component state:
+  // stepping out to another conversation used to wipe both the answers and your
+  // place in the question list.
+  const pendingUserInputDraftsByRequestId = usePendingUserInputDraftStore(
+    (state) => state.byRequestId,
+  );
+  const setPendingUserInputDraftQuestionIndex = usePendingUserInputDraftStore(
+    (state) => state.setQuestionIndex,
+  );
+  const updatePendingUserInputDraftAnswer = usePendingUserInputDraftStore(
+    (state) => state.updateAnswer,
+  );
+  const clearPendingUserInputDraft = usePendingUserInputDraftStore((state) => state.clear);
   const shouldUsePlanSidebarSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   // When set, the thread-change reset effect will open the sidebar instead of closing it.
   // Used by "Implement in a new thread" to carry the sidebar-open intent across navigation.
@@ -1990,17 +2003,23 @@ function ChatViewContent(props: ChatViewProps) {
     [threadActivities],
   );
   const activePendingUserInput = pendingUserInputs[0] ?? null;
-  const activePendingDraftAnswers = useMemo(
-    () =>
-      activePendingUserInput
-        ? (pendingUserInputAnswersByRequestId[activePendingUserInput.requestId] ??
-          EMPTY_PENDING_USER_INPUT_ANSWERS)
-        : EMPTY_PENDING_USER_INPUT_ANSWERS,
-    [activePendingUserInput, pendingUserInputAnswersByRequestId],
+  const activePendingDraft = selectPendingUserInputDraft(
+    pendingUserInputDraftsByRequestId,
+    activePendingUserInput?.requestId ?? null,
   );
-  const activePendingQuestionIndex = activePendingUserInput
-    ? (pendingUserInputQuestionIndexByRequestId[activePendingUserInput.requestId] ?? 0)
-    : 0;
+  const activePendingDraftAnswers = activePendingUserInput
+    ? activePendingDraft.answers
+    : EMPTY_PENDING_USER_INPUT_ANSWERS;
+  // With no place recorded yet, open on the first question still missing an
+  // answer — so a restored draft picks up where it was left rather than
+  // replaying questions that are already done.
+  const activePendingQuestionIndex = !activePendingUserInput
+    ? 0
+    : (activePendingDraft.questionIndex ??
+      findFirstUnansweredPendingUserInputQuestionIndex(
+        activePendingUserInput.questions,
+        activePendingDraftAnswers,
+      ));
   const activePendingProgress = useMemo(
     () =>
       activePendingUserInput
@@ -4445,6 +4464,7 @@ function ChatViewContent(props: ChatViewProps) {
       setRespondingUserInputRequestIds((existing) =>
         existing.includes(requestId) ? existing : [...existing, requestId],
       );
+      let submitted = true;
       await api.orchestration
         .dispatchCommand({
           type: "thread.user-input.respond",
@@ -4455,14 +4475,19 @@ function ChatViewContent(props: ChatViewProps) {
           createdAt: new Date().toISOString(),
         })
         .catch((err: unknown) => {
+          submitted = false;
           setThreadError(
             activeThreadId,
             err instanceof Error ? err.message : "Failed to submit user input.",
           );
         });
+      // Keep the draft on failure — it is the only copy of what was typed.
+      if (submitted) {
+        clearPendingUserInputDraft(requestId);
+      }
       setRespondingUserInputRequestIds((existing) => existing.filter((id) => id !== requestId));
     },
-    [activeThreadId, environmentId, setThreadError],
+    [activeThreadId, clearPendingUserInputDraft, environmentId, setThreadError],
   );
 
   const setActivePendingUserInputQuestionIndex = useCallback(
@@ -4470,12 +4495,9 @@ function ChatViewContent(props: ChatViewProps) {
       if (!activePendingUserInput) {
         return;
       }
-      setPendingUserInputQuestionIndexByRequestId((existing) => ({
-        ...existing,
-        [activePendingUserInput.requestId]: nextQuestionIndex,
-      }));
+      setPendingUserInputDraftQuestionIndex(activePendingUserInput.requestId, nextQuestionIndex);
     },
-    [activePendingUserInput],
+    [activePendingUserInput, setPendingUserInputDraftQuestionIndex],
   );
 
   const onSelectActivePendingUserInputOption = useCallback(
@@ -4483,32 +4505,26 @@ function ChatViewContent(props: ChatViewProps) {
       if (!activePendingUserInput) {
         return;
       }
-      setPendingUserInputAnswersByRequestId((existing) => {
-        const question =
-          (activePendingProgress?.activeQuestion?.id === questionId
-            ? activePendingProgress.activeQuestion
-            : undefined) ??
-          activePendingUserInput.questions.find((entry) => entry.id === questionId);
-        if (!question) {
-          return existing;
-        }
+      const question =
+        (activePendingProgress?.activeQuestion?.id === questionId
+          ? activePendingProgress.activeQuestion
+          : undefined) ?? activePendingUserInput.questions.find((entry) => entry.id === questionId);
+      if (!question) {
+        return;
+      }
 
-        return {
-          ...existing,
-          [activePendingUserInput.requestId]: {
-            ...existing[activePendingUserInput.requestId],
-            [questionId]: togglePendingUserInputOptionSelection(
-              question,
-              existing[activePendingUserInput.requestId]?.[questionId],
-              optionLabel,
-            ),
-          },
-        };
-      });
+      updatePendingUserInputDraftAnswer(activePendingUserInput.requestId, questionId, (existing) =>
+        togglePendingUserInputOptionSelection(question, existing, optionLabel),
+      );
       promptRef.current = "";
       composerRef.current?.resetCursorState({ cursor: 0 });
     },
-    [activePendingProgress?.activeQuestion, activePendingUserInput, composerRef],
+    [
+      activePendingProgress?.activeQuestion,
+      activePendingUserInput,
+      composerRef,
+      updatePendingUserInputDraftAnswer,
+    ],
   );
 
   const onChangeActivePendingUserInputCustomAnswer = useCallback(
@@ -4523,16 +4539,9 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
       promptRef.current = value;
-      setPendingUserInputAnswersByRequestId((existing) => ({
-        ...existing,
-        [activePendingUserInput.requestId]: {
-          ...existing[activePendingUserInput.requestId],
-          [questionId]: setPendingUserInputCustomAnswer(
-            existing[activePendingUserInput.requestId]?.[questionId],
-            value,
-          ),
-        },
-      }));
+      updatePendingUserInputDraftAnswer(activePendingUserInput.requestId, questionId, (existing) =>
+        setPendingUserInputCustomAnswer(existing, value),
+      );
       const snapshot = composerRef.current?.readSnapshot();
       if (
         snapshot?.value !== value ||
@@ -4542,7 +4551,7 @@ function ChatViewContent(props: ChatViewProps) {
         composerRef.current?.focusAt(nextCursor);
       }
     },
-    [activePendingUserInput, composerRef],
+    [activePendingUserInput, composerRef, updatePendingUserInputDraftAnswer],
   );
 
   const onAdvanceActivePendingUserInput = useCallback(() => {

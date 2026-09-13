@@ -2093,6 +2093,68 @@ describe("ProviderCommandReactor", () => {
     expect(resolvedActivity).toBeUndefined();
   });
 
+  it("delivers persisted async answers as user messages and ignores duplicate submissions", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    await runtime!.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("async-question"),
+        threadId: ThreadId.make("thread-1"),
+        createdAt: now,
+        activity: {
+          id: EventId.make("async-question"),
+          tone: "info",
+          kind: "user-input.requested",
+          summary: "User input requested",
+          turnId: null,
+          createdAt: now,
+          payload: {
+            requestId: "codex-async:question-1",
+            responseMode: "message",
+            questions: [{ id: "q1", header: "Question", question: "Which fruit?", options: [] }],
+          },
+        },
+      }),
+    );
+    // There is no live user-input callback: the request is restored from activities.
+    const respond = (id: string) =>
+      runtime!.runPromise(
+        harness.engine.dispatch({
+          type: "thread.user-input.respond",
+          commandId: CommandId.make(id),
+          threadId: ThreadId.make("thread-1"),
+          requestId: asApprovalRequestId("codex-async:question-1"),
+          answers: { q1: "Banana" },
+          createdAt: now,
+        }),
+      );
+    await respond("async-response-1");
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+      input: "Answers to your questions:\n\nWhich fruit?\nBanana",
+    });
+    await waitFor(
+      async () =>
+        (await harness.readModel()).threads[0]?.activities.some(
+          (activity) => activity.kind === "user-input.resolved",
+        ) === true,
+    );
+    await respond("async-response-2");
+    await runtime!.runPromise(
+      ProviderCommandReactor.pipe(Effect.flatMap((reactor) => reactor.drain)),
+    );
+    const thread = (await harness.readModel()).threads[0];
+    expect(
+      thread?.messages.filter((message) => message.text.includes("Which fruit?\nBanana")),
+    ).toHaveLength(1);
+    expect(
+      thread?.activities.filter((activity) => activity.kind === "user-input.resolved"),
+    ).toHaveLength(1);
+    expect(harness.respondToUserInput).not.toHaveBeenCalled();
+    expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+  });
+
   it("surfaces non-resumable provider user-input callbacks as stale failures", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -2106,7 +2168,7 @@ describe("ProviderCommandReactor", () => {
       ),
     );
 
-    await Effect.runPromise(
+    await runtime!.runPromise(
       harness.engine.dispatch({
         type: "thread.session.set",
         commandId: CommandId.make("cmd-session-set-for-user-input-error"),
@@ -2206,7 +2268,7 @@ describe("ProviderCommandReactor", () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
-    await Effect.runPromise(
+    await runtime!.runPromise(
       harness.engine.dispatch({
         type: "thread.session.set",
         commandId: CommandId.make("cmd-session-set-for-stop"),
@@ -2225,7 +2287,7 @@ describe("ProviderCommandReactor", () => {
       }),
     );
 
-    await Effect.runPromise(
+    await runtime!.runPromise(
       harness.engine.dispatch({
         type: "thread.session.stop",
         commandId: CommandId.make("cmd-session-stop"),

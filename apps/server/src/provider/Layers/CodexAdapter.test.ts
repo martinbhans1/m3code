@@ -1023,6 +1023,51 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       }),
   );
 
+  it.effect("renders async agent messages as questions without completing the assistant turn", () =>
+    Effect.gen(function* () {
+      const { adapter, runtime } = yield* startLifecycleRuntime();
+      const eventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      const payload = {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        startedAtMs: 0,
+        completedAtMs: 1,
+        item: {
+          type: "agentMessage",
+          id: "async-question-1",
+          text: "Choose a style\n- Short\n- Detailed",
+          phase: "final_answer",
+          delivery: "async",
+          questions: [
+            { title: "Choose a style", options: ["Short", "Detailed"] },
+            { title: "Anything else?" },
+          ],
+        },
+      };
+      for (const method of ["item/started", "item/completed"]) {
+        yield* runtime.emit({
+          id: asEventId(`evt-${method}`),
+          kind: "notification",
+          provider: ProviderDriverKind.make("codex"),
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-1"),
+          createdAt: "2026-01-01T00:00:00.000Z",
+          method,
+          payload,
+        });
+      }
+      const result = yield* Fiber.join(eventFiber);
+      assert.equal(result._tag, "Some");
+      if (result._tag !== "Some") return;
+      assert.equal(result.value.type, "user-input.requested");
+      if (result.value.type !== "user-input.requested") return;
+      assert.equal(result.value.requestId, "codex-async:async-question-1");
+      assert.equal(result.value.payload.responseMode, "message");
+      assert.equal(result.value.payload.questions[0]?.defaultOptionLabel, "Short");
+      assert.deepEqual(result.value.payload.questions[1]?.options, []);
+    }),
+  );
+
   it.effect("unwraps Codex token usage payloads for context window events", () =>
     Effect.gen(function* () {
       const { adapter, runtime } = yield* startLifecycleRuntime();

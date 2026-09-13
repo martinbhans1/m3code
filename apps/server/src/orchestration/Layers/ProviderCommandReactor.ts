@@ -2,6 +2,7 @@ import {
   type ChatAttachment,
   CommandId,
   EventId,
+  MessageId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -42,8 +43,10 @@ import {
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import { AsyncUserInputRequest, formatAsyncUserInputAnswer } from "../asyncUserInput.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
+const decodeAsyncUserInputRequest = Schema.decodeUnknownOption(AsyncUserInputRequest);
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -996,6 +999,64 @@ const make = Effect.gen(function* () {
     ) {
       const thread = yield* resolveThread(event.payload.threadId);
       if (!thread) {
+        return;
+      }
+      const asyncRequest = thread.activities
+        .filter((activity) => activity.kind === "user-input.requested")
+        .map((activity) => decodeAsyncUserInputRequest(activity.payload))
+        .find(
+          (request) =>
+            Option.isSome(request) && request.value.requestId === event.payload.requestId,
+        );
+      if (asyncRequest && Option.isSome(asyncRequest)) {
+        const alreadyResolved = thread.activities.some(
+          (activity) =>
+            activity.kind === "user-input.resolved" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            "requestId" in activity.payload &&
+            activity.payload.requestId === event.payload.requestId,
+        );
+        if (alreadyResolved) return;
+        const text = formatAsyncUserInputAnswer(asyncRequest.value, event.payload.answers);
+        if (!text) {
+          return yield* appendProviderFailureActivity({
+            threadId: thread.id,
+            kind: "provider.user-input.respond.failed",
+            summary: "Please answer every question",
+            detail: "An answer is required for each question before submitting.",
+            turnId: null,
+            createdAt: event.payload.createdAt,
+            requestId: event.payload.requestId,
+          });
+        }
+        // Persist through the normal turn path: it steers a running provider or
+        // resumes an idle/stopped session. Stable command IDs make retries safe.
+        const responseKey = `async-answer:${thread.id}:${event.payload.requestId}`;
+        yield* orchestrationEngine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make(responseKey),
+          threadId: thread.id,
+          message: { messageId: MessageId.make(responseKey), role: "user", text, attachments: [] },
+          runtimeMode: thread.runtimeMode,
+          interactionMode: thread.interactionMode,
+          createdAt: event.payload.createdAt,
+        });
+        yield* orchestrationEngine.dispatch({
+          type: "thread.activity.append",
+          commandId: CommandId.make(`${responseKey}:resolved`),
+          threadId: thread.id,
+          activity: {
+            id: EventId.make(`${responseKey}:resolved`),
+            kind: "user-input.resolved",
+            tone: "info",
+            summary: "User input submitted",
+            payload: { requestId: event.payload.requestId, answers: event.payload.answers },
+            turnId: null,
+            createdAt: event.payload.createdAt,
+          },
+          createdAt: event.payload.createdAt,
+        });
         return;
       }
       const hasSession = thread.session && thread.session.status !== "stopped";
