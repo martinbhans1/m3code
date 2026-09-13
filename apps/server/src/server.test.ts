@@ -17,6 +17,7 @@ import {
   ExternalLauncherError,
   type OrchestrationThreadShell,
   TerminalNotRunningError,
+  IsoDateTime,
   type OrchestrationCommand,
   type OrchestrationEvent,
   ORCHESTRATION_WS_METHODS,
@@ -92,6 +93,10 @@ import {
   ProjectionSnapshotQuery,
   type ProjectionSnapshotQueryShape,
 } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import {
+  UsageReportQuery,
+  type UsageReportQueryShape,
+} from "./provider/Services/UsageReportQuery.ts";
 import { SqlitePersistenceMemory } from "./persistence/Layers/Sqlite.ts";
 import { PersistenceSqlError } from "./persistence/Errors.ts";
 import {
@@ -369,6 +374,7 @@ const buildAppUnderTest = (options?: {
     terminalManager?: Partial<TerminalManagerShape>;
     orchestrationEngine?: Partial<OrchestrationEngineShape>;
     projectionSnapshotQuery?: Partial<ProjectionSnapshotQueryShape>;
+    usageReportQuery?: Partial<UsageReportQueryShape>;
     checkpointDiffQuery?: Partial<CheckpointDiffQueryShape>;
     browserTraceCollector?: Partial<BrowserTraceCollectorShape>;
     serverLifecycleEvents?: Partial<ServerLifecycleEventsShape>;
@@ -742,7 +748,21 @@ const buildAppUnderTest = (options?: {
           getFirstActiveThreadIdByProjectId: () => Effect.succeed(Option.none()),
           getThreadCheckpointContext: () => Effect.succeed(Option.none()),
           ...options?.layers?.projectionSnapshotQuery,
-        }),
+        }).pipe(
+          // Merged into the same `provide` rather than added as another step:
+          // the pipe below is already at the overload limit.
+          Layer.merge(
+            Layer.mock(UsageReportQuery)({
+              getUsageReport: () =>
+                Effect.succeed({
+                  readAt: IsoDateTime.make("1970-01-01T00:00:00.000Z"),
+                  recordingSince: null,
+                  accounts: [],
+                }),
+              ...options?.layers?.usageReportQuery,
+            }),
+          ),
+        ),
       ),
       Layer.provide(
         Layer.mock(CheckpointDiffQuery)({
@@ -5334,7 +5354,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             updatedAt: now,
             archivedAt: null,
             pinnedAt: null,
-            latestTurn: null,
+                latestTurn: null,
             messages: [],
             session: null,
             activities: [],

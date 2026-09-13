@@ -636,3 +636,82 @@ export class ServerProviderUpdateError extends Schema.TaggedErrorClass<ServerPro
     return `Provider update failed for ${this.provider}: ${this.reason}`;
   }
 }
+
+/**
+ * Input for the plan usage report.
+ *
+ * Every field is optional because the useful default — every account, the
+ * longest window each one has, all recorded periods — is also the one an
+ * invoice is written from.
+ */
+export const ServerUsageReportInput = Schema.Struct({
+  instanceId: Schema.optional(ProviderInstanceId),
+  windowId: Schema.optional(TrimmedNonEmptyString),
+  /** How many reset periods to return per account, newest first. */
+  periodLimit: Schema.optional(PositiveInt),
+});
+export type ServerUsageReportInput = typeof ServerUsageReportInput.Type;
+
+/**
+ * Allowance consumed by one project on one model, in points of the window.
+ *
+ * "Points" and not "percent of what you used": 12 here means twelve percent of
+ * the whole weekly allowance, so the numbers across a period add up to the
+ * period's observed consumption rather than to 100.
+ */
+export const ServerUsageReportAllocation = Schema.Struct({
+  projectId: Schema.NullOr(ProjectId),
+  projectTitle: Schema.NullOr(TrimmedNonEmptyString),
+  model: Schema.NullOr(TrimmedNonEmptyString),
+  percent: Schema.Number,
+  tokens: Schema.Number,
+});
+export type ServerUsageReportAllocation = typeof ServerUsageReportAllocation.Type;
+
+/** One billing period of a window — everything between two of its resets. */
+export const ServerUsageReportPeriod = Schema.Struct({
+  resetsAt: Schema.NullOr(IsoDateTime),
+  firstReadingAt: IsoDateTime,
+  lastReadingAt: IsoDateTime,
+  /** Already consumed when recording started, so never attributable. */
+  openingPercent: Schema.Number,
+  closingPercent: Schema.Number,
+  observedPercent: Schema.Number,
+  attributedPercent: Schema.Number,
+  /** Consumed while nothing was running here — another tool, or another person. */
+  elsewherePercent: Schema.Number,
+  allocations: Schema.Array(ServerUsageReportAllocation),
+});
+export type ServerUsageReportPeriod = typeof ServerUsageReportPeriod.Type;
+
+/** One provider account's report, for the single window it was asked about. */
+export const ServerUsageReportAccount = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  planLabel: Schema.NullOr(TrimmedNonEmptyString),
+  windowId: TrimmedNonEmptyString,
+  windowLabel: TrimmedNonEmptyString,
+  windowMinutes: Schema.NullOr(Schema.Number),
+  availableWindowIds: Schema.Array(TrimmedNonEmptyString),
+  periods: Schema.Array(ServerUsageReportPeriod),
+});
+export type ServerUsageReportAccount = typeof ServerUsageReportAccount.Type;
+
+export const ServerUsageReportResult = Schema.Struct({
+  readAt: IsoDateTime,
+  /** Oldest reading held, so the UI can say how far back the answer is good for. */
+  recordingSince: Schema.NullOr(IsoDateTime),
+  accounts: Schema.Array(ServerUsageReportAccount),
+});
+export type ServerUsageReportResult = typeof ServerUsageReportResult.Type;
+
+export class ServerUsageReportError extends Schema.TaggedErrorClass<ServerUsageReportError>()(
+  "ServerUsageReportError",
+  {
+    reason: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Failed to build the plan usage report: ${this.reason}`;
+  }
+}

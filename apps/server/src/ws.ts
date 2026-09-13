@@ -45,6 +45,7 @@ import {
   FilesystemBrowseError,
   AssetAccessError,
   EnvironmentAuthorizationError,
+  ServerUsageReportError,
   ThreadId,
   type TerminalAttachStreamEvent,
   type TerminalError,
@@ -65,6 +66,7 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { UsageReportQuery } from "./provider/Services/UsageReportQuery.ts";
 import { ConversationSearch } from "./conversationSearch/ConversationSearch.ts";
 import {
   observeRpcEffect as instrumentRpcEffect,
@@ -160,6 +162,7 @@ const RPC_REQUIRED_SCOPE = new Map<string, AuthEnvironmentScope>([
   [WS_METHODS.serverGetTraceDiagnostics, AuthOrchestrationReadScope],
   [WS_METHODS.serverGetProcessDiagnostics, AuthOrchestrationReadScope],
   [WS_METHODS.serverGetProcessResourceHistory, AuthOrchestrationReadScope],
+  [WS_METHODS.serverGetUsageReport, AuthOrchestrationReadScope],
   [WS_METHODS.serverSignalProcess, AuthOrchestrationOperateScope],
   [WS_METHODS.cloudGetRelayClientStatus, AuthRelayWriteScope],
   [WS_METHODS.cloudInstallRelayClient, AuthRelayWriteScope],
@@ -302,6 +305,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
       const sessions = yield* SessionStore.SessionStore;
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const processResourceMonitor = yield* ProcessResourceMonitor.ProcessResourceMonitor;
+      const usageReportQuery = yield* UsageReportQuery;
       const relayClient = yield* RelayClient.RelayClient;
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
@@ -1120,6 +1124,25 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
           observeRpcEffect(
             WS_METHODS.serverGetProcessResourceHistory,
             processResourceMonitor.readHistory(input),
+            {
+              "rpc.aggregate": "server",
+            },
+          ),
+        [WS_METHODS.serverGetUsageReport]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.serverGetUsageReport,
+            usageReportQuery.getUsageReport(input).pipe(
+              Effect.tapError((cause) =>
+                Effect.logError("plan usage report load failed", { cause }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new ServerUsageReportError({
+                    reason: "Could not read the recorded plan usage",
+                    cause,
+                  }),
+              ),
+            ),
             {
               "rpc.aggregate": "server",
             },

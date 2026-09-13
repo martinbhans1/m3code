@@ -132,6 +132,9 @@ import {
   ServerProcessDiagnosticsResult,
   ServerProcessResourceHistoryInput,
   ServerProcessResourceHistoryResult,
+  ServerUsageReportError,
+  ServerUsageReportInput,
+  ServerUsageReportResult,
   ServerSignalProcessInput,
   ServerSignalProcessResult,
   ServerUpsertKeybindingInput,
@@ -222,6 +225,7 @@ export const WS_METHODS = {
   serverGetTraceDiagnostics: "server.getTraceDiagnostics",
   serverGetProcessDiagnostics: "server.getProcessDiagnostics",
   serverGetProcessResourceHistory: "server.getProcessResourceHistory",
+  serverGetUsageReport: "server.getUsageReport",
   serverSignalProcess: "server.signalProcess",
 
   // Cloud environment methods
@@ -320,6 +324,12 @@ export const WsServerGetProcessResourceHistoryRpc = Rpc.make(
     error: EnvironmentAuthorizationError,
   },
 );
+
+export const WsServerGetUsageReportRpc = Rpc.make(WS_METHODS.serverGetUsageReport, {
+  payload: ServerUsageReportInput,
+  success: ServerUsageReportResult,
+  error: Schema.Union([ServerUsageReportError, EnvironmentAuthorizationError]),
+});
 
 export const WsServerSignalProcessRpc = Rpc.make(WS_METHODS.serverSignalProcess, {
   payload: ServerSignalProcessInput,
@@ -720,6 +730,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerGetTraceDiagnosticsRpc,
   WsServerGetProcessDiagnosticsRpc,
   WsServerGetProcessResourceHistoryRpc,
+  WsServerGetUsageReportRpc,
   WsServerSignalProcessRpc,
   WsCloudGetRelayClientStatusRpc,
   WsCloudInstallRelayClientRpc,
