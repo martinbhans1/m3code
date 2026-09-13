@@ -26,12 +26,12 @@
  *
  * The live API also returns a pre-normalized `limits[]` array
  * (kind/group/percent/severity/scope). It is **not** declared in
- * `@anthropic-ai/claude-agent-sdk@0.3.170`'s `sdk.d.ts`, and its `kind` values
- * (`session`, `weekly_all`, `weekly_scoped`) do not map onto `rateLimitType`
- * without guessing. So the declared named windows stay the source of truth for
- * ids and percentages, and `limits[]` is read opportunistically for the one
- * thing the named windows lack: `severity`. If the array disappears or drifts,
- * windows simply lose their severity hint — nothing else breaks.
+ * `@anthropic-ai/claude-agent-sdk@0.3.170`'s `sdk.d.ts`, so the declared named
+ * windows remain the source of truth. The stable standard kinds (`session` and
+ * `weekly_all`) are nevertheless useful fallbacks when a named window's
+ * `utilization` is null, as happens for some accounts. Unknown kinds are
+ * ignored. If the array disappears or drifts, the named-window path continues
+ * to work unchanged.
  *
  * @module provider/ClaudeUsage
  */
@@ -62,6 +62,25 @@ const CLAUDE_WINDOW_LABELS = {
 
 type ClaudeWindowId = keyof typeof CLAUDE_WINDOW_LABELS;
 
+/**
+ * How wide each named window is, in minutes. The SDK reports only `resets_at`,
+ * never the window's start, so these constants are what let the UI place a
+ * window's elapsed fraction against its used fraction. They are the durations
+ * the ids are named for — `five_hour` is five hours by definition — so they
+ * cannot drift without the id changing too. `overage` has no fixed span and is
+ * deliberately absent.
+ */
+const CLAUDE_WINDOW_MINUTES = {
+  five_hour: 5 * 60,
+  seven_day: 7 * 24 * 60,
+  seven_day_opus: 7 * 24 * 60,
+  seven_day_sonnet: 7 * 24 * 60,
+  seven_day_oauth_apps: 7 * 24 * 60,
+} as const satisfies Partial<Record<ClaudeWindowId, number>>;
+
+const claudeWindowMinutes = (id: string): number | undefined =>
+  CLAUDE_WINDOW_MINUTES[id as keyof typeof CLAUDE_WINDOW_MINUTES];
+
 /** Ordered so `windows[]` renders 5h → weekly → per-model consistently. */
 const CLAUDE_PROBE_WINDOW_IDS = [
   "five_hour",
@@ -71,7 +90,11 @@ const CLAUDE_PROBE_WINDOW_IDS = [
   "seven_day_oauth_apps",
 ] as const satisfies ReadonlyArray<ClaudeWindowId>;
 
-const claudeWindowLabel = (id: string): string =>
+/** Name of the Agent SDK's unstable plan-usage control method. */
+export const CLAUDE_USAGE_METHOD =
+  "usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET" as const;
+
+export const claudeWindowLabel = (id: string): string =>
   CLAUDE_WINDOW_LABELS[id as ClaudeWindowId] ?? "Plan limit";
 
 /**
@@ -96,29 +119,38 @@ const readSeverity = (value: unknown): ServerProviderUsageWindow["severity"] => 
 };
 
 /**
- * Read `rate_limits.limits[]` for severity keyed by our canonical window id.
+ * Read standard `rate_limits.limits[]` values keyed by our canonical window id.
  *
  * Undeclared, best-effort: anything unrecognized is skipped silently.
  */
-const readLimitSeverities = (
+interface ClaudeLimitFallback {
+  readonly percent: number | null;
+  readonly resetsAt: string | null;
+  readonly severity: ServerProviderUsageWindow["severity"];
+}
+
+const readLimitFallbacks = (
   rateLimits: Record<string, unknown>,
-): ReadonlyMap<string, NonNullable<ServerProviderUsageWindow["severity"]>> => {
-  const severities = new Map<string, NonNullable<ServerProviderUsageWindow["severity"]>>();
+): ReadonlyMap<string, ClaudeLimitFallback> => {
+  const fallbacks = new Map<string, ClaudeLimitFallback>();
   const limits = rateLimits["limits"];
-  if (!Array.isArray(limits)) return severities;
+  if (!Array.isArray(limits)) return fallbacks;
 
   for (const entry of limits) {
     const limit = readRecord(entry);
     if (!limit) continue;
     if (limit["is_active"] === false) continue;
 
-    const severity = readSeverity(limit["severity"]);
-    if (!severity) continue;
-
     const id = claudeWindowIdFromLimit(limit);
-    if (id) severities.set(id, severity);
+    if (!id) continue;
+
+    fallbacks.set(id, {
+      percent: clampUsagePercent(limit["percent"]),
+      resetsAt: isoStringToIsoDateTime(limit["resets_at"]) ?? epochToIsoDateTime(limit["resetsAt"]),
+      severity: readSeverity(limit["severity"]),
+    });
   }
-  return severities;
+  return fallbacks;
 };
 
 /**
@@ -149,17 +181,22 @@ const claudeWindowIdFromLimit = (limit: Record<string, unknown>): ClaudeWindowId
 const normalizeNamedWindow = (input: {
   readonly id: ClaudeWindowId;
   readonly raw: unknown;
-  readonly severity: ServerProviderUsageWindow["severity"];
+  readonly fallback: ClaudeLimitFallback | undefined;
 }): ServerProviderUsageWindow | undefined => {
   const window = readRecord(input.raw);
-  if (!window) return undefined;
+  if (!window && !input.fallback) return undefined;
 
   return makeUsageWindow({
     id: input.id,
     label: claudeWindowLabel(input.id),
-    percent: clampUsagePercent(window["utilization"]),
-    resetsAt: isoStringToIsoDateTime(window["resets_at"]),
-    severity: input.severity,
+    windowMinutes: claudeWindowMinutes(input.id),
+    percent:
+      (window ? clampUsagePercent(window["utilization"]) : null) ?? input.fallback?.percent ?? null,
+    resetsAt:
+      (window ? isoStringToIsoDateTime(window["resets_at"]) : null) ??
+      input.fallback?.resetsAt ??
+      null,
+    severity: input.fallback?.severity,
   });
 };
 
@@ -184,13 +221,13 @@ const normalizeClaudeUsageProbe = (input: {
     };
   }
 
-  const severities = readLimitSeverities(rateLimits);
+  const fallbacks = readLimitFallbacks(rateLimits);
   const windows: ServerProviderUsageWindow[] = [];
   for (const id of CLAUDE_PROBE_WINDOW_IDS) {
     const window = normalizeNamedWindow({
       id,
       raw: rateLimits[id],
-      severity: severities.get(id),
+      fallback: fallbacks.get(id),
     });
     if (window) windows.push(window);
   }
@@ -204,29 +241,103 @@ const normalizeClaudeUsageProbe = (input: {
   };
 };
 
-/** `SDKRateLimitEvent` → usage carrying the single pushed window. */
+/**
+ * Rescale a pushed `utilization` onto the contract's 0-100 percentage.
+ *
+ * The probe and the push disagree, and the SDK only documents one of them.
+ * `SDKControlGetUsageResponse` declares its windows as "Percentage of the
+ * window used, 0-100"; `SDKRateLimitInfo.utilization` is declared as a bare
+ * number and ships a **fraction** — every push observed carries values like
+ * `0.31` for a window the probe reports as `31`. Read as a percentage that is
+ * a hundredfold under-report, which is worse than no reading at all: it says a
+ * nearly spent window is untouched.
+ *
+ * Values above 1 are passed through unscaled, so if the push is ever brought
+ * into line with the probe this keeps working. Exactly `1` is read as a spent
+ * window rather than one percent — of the two readings, over-reporting a limit
+ * is the one that fails safely.
+ */
+const scaleEventUtilization = (value: unknown): number | null => {
+  const percent = clampUsagePercent(value);
+  if (percent === null) return null;
+  return percent <= 1 ? percent * 100 : percent;
+};
+
+/**
+ * Every window a push knows about, from its undeclared `unifiedWindows`.
+ *
+ * The declared part of the payload describes one window — whichever tripped
+ * the push — and its `utilization` is routinely absent: every observed
+ * `five_hour` push omits it. `unifiedWindows` carries the numbers for all of
+ * them regardless, which is what keeps the session window from going blank
+ * between probes. Undeclared, so read defensively; if it disappears the named
+ * window below still updates.
+ */
+const readUnifiedWindows = (
+  rateLimitInfo: Record<string, unknown>,
+): ReadonlyArray<ServerProviderUsageWindow> => {
+  const unified = readRecord(rateLimitInfo["unifiedWindows"]);
+  if (!unified) return [];
+
+  const windows: Array<ServerProviderUsageWindow> = [];
+  for (const [id, raw] of Object.entries(unified)) {
+    const window = readRecord(raw);
+    if (!window) continue;
+    const percent = scaleEventUtilization(window["utilization"]);
+    const resetsAt = epochToIsoDateTime(window["resetsAt"]);
+    if (percent === null && resetsAt === null) continue;
+    windows.push(
+      makeUsageWindow({
+        id,
+        label: claudeWindowLabel(id),
+        windowMinutes: claudeWindowMinutes(id),
+        percent,
+        resetsAt,
+      }),
+    );
+  }
+  return windows;
+};
+
+/** `SDKRateLimitEvent` -> usage carrying every window the push describes. */
 const normalizeClaudeUsageEvent = (input: {
   readonly rateLimitInfo: Record<string, unknown>;
   readonly capturedAt: string;
 }): ServerProviderUsage | undefined => {
-  const id = readNonEmptyString(input.rateLimitInfo["rateLimitType"]);
-  if (!id) return undefined;
+  const windowsById = new Map<string, ServerProviderUsageWindow>();
+  for (const window of readUnifiedWindows(input.rateLimitInfo)) {
+    windowsById.set(window.id, window);
+  }
 
-  const window = makeUsageWindow({
-    id,
-    label: claudeWindowLabel(id),
-    percent: clampUsagePercent(input.rateLimitInfo["utilization"]),
-    // Events carry epoch seconds here, unlike the probe's ISO `resets_at`.
-    resetsAt: epochToIsoDateTime(input.rateLimitInfo["resetsAt"]),
-    severity: readSeverity(input.rateLimitInfo["status"]),
-  });
+  // The named window is the one the push is actually about, so its severity
+  // and reset time win over the unified copy. Its percentage is often absent,
+  // in which case the unified value it arrived alongside stands.
+  const id = readNonEmptyString(input.rateLimitInfo["rateLimitType"]);
+  if (id) {
+    const unified = windowsById.get(id);
+    const percent = scaleEventUtilization(input.rateLimitInfo["utilization"]);
+    windowsById.set(
+      id,
+      makeUsageWindow({
+        id,
+        label: claudeWindowLabel(id),
+        windowMinutes: claudeWindowMinutes(id),
+        percent: percent ?? unified?.percent ?? null,
+        // Events carry epoch seconds here, unlike the probe's ISO `resets_at`.
+        resetsAt: epochToIsoDateTime(input.rateLimitInfo["resetsAt"]) ?? unified?.resetsAt ?? null,
+        severity: readSeverity(input.rateLimitInfo["status"]),
+      }),
+    );
+  }
+
+  if (windowsById.size === 0) return undefined;
 
   return {
     available: true,
     // The event says nothing about the plan; `mergeProviderUsage` restores the
     // probed `planLabel` rather than letting this null blank it.
     planLabel: null,
-    windows: [window],
+    windows: [...windowsById.values()],
     capturedAt: input.capturedAt,
     source: "event",
   };

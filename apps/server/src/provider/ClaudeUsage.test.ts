@@ -31,12 +31,14 @@ describe("normalizeClaudeUsage — probe response", () => {
           label: "Session",
           percent: 0,
           resetsAt: "2026-07-17T11:10:00.000Z",
+          windowMinutes: 300,
         },
         {
           id: "seven_day",
           label: "Weekly",
           percent: 4,
           resetsAt: "2026-07-21T08:00:00.000Z",
+          windowMinutes: 10_080,
         },
       ],
       capturedAt: CAPTURED_AT,
@@ -92,7 +94,7 @@ describe("normalizeClaudeUsage — probe response", () => {
     // `percent: null` says "the window exists but utilization is unknown",
     // which is different from omitting the window entirely.
     expect(usage?.windows).toEqual([
-      { id: "five_hour", label: "Session", percent: null, resetsAt: null },
+      { id: "five_hour", label: "Session", percent: null, resetsAt: null, windowMinutes: 300 },
     ]);
   });
 
@@ -141,8 +143,9 @@ describe("normalizeClaudeUsage — probe response", () => {
 
 describe("normalizeClaudeUsage — undeclared rate_limits.limits[]", () => {
   // `limits[]` ships at runtime but is absent from the installed SDK's
-  // typedef, so it is read purely as a severity hint. These tests pin that it
-  // enriches without ever becoming load-bearing.
+  // typedef, so it is read only as a best-effort fallback. These tests pin
+  // that it enriches named windows and repairs missing standard percentages
+  // without making unknown kinds load-bearing.
   it("enriches severity onto the matching named windows", () => {
     const usage = normalizeClaudeUsage({
       raw: {
@@ -175,6 +178,65 @@ describe("normalizeClaudeUsage — undeclared rate_limits.limits[]", () => {
     ]);
   });
 
+  it("uses limits percent when the named session utilization is null", () => {
+    const usage = normalizeClaudeUsage({
+      raw: {
+        subscription_type: "max",
+        rate_limits_available: true,
+        rate_limits: {
+          five_hour: { utilization: null, resets_at: "2026-07-17T11:10:00Z" },
+          seven_day: { utilization: 11, resets_at: null },
+          limits: [{ kind: "session", percent: 18, severity: "normal", is_active: true }],
+        },
+      },
+      capturedAt: CAPTURED_AT,
+    });
+
+    expect(usage?.windows).toEqual([
+      {
+        id: "five_hour",
+        label: "Session",
+        percent: 18,
+        resetsAt: "2026-07-17T11:10:00.000Z",
+        severity: "normal",
+        windowMinutes: 300,
+      },
+      { id: "seven_day", label: "Weekly", percent: 11, resetsAt: null, windowMinutes: 10_080 },
+    ]);
+  });
+
+  it("synthesizes a standard window when only limits carries it", () => {
+    const usage = normalizeClaudeUsage({
+      raw: {
+        subscription_type: "max",
+        rate_limits_available: true,
+        rate_limits: {
+          limits: [
+            {
+              kind: "session",
+              percent: 64,
+              severity: "warning",
+              resets_at: "2026-07-17T11:10:00Z",
+              is_active: true,
+            },
+          ],
+        },
+      },
+      capturedAt: CAPTURED_AT,
+    });
+
+    expect(usage?.windows).toEqual([
+      {
+        id: "five_hour",
+        label: "Session",
+        percent: 64,
+        resetsAt: "2026-07-17T11:10:00.000Z",
+        severity: "warning",
+        windowMinutes: 300,
+      },
+    ]);
+  });
+
   it("ignores inactive limits", () => {
     const usage = normalizeClaudeUsage({
       raw: {
@@ -203,7 +265,7 @@ describe("normalizeClaudeUsage — undeclared rate_limits.limits[]", () => {
       });
 
       expect(usage?.windows).toEqual([
-        { id: "five_hour", label: "Session", percent: 10, resetsAt: null },
+        { id: "five_hour", label: "Session", percent: 10, resetsAt: null, windowMinutes: 300 },
       ]);
     }
   });
@@ -238,6 +300,7 @@ describe("normalizeClaudeUsage — rate_limit_event push", () => {
           percent: 82,
           resetsAt: "2026-07-17T11:10:00.000Z",
           severity: "warning",
+          windowMinutes: 300,
         },
       ],
       capturedAt: CAPTURED_AT,
@@ -283,6 +346,68 @@ describe("normalizeClaudeUsage — rate_limit_event push", () => {
     expect(usage?.windows).toEqual([
       { id: "monthly_new", label: "Plan limit", percent: 7, resetsAt: null, severity: "normal" },
     ]);
+  });
+
+  it("reads a fractional utilization as a percentage", () => {
+    // The push ships `0.31` for a window the probe reports as `31`. Taken at
+    // face value it renders as "0.3%", which says a third-spent window is
+    // untouched.
+    const usage = normalizeClaudeUsage({
+      raw: {
+        rate_limit_info: { status: "allowed", rateLimitType: "seven_day", utilization: 0.31 },
+      },
+      capturedAt: CAPTURED_AT,
+    });
+
+    expect(usage?.windows[0]?.percent).toBeCloseTo(31);
+  });
+
+  it("carries every window the push describes, not only the one it names", () => {
+    // Session pushes never restate their own utilization, but they do carry
+    // the numbers for both windows alongside — which is what keeps the session
+    // reading alive between probes.
+    const usage = normalizeClaudeUsage({
+      raw: {
+        rate_limit_info: {
+          status: "allowed_warning",
+          rateLimitType: "seven_day",
+          utilization: 0.31,
+          resetsAt: 1_789_459_200,
+          unifiedWindows: {
+            five_hour: { utilization: 0.48, resetsAt: 1_788_946_800 },
+            seven_day: { utilization: 0.31, resetsAt: 1_789_459_200 },
+          },
+        },
+      },
+      capturedAt: CAPTURED_AT,
+    });
+
+    const byId = new Map(usage?.windows.map((window) => [window.id, window]));
+    expect(byId.get("five_hour")?.percent).toBeCloseTo(48);
+    expect(byId.get("seven_day")?.percent).toBeCloseTo(31);
+    // Severity belongs to the window the push is actually about.
+    expect(byId.get("seven_day")?.severity).toBe("warning");
+    expect(byId.get("five_hour")?.severity).toBeUndefined();
+  });
+
+  it("falls back to the accompanying window when the named one omits its number", () => {
+    const usage = normalizeClaudeUsage({
+      raw: {
+        rate_limit_info: {
+          status: "allowed",
+          rateLimitType: "five_hour",
+          resetsAt: 1_788_946_800,
+          unifiedWindows: {
+            five_hour: { utilization: 0.48, resetsAt: 1_788_946_800 },
+            seven_day: { utilization: 0.31, resetsAt: 1_789_459_200 },
+          },
+        },
+      },
+      capturedAt: CAPTURED_AT,
+    });
+
+    const session = usage?.windows.find((window) => window.id === "five_hour");
+    expect(session?.percent).toBeCloseTo(48);
   });
 
   it("returns undefined when the event names no window", () => {

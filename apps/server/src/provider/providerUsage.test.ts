@@ -34,10 +34,30 @@ describe("mergeProviderUsage", () => {
     });
 
     expect(merged.windows).toEqual([
-      { id: "five_hour", label: "Session", percent: 82, resetsAt: null },
+      // The push carried no reset time, so the probed one stands.
+      { id: "five_hour", label: "Session", percent: 82, resetsAt: "2026-07-17T11:10:00.000Z" },
       // Untouched by the push — must survive rather than being cleared.
       { id: "seven_day", label: "Weekly", percent: 4, resetsAt: "2026-07-21T08:00:00.000Z" },
     ]);
+  });
+
+  it("keeps a known percentage when the push declines to restate it", () => {
+    // Claude's session-window pushes always omit the number; blanking the
+    // meter until the next probe is what made it flicker.
+    const merged = mergeProviderUsage(baseline, {
+      available: true,
+      planLabel: null,
+      windows: [{ id: "five_hour", label: "Session", percent: null, resetsAt: null }],
+      capturedAt: EVENT_AT,
+      source: "event",
+    });
+
+    expect(merged.windows[0]).toEqual({
+      id: "five_hour",
+      label: "Session",
+      percent: 10,
+      resetsAt: "2026-07-17T11:10:00.000Z",
+    });
   });
 
   it("keeps the previous planLabel when the push omits it", () => {
@@ -125,6 +145,46 @@ describe("mergeProviderUsage", () => {
 });
 
 describe("mergeProviderUsage — end-to-end with the normalizers", () => {
+  it("survives the push shape that made the meter flicker", () => {
+    // Replays a real pair: a probe reporting whole percentages, then the
+    // session push that follows it — which names the session window, omits its
+    // number, and carries fractions for both windows alongside. Read naively
+    // this blanked the session and knocked the weekly down by a hundredfold.
+    const probed = normalizeClaudeUsage({
+      raw: {
+        subscription_type: "max",
+        rate_limits_available: true,
+        rate_limits: {
+          five_hour: { utilization: 48, resets_at: "2026-07-17T11:10:00Z" },
+          seven_day: { utilization: 31, resets_at: "2026-07-21T08:00:00Z" },
+        },
+      },
+      capturedAt: PROBE_AT,
+    });
+    const pushed = normalizeClaudeUsage({
+      raw: {
+        type: "rate_limit_event",
+        rate_limit_info: {
+          status: "allowed",
+          rateLimitType: "five_hour",
+          resetsAt: 1_784_286_600,
+          unifiedWindows: {
+            five_hour: { utilization: 0.49, resetsAt: 1_784_286_600 },
+            seven_day: { utilization: 0.31, resetsAt: 1_784_620_800 },
+          },
+        },
+      },
+      capturedAt: EVENT_AT,
+    });
+
+    const merged = mergeProviderUsage(probed, pushed!);
+    const byId = new Map(merged.windows.map((window) => [window.id, window]));
+
+    expect(byId.get("five_hour")?.percent).toBeCloseTo(49);
+    expect(byId.get("seven_day")?.percent).toBeCloseTo(31);
+    expect(merged.planLabel).toBe("max");
+  });
+
   it("keeps Claude's probed windows alive across a single-window event push", () => {
     // The exact regression the merge exists for: Claude's `rate_limit_event`
     // describes one window, so replacing would drop `seven_day` entirely.
@@ -150,8 +210,21 @@ describe("mergeProviderUsage — end-to-end with the normalizers", () => {
 
     expect(merged.planLabel).toBe("max");
     expect(merged.windows).toEqual([
-      { id: "five_hour", label: "Session", percent: 82, resetsAt: null, severity: "warning" },
-      { id: "seven_day", label: "Weekly", percent: 4, resetsAt: "2026-07-21T08:00:00.000Z" },
+      {
+        id: "five_hour",
+        label: "Session",
+        percent: 82,
+        resetsAt: "2026-07-17T11:10:00.000Z",
+        severity: "warning",
+        windowMinutes: 300,
+      },
+      {
+        id: "seven_day",
+        label: "Weekly",
+        percent: 4,
+        resetsAt: "2026-07-21T08:00:00.000Z",
+        windowMinutes: 10_080,
+      },
     ]);
   });
 
@@ -182,8 +255,8 @@ describe("mergeProviderUsage — end-to-end with the normalizers", () => {
 
     expect(merged.planLabel).toBe("ChatGPT Plus");
     expect(merged.windows).toEqual([
-      { id: "primary", label: "5h", percent: 55, resetsAt: null },
-      { id: "secondary", label: "Weekly", percent: 61, resetsAt: null },
+      { id: "primary", label: "5h", percent: 55, resetsAt: null, windowMinutes: 300 },
+      { id: "secondary", label: "Weekly", percent: 61, resetsAt: null, windowMinutes: 10_080 },
     ]);
   });
 });

@@ -93,11 +93,14 @@ const normalizeCodexWindow = (input: {
   const window = readRecord(input.raw);
   if (!window) return undefined;
 
+  const windowDurationMins = readFiniteNumber(window["windowDurationMins"]);
+
   return makeUsageWindow({
     id: input.id,
     label: codexWindowLabel({ id: input.id, windowDurationMins: window["windowDurationMins"] }),
     percent: clampUsagePercent(window["usedPercent"]),
     resetsAt: epochToIsoDateTime(window["resetsAt"]),
+    windowMinutes: windowDurationMins,
   });
 };
 

@@ -86,9 +86,9 @@ export const isoStringToIsoDateTime = (value: unknown): string | null => {
 };
 
 /**
- * Build a window, omitting `severity` entirely when unknown so the encoded
- * snapshot matches the `optionalKey` contract instead of carrying
- * `severity: undefined`.
+ * Build a window, omitting `severity` and `windowMinutes` entirely when
+ * unknown so the encoded snapshot matches the `optionalKey` contract instead
+ * of carrying `undefined` values.
  */
 export const makeUsageWindow = (input: {
   readonly id: string;
@@ -96,20 +96,61 @@ export const makeUsageWindow = (input: {
   readonly percent: number | null;
   readonly resetsAt: string | null;
   readonly severity?: ServerProviderUsageWindow["severity"];
+  readonly windowMinutes?: number | undefined;
 }): ServerProviderUsageWindow => ({
   id: input.id,
   label: input.label,
   percent: input.percent,
   resetsAt: input.resetsAt,
   ...(input.severity ? { severity: input.severity } : {}),
+  ...(input.windowMinutes !== undefined &&
+  Number.isFinite(input.windowMinutes) &&
+  input.windowMinutes > 0
+    ? { windowMinutes: input.windowMinutes }
+    : {}),
 });
+
+/**
+ * Merge one window's update onto what was already known about it.
+ *
+ * "Sparse" reaches inside the window, not just the array: a push routinely
+ * names a window and then declines to say how full it is — every observed
+ * session-window push from Claude does exactly that. Overwriting a known
+ * percentage with that absence blanks the meter until the next full probe,
+ * which reads to the user as the number randomly disappearing and coming back.
+ *
+ * So an absent field means unchanged here too, and only `severity` is allowed
+ * to clear: it describes the state of the latest observation, and a stale
+ * warning is worse than none.
+ */
+const mergeUsageWindow = (
+  previous: ServerProviderUsageWindow | undefined,
+  next: ServerProviderUsageWindow,
+): ServerProviderUsageWindow => {
+  if (previous === undefined) return next;
+
+  const percent = next.percent ?? previous.percent;
+  const resetsAt = next.resetsAt ?? previous.resetsAt;
+  const windowMinutes = next.windowMinutes ?? previous.windowMinutes;
+
+  return {
+    id: next.id,
+    label: next.label,
+    percent,
+    resetsAt,
+    ...(next.severity ? { severity: next.severity } : {}),
+    ...(windowMinutes !== undefined ? { windowMinutes } : {}),
+  };
+};
 
 /**
  * Merge a sparse provider usage update into the last known usage.
  *
  * Rules:
  *  - Windows are merged by `id`; a window absent from `next` keeps its
- *    previous value (absent means "unchanged", never "cleared").
+ *    previous value, and so does a *field* absent from a window that is
+ *    present (absent means "unchanged", never "cleared"). See
+ *    `mergeUsageWindow`.
  *  - Previous window order is preserved so the UI doesn't reshuffle on each
  *    push; genuinely new windows append.
  *  - `planLabel` falls back to the previous value — sparse pushes routinely
@@ -130,7 +171,7 @@ export const mergeProviderUsage = (
 
   const windowsById = new Map(previous.windows.map((window) => [window.id, window]));
   for (const window of next.windows) {
-    windowsById.set(window.id, window);
+    windowsById.set(window.id, mergeUsageWindow(windowsById.get(window.id), window));
   }
 
   return {

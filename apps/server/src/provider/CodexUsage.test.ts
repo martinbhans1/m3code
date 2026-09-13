@@ -32,8 +32,8 @@ describe("normalizeCodexUsage — baseline read", () => {
       available: true,
       planLabel: "ChatGPT Plus",
       windows: [
-        { id: "primary", label: "5h", percent: 23, resetsAt: RESETS_AT_ISO },
-        { id: "secondary", label: "Weekly", percent: 61, resetsAt: null },
+        { id: "primary", label: "5h", percent: 23, resetsAt: RESETS_AT_ISO, windowMinutes: 300 },
+        { id: "secondary", label: "Weekly", percent: 61, resetsAt: null, windowMinutes: 10_080 },
       ],
       capturedAt: CAPTURED_AT,
       source: "probe",
@@ -62,7 +62,9 @@ describe("normalizeCodexUsage — baseline read", () => {
       source: "event",
     });
 
-    expect(usage?.windows).toEqual([{ id: "primary", label: "5h", percent: 8, resetsAt: null }]);
+    expect(usage?.windows).toEqual([
+      { id: "primary", label: "5h", percent: 8, resetsAt: null, windowMinutes: 300 },
+    ]);
   });
 });
 

@@ -93,9 +93,24 @@ describe("publishProviderSnapshotUsage", () => {
 
       const snapshot = yield* Ref.get(snapshotRef);
       expect(snapshot.usage?.windows).toEqual([
-        { id: "five_hour", label: "Session", percent: 82, resetsAt: null, severity: "warning" },
+        {
+          id: "five_hour",
+          label: "Session",
+          percent: 82,
+          // Restated from the probe: the event moved the number and said
+          // nothing about when the window turns over.
+          resetsAt: "2026-07-17T11:10:00.000Z",
+          severity: "warning",
+          windowMinutes: 300,
+        },
         // Must survive: the event said nothing about it.
-        { id: "seven_day", label: "Weekly", percent: 40, resetsAt: "2026-07-21T08:00:00.000Z" },
+        {
+          id: "seven_day",
+          label: "Weekly",
+          percent: 40,
+          resetsAt: "2026-07-21T08:00:00.000Z",
+          windowMinutes: 10_080,
+        },
       ]);
       // Only the probe carries the plan; an event must never blank it.
       expect(snapshot.usage?.planLabel).toBe("max");

@@ -188,6 +188,12 @@ export const ServerProviderUsageWindow = Schema.Struct({
   percent: Schema.NullOr(ServerProviderUsagePercent),
   resetsAt: Schema.NullOr(IsoDateTime),
   severity: Schema.optionalKey(ServerProviderUsageSeverity),
+  // How wide the window is, in minutes (300 for a 5-hour session, 10080 for a
+  // week). Optional: a provider may report a window without saying how long it
+  // spans. Paired with `resetsAt` it gives the window's *start*, which is the
+  // only way the UI can compare burn rate against elapsed time and tell the
+  // user whether they are on pace to exhaust the window before it resets.
+  windowMinutes: Schema.optionalKey(Schema.Number.check(Schema.isGreaterThan(0))),
 });
 export type ServerProviderUsageWindow = typeof ServerProviderUsageWindow.Type;
 
