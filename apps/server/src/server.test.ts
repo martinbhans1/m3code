@@ -5354,7 +5354,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
             updatedAt: now,
             archivedAt: null,
             pinnedAt: null,
-                latestTurn: null,
+            latestTurn: null,
             messages: [],
             session: null,
             activities: [],
