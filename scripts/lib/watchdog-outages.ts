@@ -3,11 +3,11 @@
  * watchdog-outages - What it cost that the watchdog cannot start the app.
  *
  * The watchdog delivers its wake-up through the running app, so if the app has
- * crashed there is nothing it can do. Relaunching the app unattended is a
- * bigger liberty than sending a message, and that call is Martin's.
+ * crashed there is nothing it can do. It does not relaunch the app: on
+ * 2026-09-13 Martin decided relaunching stays manual, including after a crash.
  *
- * The point of this module is that the call should be made against a number
- * rather than a hypothetical. Every scan that finds the app down is recorded,
+ * The point of this module is that the price of that decision stays a measured
+ * number rather than a hypothetical. Every scan that finds the app down is recorded,
  * along with how many conversations were sitting there restartable at that
  * moment, so "should the watchdog be allowed to relaunch the app" can be
  * answered with "it would have saved four nights in a month" or "it has never
@@ -42,7 +42,8 @@ export function recordOutage(
 ): readonly Outage[] {
   const last = outages.at(-1);
   const isContinuation =
-    last !== undefined && at.getTime() - new Date(last.lastSeenAt).getTime() <= SAME_OUTAGE_WINDOW_MS;
+    last !== undefined &&
+    at.getTime() - new Date(last.lastSeenAt).getTime() <= SAME_OUTAGE_WINDOW_MS;
   if (!isContinuation) {
     return [
       ...outages.slice(-200),
@@ -107,7 +108,7 @@ export function formatOutages(summary: OutageSummary): string {
   return [
     `App down, watchdog unable to do anything: ${summary.stretches} stretch(es) in the last 30 days, about ${hours} hours in total.`,
     cost,
-    "The watchdog does not relaunch the app; that decision is yours.",
+    "Relaunching the app stays manual by decision, so the watchdog only records this.",
     "",
   ].join("\n");
 }

@@ -58,10 +58,10 @@ A watchdog that only runs while the machine is awake still loses the night if
 the machine sleeps at 02:00 and the limit lifts at 03:40. So there are two
 scheduled tasks:
 
-| Task | When | Wakes the machine |
-| --- | --- | --- |
-| `M3CodeUsageLimitWatchdog` | Every 5 minutes | No |
-| `M3CodeUsageLimitWatchdogWake` | Once, at the next known reset (+3 min) | Yes |
+| Task                           | When                                   | Wakes the machine |
+| ------------------------------ | -------------------------------------- | ----------------- |
+| `M3CodeUsageLimitWatchdog`     | Every 5 minutes                        | No                |
+| `M3CodeUsageLimitWatchdogWake` | Once, at the next known reset (+3 min) | Yes               |
 
 Every scan re-arms the single-shot task for the earliest reset it is currently
 waiting on, and deletes it when nothing is waiting. That is the difference
@@ -113,29 +113,29 @@ Nothing on that list is ever restarted. Seeing it is the point.
 ## When the app itself is down
 
 The wake-up is delivered through the running app, so a crashed app leaves the
-watchdog with nothing to do. It does not relaunch the app - that is a bigger
-liberty than sending a message, and the decision is Martin's.
+watchdog with nothing to do. It does not relaunch the app, and will not: on
+2026-09-13 Martin decided relaunching stays manual, including after a crash.
 
 What it does instead is keep the bill. Every scan that finds the app down is
 recorded as part of a stretch, along with how many conversations were sitting
 there with a lifted limit at the time, and `pnpm watchdog:status` reports the
-total. So the question "should it be allowed to relaunch the app" gets answered
-against what it has actually cost rather than a hypothetical.
+total. So the cost of keeping relaunching manual stays a measured number rather than
+a guess, should that decision ever be revisited.
 
 ## Artefacts
 
 Everything lands under `~/.t3/watchdog`:
 
-| File | What it holds |
-| --- | --- |
-| `scans/<id>.json` | The full snapshot, every per-conversation verdict, and the wake decision for one cycle |
-| `latest-scan.json` | The most recent cycle's summary |
-| `receipts/<threadId>.json` | Per-conversation history: what was seen, decided, and poked |
-| `ledger.json` | Every nudge ever sent; also what enforces the caps |
-| `watchdog.log` | One line per cycle |
-| `scan-runs.log` | Raw output of the scheduled runs |
-| `config.json`, `wake-task.json` | Whether waking is allowed, and what the wake is currently armed for |
-| `app-outages.json` | Every stretch where the app was down and the watchdog could do nothing |
+| File                            | What it holds                                                                          |
+| ------------------------------- | -------------------------------------------------------------------------------------- |
+| `scans/<id>.json`               | The full snapshot, every per-conversation verdict, and the wake decision for one cycle |
+| `latest-scan.json`              | The most recent cycle's summary                                                        |
+| `receipts/<threadId>.json`      | Per-conversation history: what was seen, decided, and poked                            |
+| `ledger.json`                   | Every nudge ever sent; also what enforces the caps                                     |
+| `watchdog.log`                  | One line per cycle                                                                     |
+| `scan-runs.log`                 | Raw output of the scheduled runs                                                       |
+| `config.json`, `wake-task.json` | Whether waking is allowed, and what the wake is currently armed for                    |
+| `app-outages.json`              | Every stretch where the app was down and the watchdog could do nothing                 |
 
 Each scan record also carries the abandoned list as it stood at that moment.
 
