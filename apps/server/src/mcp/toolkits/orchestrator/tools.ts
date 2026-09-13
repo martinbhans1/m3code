@@ -16,6 +16,7 @@ import { GitWorkflowService } from "../../../git/GitWorkflowService.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectSetupScriptRunner } from "../../../project/Services/ProjectSetupScriptRunner.ts";
+import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import { ServerRuntimeStartup } from "../../../serverRuntimeStartup.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -47,6 +48,7 @@ const dependencies = [
   CheckpointDiffQuery,
   GitWorkflowService,
   ProjectSetupScriptRunner,
+  ProviderRegistry,
   Crypto.Crypto,
 ];
 
@@ -544,7 +546,7 @@ export const CreateThreadInput = Schema.Struct({
 
 export const CreateThreadTool = Tool.make("create_thread", {
   description:
-    "Open a brand new conversation in one of the user's projects and start it with an opening prompt. Use this when the work does not belong to any existing thread — a separate task, a clean slate after a thread has gone long, or a second track the user wants running alongside the first. When an existing thread already owns the context, prefer send_to_thread; starting fresh means the new agent rediscovers everything.\n\nAsk first, every time. Show the user the project, the title and the exact opening prompt, and wait for them to say yes in that turn — one conversation per approval. The new conversation is shared with you afterwards so you can check on it with read_thread and read_thread_changes. A successful result means the turn was accepted, not that it has run.\n\nBy default the conversation works in the project's own checkout, which is fine when nothing else is running there. If another conversation is already working in that project, pass envMode:'worktree' so the new one gets its own branch and checkout instead of editing the same files underneath it.",
+    "Open a brand new conversation in one of the user's projects and start it with an opening prompt. Use this when the work does not belong to any existing thread — a separate task, a clean slate after a thread has gone long, or a second track the user wants running alongside the first. When an existing thread already owns the context, prefer send_to_thread; starting fresh means the new agent rediscovers everything.\n\nAsk first, every time. Show the user the project, the title and the exact opening prompt, and wait for them to say yes in that turn — one conversation per approval. The new conversation is shared with you afterwards so you can check on it with read_thread and read_thread_changes. A successful result means the turn was accepted, not that it has run.\n\nBy default the conversation works in the project's own checkout, which is fine when nothing else is running there. If another conversation is already working in that project, pass envMode:'worktree' so the new one gets its own branch and checkout instead of editing the same files underneath it.\n\nCheck read_plan_limits before settling on the model: an hour of work started against an account whose session window is nearly spent stops partway through, and a different account or a short wait usually costs nothing.",
   parameters: CreateThreadInput,
   success: Schema.Struct({
     threadId: ThreadId,
@@ -844,6 +846,80 @@ export const ResolveFollowupTool = Tool.make("resolve_followup", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+export const OrchestratorPlanLimitWindow = Schema.Struct({
+  /** Provider's own name for the window, e.g. `five_hour`, `seven_day`. */
+  id: Schema.String,
+  /** How it reads to a person: "Session", "Weekly", "Weekly (Opus)". */
+  label: Schema.String,
+  /** How much of the window is spent, 0-100, or null if unreported. */
+  percent: Schema.NullOr(Schema.Number),
+  resetsAt: Schema.NullOr(IsoDateTime),
+  /**
+   * Minutes until this window empties out.
+   *
+   * The number that decides whether a nearly spent window matters: work that
+   * takes an hour cannot be started against a window at 95% that resets in two
+   * hours, but the same window resetting in ten minutes is barely an obstacle.
+   */
+  resetsInMinutes: Schema.NullOr(Schema.Number),
+  /** The provider's own view: "normal", "warning", or "critical". */
+  severity: Schema.NullOr(Schema.String),
+});
+
+export const OrchestratorPlanLimits = Schema.Struct({
+  instanceId: Schema.String,
+  displayName: Schema.String,
+  /** Subscription tier as the provider names it, e.g. "max". Null if unknown. */
+  plan: Schema.NullOr(Schema.String),
+  /** Whether work could be started on it at all — installed, enabled, signed in. */
+  ready: Schema.Boolean,
+  /** Why it cannot be used, when `ready` is false. */
+  unavailableReason: Schema.NullOr(Schema.String),
+  /** Model ids this account can run. */
+  models: Schema.Array(Schema.String),
+  windows: Schema.Array(OrchestratorPlanLimitWindow),
+  /**
+   * When these numbers were last read from the provider, and how long ago.
+   *
+   * Load-bearing, not decoration: an account only reports its limits while a
+   * conversation is running on it, so an account left idle keeps reporting
+   * whatever it last saw. A reading hours old says what was true then — treat a
+   * stale low number as unknown rather than as headroom.
+   */
+  observedAt: Schema.NullOr(IsoDateTime),
+  observedMinutesAgo: Schema.NullOr(Schema.Number),
+  /**
+   * The window closest to being spent, which is the one that will actually
+   * stop the work. Null when the account reports no usable numbers.
+   */
+  tightestWindow: Schema.NullOr(OrchestratorPlanLimitWindow),
+});
+
+export const ReadPlanLimitsInput = Schema.Struct({
+  instanceId: Schema.optional(
+    Schema.String.annotate({
+      description:
+        "Restrict the answer to one account. Omit to see every configured account, which is normally what you want — the point is to compare them.",
+    }),
+  ),
+});
+
+export const ReadPlanLimitsTool = Tool.make("read_plan_limits", {
+  description:
+    "How much of each provider account's rate-limited allowance is already spent, and when each window resets. Read this before choosing which account or model to start work on, and before handing a long job to a conversation already running on a nearly spent account.\n\nEach account reports one or more windows - typically a rolling session window of a few hours and a weekly one, sometimes a further window scoped to a single model. Work is refused when any one of them is exhausted, so the tightest window is the one that decides. Judge it against the reset time rather than the percentage alone: a window at 90% that resets in fifteen minutes will not stop a job that takes an hour, while the same 90% with two days to run is a reason to send the work elsewhere.\n\nThe numbers come from whatever the provider last reported, and it only reports while a conversation is running on that account. Check how long ago each was observed: on an account that has been idle, a low reading is old news, not proof of headroom.",
+  parameters: ReadPlanLimitsInput,
+  success: Schema.Struct({
+    accounts: Schema.Array(OrchestratorPlanLimits),
+  }),
+  failure: OrchestratorToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Check plan limits")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const OrchestratorToolkit = Toolkit.make(
   ListThreadsTool,
   SearchThreadsTool,
@@ -856,4 +932,5 @@ export const OrchestratorToolkit = Toolkit.make(
   StopThreadTool,
   ResolveFollowupTool,
   ReadThreadChangesTool,
+  ReadPlanLimitsTool,
 );

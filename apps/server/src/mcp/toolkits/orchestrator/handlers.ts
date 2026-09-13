@@ -6,6 +6,7 @@ import {
   type OrchestratorAccessOverride,
   type OrchestratorThreadAccess,
   FOLLOWUP_ACTIVITY_KIND,
+  isProviderAvailable,
   type IsoDateTime,
   MessageId,
   type OrchestrationFollowup,
@@ -33,6 +34,7 @@ import { GitWorkflowService } from "../../../git/GitWorkflowService.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProjectSetupScriptRunner } from "../../../project/Services/ProjectSetupScriptRunner.ts";
+import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import { ServerRuntimeStartup } from "../../../serverRuntimeStartup.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -2289,6 +2291,75 @@ const handlers = {
         status: input.status,
         implementationThreadId,
       };
+    }),
+  read_plan_limits: (input) =>
+    Effect.gen(function* () {
+      yield* requireOrchestrator();
+      const providerRegistry = yield* ProviderRegistry;
+      const now = yield* DateTime.now;
+      const nowMs = DateTime.toEpochMillis(now);
+
+      const minutesFrom = (iso: string | null): number | null => {
+        if (iso === null) return null;
+        const parsed = Date.parse(iso);
+        if (Number.isNaN(parsed)) return null;
+        return Math.round((parsed - nowMs) / 60_000);
+      };
+
+      const providers = yield* providerRegistry.getProviders;
+      const accounts = providers
+        .filter(
+          (provider) => input.instanceId === undefined || provider.instanceId === input.instanceId,
+        )
+        .map((provider) => {
+          const usage = provider.usage;
+          const windows = (usage?.available === true ? usage.windows : []).map((window) => ({
+            id: window.id,
+            label: window.label,
+            percent: window.percent,
+            resetsAt: window.resetsAt,
+            resetsInMinutes: minutesFrom(window.resetsAt),
+            severity: window.severity ?? null,
+          }));
+
+          // The binding constraint is whichever window is closest to spent —
+          // one exhausted window refuses the work no matter how much room the
+          // others have.
+          const tightestWindow = windows.reduce<(typeof windows)[number] | null>(
+            (tightest, window) =>
+              window.percent === null
+                ? tightest
+                : tightest === null || window.percent > (tightest.percent ?? -1)
+                  ? window
+                  : tightest,
+            null,
+          );
+
+          const observedAt = usage?.capturedAt ?? null;
+          const observedMinutesAgo = observedAt === null ? null : -(minutesFrom(observedAt) ?? 0);
+          const ready =
+            provider.enabled &&
+            provider.installed &&
+            isProviderAvailable(provider) &&
+            provider.status !== "error";
+
+          return {
+            instanceId: provider.instanceId,
+            displayName: provider.displayName ?? provider.instanceId,
+            plan: usage?.planLabel ?? null,
+            ready,
+            unavailableReason: ready
+              ? null
+              : (provider.unavailableReason ?? provider.message ?? "Not usable right now"),
+            models: provider.models.map((model) => model.slug),
+            windows,
+            observedAt,
+            observedMinutesAgo,
+            tightestWindow,
+          };
+        });
+
+      return { accounts };
     }),
 } satisfies Parameters<typeof OrchestratorToolkit.toLayer>[0];
 

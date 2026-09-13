@@ -12,6 +12,7 @@ import {
   type OrchestrationThreadShell,
   type OrchestratorAccessOverride,
   type OrchestratorThreadAccess,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
@@ -29,6 +30,7 @@ import { ServerRuntimeStartup } from "../../../serverRuntimeStartup.ts";
 import { ServerSettingsService } from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { OrchestratorToolkitHandlersLive } from "./handlers.ts";
+import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import { OrchestratorToolkit } from "./tools.ts";
 
 const environmentId = EnvironmentId.make("environment-orchestrator-test");
@@ -519,6 +521,86 @@ const resetAccess = () => {
 };
 resetAccess();
 
+/**
+ * Two accounts on the same provider: one with room, one nearly spent on its
+ * short window but minutes from resetting.
+ */
+const planLimitProviders = [
+  {
+    instanceId: "claude_roomy",
+    driver: "claudeAgent",
+    displayName: "Roomy",
+    enabled: true,
+    installed: true,
+    version: "1.0.0",
+    status: "ready",
+    auth: { state: "authenticated" },
+    checkedAt: "2026-09-09T10:00:00.000Z",
+    models: [{ slug: "claude-opus-5", name: "Opus", isCustom: false, capabilities: null }],
+    slashCommands: [],
+    skills: [],
+    usage: {
+      available: true,
+      planLabel: "max",
+      windows: [
+        {
+          id: "five_hour",
+          label: "Session",
+          percent: 12,
+          resetsAt: "2026-09-09T13:00:00.000Z",
+          windowMinutes: 300,
+        },
+        {
+          id: "seven_day",
+          label: "Weekly",
+          percent: 40,
+          resetsAt: "2026-09-15T10:00:00.000Z",
+          windowMinutes: 10_080,
+        },
+      ],
+      capturedAt: "2026-09-09T09:50:00.000Z",
+      source: "probe",
+    },
+  },
+  {
+    instanceId: "claude_spent",
+    driver: "claudeAgent",
+    displayName: "Nearly spent",
+    enabled: true,
+    installed: true,
+    version: "1.0.0",
+    status: "ready",
+    auth: { state: "authenticated" },
+    checkedAt: "2026-09-09T10:00:00.000Z",
+    models: [{ slug: "claude-opus-5", name: "Opus", isCustom: false, capabilities: null }],
+    slashCommands: [],
+    skills: [],
+    usage: {
+      available: true,
+      planLabel: "max",
+      windows: [
+        {
+          id: "five_hour",
+          label: "Session",
+          percent: 96,
+          resetsAt: "2026-09-09T10:15:00.000Z",
+          severity: "warning",
+          windowMinutes: 300,
+        },
+        {
+          id: "seven_day",
+          label: "Weekly",
+          percent: 31,
+          resetsAt: "2026-09-15T10:00:00.000Z",
+          windowMinutes: 10_080,
+        },
+      ],
+      capturedAt: "2026-09-09T09:55:00.000Z",
+      source: "event",
+    },
+  },
+] as unknown as ReadonlyArray<ServerProvider>;
+
 const TestServicesLive = Layer.mergeAll(
   Layer.succeed(
     ProjectionSnapshotQuery,
@@ -752,6 +834,12 @@ const TestServicesLive = Layer.mergeAll(
           ].join("\n"),
         }),
     } as unknown as CheckpointDiffQuery["Service"]),
+  ),
+  Layer.succeed(
+    ProviderRegistry,
+    ProviderRegistry.of({
+      getProviders: Effect.succeed(planLimitProviders),
+    } as unknown as ProviderRegistry["Service"]),
   ),
 );
 
@@ -2516,6 +2604,57 @@ it.effect("stops a running turn, and refuses when there is nothing running", () 
       expect(dispatched).toHaveLength(0);
 
       resetAccess();
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("reports each account's plan limits, tightest window first among them", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const result = yield* callTool("read_plan_limits", {});
+      expect(result.isError).toBe(false);
+
+      const accounts = (
+        result.structuredContent as { accounts: ReadonlyArray<Record<string, unknown>> }
+      ).accounts;
+      expect(accounts.map((account) => account.instanceId)).toEqual([
+        "claude_roomy",
+        "claude_spent",
+      ]);
+
+      const spent = accounts[1] as {
+        ready: boolean;
+        plan: string | null;
+        models: ReadonlyArray<string>;
+        windows: ReadonlyArray<{ id: string; resetsInMinutes: number | null }>;
+        tightestWindow: { id: string; percent: number; resetsInMinutes: number } | null;
+        observedMinutesAgo: number | null;
+      };
+      expect(spent.ready).toBe(true);
+      expect(spent.plan).toBe("max");
+      expect(spent.models).toEqual(["claude-opus-5"]);
+      // The nearly spent short window decides, not the roomier weekly one.
+      expect(spent.tightestWindow?.id).toBe("five_hour");
+      expect(spent.tightestWindow?.percent).toBe(96);
+      // Every window says when it frees up, and the session one frees up first —
+      // which is what lets a caller wait rather than route around it.
+      const weekly = spent.windows.find((window) => window.id === "seven_day");
+      expect(spent.tightestWindow?.resetsInMinutes).toBeLessThan(weekly?.resetsInMinutes ?? 0);
+      expect(typeof spent.observedMinutesAgo).toBe("number");
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("narrows to a single account when asked", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const result = yield* callTool("read_plan_limits", { instanceId: "claude_roomy" });
+      const accounts = (
+        result.structuredContent as { accounts: ReadonlyArray<Record<string, unknown>> }
+      ).accounts;
+
+      expect(accounts).toHaveLength(1);
+      expect(accounts[0]?.instanceId).toBe("claude_roomy");
     }),
   ).pipe(Effect.provide(TestLayer)),
 );
