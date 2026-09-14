@@ -73,7 +73,7 @@ describe("buildThreadActionItems", () => {
     }
   });
 
-  it("ranks thread title matches ahead of contextual project-name matches", () => {
+  it("keeps thread matches newest first rather than ranking by match strength", () => {
     const threadItems = buildThreadActionItems({
       threads: [
         makeThread({
@@ -105,8 +105,42 @@ describe("buildThreadActionItems", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]?.value).toBe("threads-search");
     expect(groups[0]?.items.map((item) => item.value)).toEqual([
-      "thread:thread-title-match",
       "thread:thread-context-match",
+      "thread:thread-title-match",
+    ]);
+  });
+
+  it("does not float a title that starts with the query above a fresher one that contains it", () => {
+    const threadItems = buildThreadActionItems({
+      threads: [
+        makeThread({
+          id: ThreadId.make("thread-old-prefix"),
+          title: "Push inline image migration",
+          updatedAt: "2026-02-01T00:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("thread-new-contains"),
+          title: "Run next staging push round",
+          updatedAt: "2026-03-20T00:00:00.000Z",
+        }),
+      ],
+      projectTitleById: new Map([[PROJECT_ID, "Project"]]),
+      sortOrder: "updated_at",
+      icon: null,
+      runThread: async (_thread) => undefined,
+    });
+
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [],
+      query: "push",
+      isInSubmenu: false,
+      projectSearchItems: [],
+      threadSearchItems: threadItems,
+    });
+
+    expect(groups[0]?.items.map((item) => item.value)).toEqual([
+      "thread:thread-new-contains",
+      "thread:thread-old-prefix",
     ]);
   });
 

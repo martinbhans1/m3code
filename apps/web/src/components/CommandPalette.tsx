@@ -118,6 +118,7 @@ import {
 } from "./ui/command";
 import { Button } from "./ui/button";
 import { Kbd, KbdGroup } from "./ui/kbd";
+import { Spinner } from "./ui/spinner";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ComposerHandleContext, useComposerHandleContext } from "../composerHandleContext";
@@ -475,6 +476,9 @@ function OpenCommandPaletteDialog() {
   const currentView = viewStack.at(-1) ?? null;
   const [threadSearchResponse, setThreadSearchResponse] =
     useState<ThreadSearchResponseState | null>(null);
+  // The query whose conversation search (keyword pass, then the slower
+  // meaning-based pass) has not finished yet, so the palette can say so.
+  const [pendingThreadSearchQuery, setPendingThreadSearchQuery] = useState<string | null>(null);
   const [browseGeneration, setBrowseGeneration] = useState(0);
   const [addProjectEnvironmentId, setAddProjectEnvironmentId] = useState<EnvironmentId | null>(
     null,
@@ -503,27 +507,33 @@ function OpenCommandPaletteDialog() {
       searchableEnvironmentIds.length === 0
     ) {
       setThreadSearchResponse(null);
+      setPendingThreadSearchQuery(null);
       return;
     }
 
     let cancelled = false;
+    setPendingThreadSearchQuery(normalizedQuery);
     const timeoutId = window.setTimeout(() => {
       void (async () => {
-        const lexicalResponse = await searchThreadsAcrossEnvironments({
-          environmentIds: searchableEnvironmentIds,
-          query: normalizedQuery,
-          includeSemantic: false,
-        });
-        if (cancelled) return;
-        setThreadSearchResponse(lexicalResponse);
-        if (!lexicalResponse) return;
+        try {
+          const lexicalResponse = await searchThreadsAcrossEnvironments({
+            environmentIds: searchableEnvironmentIds,
+            query: normalizedQuery,
+            includeSemantic: false,
+          });
+          if (cancelled) return;
+          setThreadSearchResponse(lexicalResponse);
+          if (!lexicalResponse) return;
 
-        const hybridResponse = await searchThreadsAcrossEnvironments({
-          environmentIds: searchableEnvironmentIds,
-          query: normalizedQuery,
-          includeSemantic: true,
-        });
-        if (!cancelled && hybridResponse) setThreadSearchResponse(hybridResponse);
+          const hybridResponse = await searchThreadsAcrossEnvironments({
+            environmentIds: searchableEnvironmentIds,
+            query: normalizedQuery,
+            includeSemantic: true,
+          });
+          if (!cancelled && hybridResponse) setThreadSearchResponse(hybridResponse);
+        } finally {
+          if (!cancelled) setPendingThreadSearchQuery(null);
+        }
       })();
     }, 150);
 
@@ -1198,6 +1208,9 @@ function OpenCommandPaletteDialog() {
     },
   });
 
+  const isThreadSearchPending =
+    pendingThreadSearchQuery !== null && pendingThreadSearchQuery === query.trim();
+
   const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
   const activeGroups = currentView ? currentView.groups : rootGroups;
 
@@ -1836,7 +1849,9 @@ function OpenCommandPaletteDialog() {
                         emptyStateMessage:
                           "Press Enter to create this folder and add it as a project.",
                       }
-                    : {})}
+                    : isThreadSearchPending
+                      ? { emptyStateMessage: "Searching conversations…" }
+                      : {})}
           />
         </CommandPanel>
         <CommandFooter className="gap-3 max-sm:flex-col max-sm:items-start">
@@ -1874,6 +1889,12 @@ function OpenCommandPaletteDialog() {
               <span className={cn("text-muted-foreground/80")}>Close</span>
             </KbdGroup>
           </div>
+          {isThreadSearchPending ? (
+            <span className="flex items-center gap-1.5 text-xs text-muted-foreground/80">
+              <Spinner className="size-3" />
+              Searching conversations…
+            </span>
+          ) : null}
           {canOpenProjectFromFileManager ? (
             <Button
               variant="ghost"

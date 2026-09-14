@@ -256,6 +256,11 @@ export function filterCommandPaletteGroups(input: {
   }
 
   return searchableGroups.flatMap((group) => {
+    // Thread results arrive newest first, and stay that way: match strength
+    // decides who is in the list, not where they sit. Re-ranking here floated
+    // titles that *start* with the query above fresher ones that merely contain
+    // it, so the dates jumped around until the server answer replaced the list.
+    const keepIncomingOrder = group.value === "threads-search";
     const items = Arr.filterMap(group.items, (item, index) => {
       const haystack = normalizeSearchText(item.searchTerms.join(" "));
       if (!haystack.includes(normalizedQuery)) {
@@ -265,7 +270,7 @@ export function filterCommandPaletteGroups(input: {
       return Result.succeed({
         item,
         index,
-        rank: rankCommandPaletteItemMatch(item, normalizedQuery),
+        rank: keepIncomingOrder ? 0 : rankCommandPaletteItemMatch(item, normalizedQuery),
       });
     })
       .toSorted((left, right) => right.rank - left.rank || left.index - right.index)
