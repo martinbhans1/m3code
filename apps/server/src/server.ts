@@ -86,7 +86,11 @@ import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import { ConversationSearchLive } from "./conversationSearch/ConversationSearch.ts";
-import { markLiveSiblingBackend } from "./backendPeers.ts";
+import {
+  markLiveSiblingBackend,
+  registerBackendPeer,
+  unregisterBackendPeer,
+} from "./backendPeers.ts";
 import {
   clearOwnPersistedServerRuntimeState,
   isProcessAlive,
@@ -415,12 +419,18 @@ export const makeServerLayer = Layer.unwrap(
             config,
             port: address.port,
           });
+          // Announced separately from the runtime state file, which holds one
+          // backend at a time and so cannot say who else is here.
+          registerBackendPeer(config.backendPeersDir, state.startedAt);
           yield* persistServerRuntimeState({
             path: config.serverRuntimeStatePath,
             state,
           });
         }),
-        () => clearOwnPersistedServerRuntimeState(config.serverRuntimeStatePath),
+        () =>
+          clearOwnPersistedServerRuntimeState(config.serverRuntimeStatePath).pipe(
+            Effect.tap(() => Effect.sync(unregisterBackendPeer)),
+          ),
       ),
     );
     const tailscaleServeLayer = config.tailscaleServeEnabled

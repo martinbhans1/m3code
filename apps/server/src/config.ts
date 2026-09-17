@@ -43,6 +43,8 @@ export interface ServerDerivedPaths {
   readonly anonymousIdPath: string;
   readonly environmentIdPath: string;
   readonly serverRuntimeStatePath: string;
+  /** One file per live backend serving this state dir; see `backendPeers`. */
+  readonly backendPeersDir: string;
   readonly turnAutoResumeStatePath: string;
   readonly secretsDir: string;
 }
@@ -114,6 +116,7 @@ export const deriveServerPaths = Effect.fn(function* (
     anonymousIdPath: join(stateDir, "anonymous-id"),
     environmentIdPath: join(stateDir, "environment-id"),
     serverRuntimeStatePath: join(stateDir, "server-runtime.json"),
+    backendPeersDir: join(stateDir, "backends"),
     turnAutoResumeStatePath: join(stateDir, "turn-auto-resume.json"),
     secretsDir: join(stateDir, "secrets"),
   };
@@ -136,6 +139,7 @@ export const ensureServerDirectories = Effect.fn(function* (derivedPaths: Server
       fs.makeDirectory(derivedPaths.providerStatusCacheDir, { recursive: true }),
       fs.makeDirectory(path.dirname(derivedPaths.anonymousIdPath), { recursive: true }),
       fs.makeDirectory(path.dirname(derivedPaths.serverRuntimeStatePath), { recursive: true }),
+      fs.makeDirectory(derivedPaths.backendPeersDir, { recursive: true }),
     ],
     { concurrency: "unbounded" },
   );
