@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import type { ProviderSessionRuntime } from "../../persistence/Services/ProviderSessionRuntime.ts";
 import { ProviderSessionRuntimeRepository } from "../../persistence/Services/ProviderSessionRuntime.ts";
 import { ProviderSessionDirectoryPersistenceError, ProviderValidationError } from "../Errors.ts";
+import { stampSessionOwner } from "../sessionOwner.ts";
 import {
   ProviderSessionDirectory,
   type ProviderRuntimeBinding,
@@ -141,9 +142,12 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
           binding.resumeCursor !== undefined
             ? binding.resumeCursor
             : (existingRuntime?.resumeCursor ?? null),
-        runtimePayload: mergeRuntimePayload(
-          existingRuntime?.runtimePayload ?? null,
-          binding.runtimePayload,
+        // Stamped on the way out so no caller can forget: a row that names no
+        // owner is one this backend never wrote, and restart recovery has to
+        // be able to tell its own orphaned sessions from a sibling backend's
+        // live ones. See `sessionOwner`.
+        runtimePayload: stampSessionOwner(
+          mergeRuntimePayload(existingRuntime?.runtimePayload ?? null, binding.runtimePayload),
         ),
       })
       .pipe(Effect.mapError(toPersistenceError("ProviderSessionDirectory.upsert:upsert")));

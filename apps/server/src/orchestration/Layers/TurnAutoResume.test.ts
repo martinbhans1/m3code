@@ -121,6 +121,7 @@ const decide = (overrides: {
   readonly evidence?: {
     readonly activeTurnId: string | null;
     readonly lastSeenAt: string | null;
+    readonly ownerLiveness?: "self" | "live" | "gone" | "unknown";
   };
   readonly history?: TurnAutoResumeHistoryEntry | undefined;
   readonly previousBootAt?: string | null;
@@ -147,6 +148,38 @@ describe("decideAutoResume", () => {
         evidence: { activeTurnId: null, lastSeenAt: "2026-08-06T09:30:00.000Z" },
       }),
     ).toEqual({ resume: true, consecutiveAutoResumes: 0 });
+  });
+
+  it("leaves a turn alone while the backend that started it is still running", () => {
+    // The bug this exists for: a second backend boots against the same data
+    // directory, reads the first one's in-flight turn as its own orphan, and
+    // resumes it into a conversation the provider still has open.
+    expect(decide({ evidence: { ...liveEvidence, ownerLiveness: "live" } })).toEqual({
+      resume: false,
+      reason: "session_owned_by_live_backend",
+    });
+    // Even the shutdown capture cannot argue with a live owner: whatever it
+    // recorded was recorded about a process that has since exited.
+    expect(
+      decide({
+        wasCapturedInFlight: true,
+        evidence: { ...liveEvidence, ownerLiveness: "live" },
+      }),
+    ).toEqual({ resume: false, reason: "session_owned_by_live_backend" });
+  });
+
+  it("resumes once the backend that owned the session is gone", () => {
+    expect(decide({ evidence: { ...liveEvidence, ownerLiveness: "gone" } })).toEqual({
+      resume: true,
+      consecutiveAutoResumes: 0,
+    });
+  });
+
+  it("still resumes a session written before sessions carried an owner", () => {
+    expect(decide({ evidence: { ...liveEvidence, ownerLiveness: "unknown" } })).toEqual({
+      resume: true,
+      consecutiveAutoResumes: 0,
+    });
   });
 
   it("ignores an open turn the provider was not actually working on", () => {
@@ -307,6 +340,12 @@ const activeBinding = (lastSeenAt: string) => ({
   lastSeenAt,
 });
 
+/** The same binding, stamped as belonging to a backend process that is up. */
+const bindingOwnedByLiveBackend = (lastSeenAt: string) => ({
+  ...activeBinding(lastSeenAt),
+  runtimePayload: { activeTurnId: "turn-1", ownerPid: process.pid },
+});
+
 const tempStatePath = (name: string) =>
   path.join(os.tmpdir(), `t3-turn-auto-resume-${name}-${process.pid}.json`);
 
@@ -384,6 +423,34 @@ describe("turn auto-resume lifecycle", () => {
         statePath,
         threads: [makeThread({ turnState: "running", updatedAt: "2026-06-26T08:48:42.000Z" })],
         bindings: [activeBinding("2026-06-26T08:45:44.000Z")],
+      });
+
+      yield* autoResume.resumeInterruptedTurns;
+
+      expect(yield* autoResume.dispatchedCommands).toEqual([]);
+    }),
+  );
+
+  effectIt.effect("leaves a conversation another backend is running untouched", () =>
+    Effect.gen(function* () {
+      const statePath = tempStatePath("live-owner");
+      yield* writeTurnAutoResumeState({
+        path: statePath,
+        state: {
+          version: 1,
+          bootedAt: PREVIOUS_BOOT_AT,
+          inFlight: [
+            { threadId: ThreadId.make("thread-1"), turnId: "turn-1", capturedAt: RESUME_AT },
+          ],
+          history: [],
+        },
+      }).pipe(Effect.provide(NodeServices.layer));
+
+      // Owned by a process that is demonstrably alive - this one.
+      const autoResume = yield* withAutoResume({
+        statePath,
+        threads: [makeThread({ turnState: "running" })],
+        bindings: [bindingOwnedByLiveBackend(RESUME_AT)],
       });
 
       yield* autoResume.resumeInterruptedTurns;

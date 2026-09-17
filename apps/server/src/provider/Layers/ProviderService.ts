@@ -53,6 +53,7 @@ import {
   ProviderSessionDirectory,
   type ProviderRuntimeBinding,
 } from "../Services/ProviderSessionDirectory.ts";
+import { isOwnedByLiveForeignBackend } from "../sessionOwner.ts";
 import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
@@ -1026,6 +1027,13 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     const bindings = yield* directory.listBindings().pipe(Effect.orElseSucceed(() => []));
     yield* Effect.forEach(bindings, (binding) =>
       Effect.gen(function* () {
+        // The table is shared with any other backend on this data directory, so
+        // "every binding" includes sessions running in somebody else's process.
+        // Marking those stopped would leave a live conversation recorded as
+        // dead, which is exactly the state restart recovery acts on.
+        if (isOwnedByLiveForeignBackend(binding.runtimePayload)) {
+          return;
+        }
         const providerInstanceId = dieOnMissingBindingInstanceId(
           "ProviderService.stopAll",
           binding,

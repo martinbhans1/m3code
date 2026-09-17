@@ -39,6 +39,7 @@ import * as Layer from "effect/Layer";
 
 import { ServerConfig } from "../../config.ts";
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
+import { sessionOwnerLiveness, type SessionOwnerLiveness } from "../../provider/sessionOwner.ts";
 import { ServerRuntimeStartup } from "../../serverRuntimeStartup.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -114,6 +115,12 @@ export interface ProviderTurnEvidence {
   readonly activeTurnId: string | null;
   /** Provider's last write for this thread, used to bound how old the evidence may be. */
   readonly lastSeenAt: string | null;
+  /**
+   * Whether the backend process that wrote this session record is still
+   * running. Omitted means unknown — the state of every row written before
+   * sessions carried an owner.
+   */
+  readonly ownerLiveness?: SessionOwnerLiveness;
 }
 
 /**
@@ -126,6 +133,7 @@ export type AutoResumeDecision =
       readonly resume: false;
       readonly reason:
         | "turn_settled"
+        | "session_owned_by_live_backend"
         | "provider_turn_mismatch"
         | "stale_evidence"
         | "awaiting_approval"
@@ -153,6 +161,20 @@ export const decideAutoResume = (input: {
   // and answered, and resuming it just burns tokens re-reading a dead end.
   if (!hasUnsettledTurn(thread)) {
     return { resume: false, reason: "turn_settled" };
+  }
+
+  // An open turn whose session is held by a process that is still running was
+  // never orphaned — it is streaming right now, in the app next door or in this
+  // very process. Resuming it starts a second provider session against a
+  // conversation the first one has open, which Codex refuses outright (one
+  // writer per conversation) and surfaces as an error on healthy work.
+  //
+  // Checked ahead of everything else, including the shutdown capture: whatever
+  // that capture recorded, it was recorded about a process that has since
+  // exited, so it can never be evidence about a live one.
+  const ownerLiveness = evidence.ownerLiveness ?? "unknown";
+  if (ownerLiveness === "live" || ownerLiveness === "self") {
+    return { resume: false, reason: "session_owned_by_live_backend" };
   }
 
   // The provider has to have been working on *that* turn. Its `activeTurnId` is
@@ -338,6 +360,7 @@ export const makeTurnAutoResume = Effect.gen(function* () {
                   ? null
                   : activeTurnIdFromRuntimePayload(binding.runtimePayload),
               lastSeenAt: binding.lastSeenAt,
+              ownerLiveness: sessionOwnerLiveness(binding.runtimePayload),
             } satisfies ProviderTurnEvidence,
           ] as const,
       ),
