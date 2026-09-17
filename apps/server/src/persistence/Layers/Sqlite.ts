@@ -34,6 +34,12 @@ const setup = Layer.effectDiscard(
     const sql = yield* SqlClient.SqlClient;
     yield* sql`PRAGMA journal_mode = WAL;`;
     yield* sql`PRAGMA foreign_keys = ON;`;
+    // WAL lets a second backend on the same file read while we write, but only
+    // one of us may write at a time, and without a wait the loser fails
+    // instantly with "database is locked". That surfaced as conversation events
+    // being dropped outright - token usage, completed items - so the UI quietly
+    // lost pieces of a live conversation. Wait for the other writer instead.
+    yield* sql`PRAGMA busy_timeout = 5000;`;
     yield* runMigrations();
   }),
 );

@@ -20,6 +20,7 @@
  *
  * @module sessionOwner
  */
+import { hasLiveSiblingBackend } from "../backendPeers.ts";
 import { isProcessAlive } from "../serverRuntimeState.ts";
 
 /** Payload key holding the pid of the backend that last wrote the row. */
@@ -96,4 +97,31 @@ export function isOwnedByLiveForeignBackend(
   options?: { readonly isProcessAlive?: (pid: number) => boolean },
 ): boolean {
   return sessionOwnerLiveness(payload, options) === "live";
+}
+
+/**
+ * Whether a background job should keep its hands off this session.
+ *
+ * True for a session running in another live process, and - only while another
+ * backend is sharing this data directory - for a session with no owner
+ * recorded at all. An unowned row is either ours from before the last restart
+ * or the neighbour's from a build that predates the stamp, and while both are
+ * possible the safe reading is the neighbour's: the cost of being wrong is a
+ * skipped cleanup, against breaking a conversation somebody is watching.
+ */
+export function isSessionOffLimits(
+  payload: unknown,
+  options?: {
+    readonly isProcessAlive?: (pid: number) => boolean;
+    readonly hasLiveSiblingBackend?: () => boolean;
+  },
+): boolean {
+  const liveness = sessionOwnerLiveness(payload, options);
+  if (liveness === "live") {
+    return true;
+  }
+  if (liveness === "unknown") {
+    return (options?.hasLiveSiblingBackend ?? hasLiveSiblingBackend)();
+  }
+  return false;
 }

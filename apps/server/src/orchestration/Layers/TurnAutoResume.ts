@@ -39,6 +39,7 @@ import * as Layer from "effect/Layer";
 
 import { ServerConfig } from "../../config.ts";
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
+import { hasLiveSiblingBackend } from "../../backendPeers.ts";
 import { sessionOwnerLiveness, type SessionOwnerLiveness } from "../../provider/sessionOwner.ts";
 import { ServerRuntimeStartup } from "../../serverRuntimeStartup.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -134,6 +135,7 @@ export type AutoResumeDecision =
       readonly reason:
         | "turn_settled"
         | "session_owned_by_live_backend"
+        | "session_owner_unknown_while_sharing"
         | "provider_turn_mismatch"
         | "stale_evidence"
         | "awaiting_approval"
@@ -147,6 +149,11 @@ export const decideAutoResume = (input: {
   readonly evidence: ProviderTurnEvidence;
   readonly history: TurnAutoResumeHistoryEntry | undefined;
   /**
+   * Whether another backend is serving this same data directory right now.
+   * When one is, a session that names no owner cannot be assumed to be ours.
+   */
+  readonly hasLiveSiblingBackend?: boolean;
+  /**
    * When the previous process started, if known. Work cut off by this restart
    * necessarily happened after it.
    */
@@ -154,6 +161,7 @@ export const decideAutoResume = (input: {
   readonly now: string;
 }): AutoResumeDecision => {
   const { thread, wasCapturedInFlight, evidence, history, previousBootAt, now } = input;
+  const sharingWithAnotherBackend = input.hasLiveSiblingBackend ?? false;
 
   // Nothing to continue unless the projection still has the turn open. This
   // rejects turns that ended in any way at all, including the ones that ended
@@ -175,6 +183,14 @@ export const decideAutoResume = (input: {
   const ownerLiveness = evidence.ownerLiveness ?? "unknown";
   if (ownerLiveness === "live" || ownerLiveness === "self") {
     return { resume: false, reason: "session_owned_by_live_backend" };
+  }
+
+  // Sessions written before they carried an owner are unclaimed rather than
+  // ours. Alone that distinction is academic and claiming them is right; while
+  // another backend shares this directory it is the difference between picking
+  // up our own orphan and barging into a conversation running next door.
+  if (ownerLiveness === "unknown" && sharingWithAnotherBackend) {
+    return { resume: false, reason: "session_owner_unknown_while_sharing" };
   }
 
   // The provider has to have been working on *that* turn. Its `activeTurnId` is
@@ -367,6 +383,7 @@ export const makeTurnAutoResume = Effect.gen(function* () {
     );
 
     const bootedAt = DateTime.formatIso(yield* DateTime.now);
+    const sharingWithAnotherBackend = hasLiveSiblingBackend();
     const previousBootAt = persisted.bootedAt ?? null;
     const nextHistory: Array<TurnAutoResumeHistoryEntry> = [];
     let resumedCount = 0;
@@ -380,6 +397,7 @@ export const makeTurnAutoResume = Effect.gen(function* () {
           lastSeenAt: null,
         },
         history: historyByThreadId.get(thread.id),
+        hasLiveSiblingBackend: sharingWithAnotherBackend,
         previousBootAt,
         now: bootedAt,
       });

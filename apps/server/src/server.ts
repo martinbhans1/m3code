@@ -86,6 +86,7 @@ import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import { ConversationSearchLive } from "./conversationSearch/ConversationSearch.ts";
+import { markLiveSiblingBackend } from "./backendPeers.ts";
 import {
   clearOwnPersistedServerRuntimeState,
   isProcessAlive,
@@ -401,6 +402,10 @@ export const makeServerLayer = Layer.unwrap(
           // "my new thread never showed up".
           const existing = yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
           if (Option.isSome(existing) && isProcessAlive(existing.value.pid)) {
+            // Remembered, not just announced: the background jobs that tidy up
+            // sessions have to know they are sharing before they touch a row
+            // nobody has claimed.
+            markLiveSiblingBackend(existing.value.pid);
             yield* Effect.logWarning(
               `Another M3 Code backend (pid ${existing.value.pid}, ${existing.value.origin}) is already using ${config.stateDir}. Both processes will read and write the same database without seeing each other's updates; close one, or start dev with --isolated-state.`,
             );

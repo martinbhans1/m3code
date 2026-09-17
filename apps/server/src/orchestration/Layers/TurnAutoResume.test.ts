@@ -125,12 +125,14 @@ const decide = (overrides: {
   };
   readonly history?: TurnAutoResumeHistoryEntry | undefined;
   readonly previousBootAt?: string | null;
+  readonly hasLiveSiblingBackend?: boolean;
 }) =>
   decideAutoResume({
     thread: overrides.thread ?? makeThread({ turnState: "running" }),
     wasCapturedInFlight: overrides.wasCapturedInFlight ?? false,
     evidence: overrides.evidence ?? liveEvidence,
     history: overrides.history,
+    hasLiveSiblingBackend: overrides.hasLiveSiblingBackend ?? false,
     previousBootAt:
       overrides.previousBootAt === undefined ? PREVIOUS_BOOT_AT : overrides.previousBootAt,
     now: NOW,
@@ -180,6 +182,27 @@ describe("decideAutoResume", () => {
       resume: true,
       consecutiveAutoResumes: 0,
     });
+  });
+
+  it("will not claim an unowned session while another backend shares the directory", () => {
+    // Until every backend on this directory stamps its sessions, an unowned row
+    // may well be the neighbour's live work - as it was on 2026-09-17, where
+    // the installed app had not been rebuilt yet.
+    expect(
+      decide({
+        evidence: { ...liveEvidence, ownerLiveness: "unknown" },
+        hasLiveSiblingBackend: true,
+      }),
+    ).toEqual({ resume: false, reason: "session_owner_unknown_while_sharing" });
+  });
+
+  it("still resumes its own dead session while sharing the directory", () => {
+    expect(
+      decide({
+        evidence: { ...liveEvidence, ownerLiveness: "gone" },
+        hasLiveSiblingBackend: true,
+      }),
+    ).toEqual({ resume: true, consecutiveAutoResumes: 0 });
   });
 
   it("ignores an open turn the provider was not actually working on", () => {

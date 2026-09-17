@@ -7,7 +7,7 @@ import * as Schedule from "effect/Schedule";
 
 import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
-import { isOwnedByLiveForeignBackend } from "../sessionOwner.ts";
+import { isSessionOffLimits } from "../sessionOwner.ts";
 import {
   ProviderSessionReaper,
   type ProviderSessionReaperShape,
@@ -47,7 +47,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         // Another backend on this same data directory may own the session. Its
         // idleness is not ours to judge, and stopping it would record a live
         // conversation as dead.
-        if (isOwnedByLiveForeignBackend(binding.runtimePayload)) {
+        if (isSessionOffLimits(binding.runtimePayload)) {
           continue;
         }
 

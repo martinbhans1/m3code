@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   isOwnedByLiveForeignBackend,
+  isSessionOffLimits,
   readSessionOwnerPid,
   sessionOwnerLiveness,
   stampSessionOwner,
@@ -73,5 +74,29 @@ describe("isOwnedByLiveForeignBackend", () => {
     // A row from an older build must stay eligible for the callers that skip
     // foreign sessions, or they would skip every carried-over conversation.
     expect(isOwnedByLiveForeignBackend({ activeTurnId: "turn-1" })).toBe(false);
+  });
+});
+
+describe("isSessionOffLimits", () => {
+  const sharing = { hasLiveSiblingBackend: () => true };
+  const alone = { hasLiveSiblingBackend: () => false };
+
+  it("always protects a session running in another live process", () => {
+    const live = { isProcessAlive: aliveOnly(FOREIGN_PID), ...alone };
+    expect(isSessionOffLimits({ ownerPid: FOREIGN_PID }, live)).toBe(true);
+  });
+
+  it("treats an unowned session as the neighbour's only while sharing", () => {
+    expect(isSessionOffLimits({ activeTurnId: "turn-1" }, sharing)).toBe(true);
+    expect(isSessionOffLimits({ activeTurnId: "turn-1" }, alone)).toBe(false);
+  });
+
+  it("never protects a session whose process has exited", () => {
+    const dead = { isProcessAlive: aliveOnly(), ...sharing };
+    expect(isSessionOffLimits({ ownerPid: DEAD_PID }, dead)).toBe(false);
+  });
+
+  it("never protects our own session", () => {
+    expect(isSessionOffLimits(stampSessionOwner(null), sharing)).toBe(false);
   });
 });
