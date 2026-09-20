@@ -192,7 +192,6 @@ import { appendReviewCommentsToPrompt, type ReviewCommentContext } from "../revi
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { QueuedTurns } from "./chat/QueuedTurns";
 import { type QueuedTurn, selectQueuedTurns, useQueuedTurnStore } from "../queuedTurnStore";
-import { getWsConnectionUiState, useWsConnectionStatus } from "../rpc/wsConnectionState";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
@@ -1327,7 +1326,6 @@ function ChatViewContent(props: ChatViewProps) {
     [activeThread],
   );
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
-  const queuedDispatchAwaitingRunRef = useRef<string | null>(null);
   const activeQueuedTurns = useQueuedTurnStore((state) =>
     selectQueuedTurns(state.byThreadKey, activeThreadKey),
   );
@@ -1489,7 +1487,6 @@ function ChatViewContent(props: ChatViewProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((s) => s.byId);
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((s) => s.byId);
-  const wsConnectionStatus = useWsConnectionStatus();
   const activeSavedEnvironmentRecord =
     activeThread && activeThread.environmentId !== primaryEnvironmentId
       ? (savedEnvironmentRegistry[activeThread.environmentId] ?? null)
@@ -1502,13 +1499,6 @@ function ChatViewContent(props: ChatViewProps) {
     : "connected";
   const activeEnvironmentUnavailable =
     activeSavedEnvironmentRecord !== null && activeSavedEnvironmentConnectionState !== "connected";
-  // Whether commands for the active thread can actually reach a server right
-  // now. Saved environments track their own connection; everything else rides
-  // the primary WebSocket.
-  const isTransportConnected =
-    activeSavedEnvironmentRecord !== null
-      ? activeSavedEnvironmentConnectionState === "connected"
-      : getWsConnectionUiState(wsConnectionStatus) === "connected";
   const activeSavedEnvironmentId = activeSavedEnvironmentRecord?.environmentId ?? null;
   const activeEnvironmentUnavailableLabel = activeSavedEnvironmentRecord
     ? resolveEnvironmentOptionLabel({
@@ -1887,51 +1877,9 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const selectedProvider: ProviderDriverKind = lockedProvider ?? unlockedSelectedProvider;
   const phase = derivePhase(activeThread?.session ?? null);
-  // Drains the per-thread queue: one turn at a time, only while the agent is
-  // idle and the socket is actually up. The connection gate matters as much as
-  // the phase gate — dispatching into a dead socket just burns the queued turn
-  // on an error the user never caused, so it waits for the reconnect instead.
-  useEffect(() => {
-    if (phase === "running") {
-      queuedDispatchAwaitingRunRef.current = null;
-      return;
-    }
-    if (
-      phase !== "ready" ||
-      !activeThreadRef ||
-      !isTransportConnected ||
-      queuedDispatchAwaitingRunRef.current === activeThreadKey
-    )
-      return;
-    const nextTurn = activeQueuedTurns[0];
-    if (!nextTurn || nextTurn.status !== "queued") return;
-    const api = readEnvironmentApi(activeThreadRef.environmentId);
-    if (!api) return;
-
-    const queue = useQueuedTurnStore.getState();
-    queuedDispatchAwaitingRunRef.current = activeThreadKey;
-    queue.markSending(activeThreadRef, nextTurn.id);
-    void api.orchestration.dispatchCommand(nextTurn.command).then(
-      () => useQueuedTurnStore.getState().remove(activeThreadRef, nextTurn.id),
-      (error: unknown) => {
-        queuedDispatchAwaitingRunRef.current = null;
-        // Losing the connection mid-dispatch is not a failed message, just a
-        // failed attempt: put it back in line for the next reconnect. Anything
-        // else is a real rejection the user has to see and act on.
-        if (isTransportConnectionError(error)) {
-          useQueuedTurnStore.getState().retry(activeThreadRef, nextTurn.id);
-          return;
-        }
-        useQueuedTurnStore
-          .getState()
-          .markFailed(
-            activeThreadRef,
-            nextTurn.id,
-            error instanceof Error ? error.message : "Failed to send queued message.",
-          );
-      },
-    );
-  }, [activeQueuedTurns, activeThreadKey, activeThreadRef, isTransportConnected, phase]);
+  // Queued turns are drained by `QueuedTurnDrainer`, mounted once for the whole
+  // app. It has to run for every conversation, not just the one on screen — a
+  // message queued here must still go out after the user switches away.
   /**
    * Promote a queued message to a steer: dispatch it right now instead of
    * waiting for the current turn to end. Enter queues by default while the

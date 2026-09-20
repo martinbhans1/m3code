@@ -36,14 +36,47 @@ function isPersistableTurn(turn: QueuedTurn): boolean {
 }
 
 /**
+ * How old a queued turn may be and still be sent unattended after a restart.
+ *
+ * A message queued minutes ago still means what it said. One that survived the
+ * app being closed overnight is a different thing — firing it unattended starts
+ * a fresh agent run against a repo that has moved on, so it comes back as a
+ * failed send the user can read and re-send deliberately.
+ */
+export const QUEUED_TURN_STALE_AFTER_MS = 12 * 60 * 60 * 1000;
+
+const QUEUED_TURN_STALE_ERROR = "Queued while the app was closed — send it again if it still fits.";
+
+/**
  * A turn that was mid-flight when the page went away has an unknown fate: the
  * server may or may not have accepted it. Restoring it as `failed` keeps it
- * visible and lets the user decide, rather than silently double-sending.
+ * visible and lets the user decide, rather than silently double-sending. A turn
+ * that outlived the session it was typed into is failed for the same reason:
+ * visible, recoverable, never sent behind the user's back.
  */
-function restoreTurnStatus(turn: QueuedTurn): QueuedTurn {
-  return turn.status === "sending"
-    ? { ...turn, status: "failed", error: "Interrupted before the send was confirmed." }
-    : turn;
+function restoreTurnStatus(turn: QueuedTurn, now: number): QueuedTurn {
+  if (turn.status === "sending") {
+    return { ...turn, status: "failed", error: "Interrupted before the send was confirmed." };
+  }
+  const createdAt = Date.parse(turn.command.createdAt);
+  if (turn.status === "queued" && !Number.isNaN(createdAt)) {
+    if (now - createdAt > QUEUED_TURN_STALE_AFTER_MS) {
+      return { ...turn, status: "failed", error: QUEUED_TURN_STALE_ERROR };
+    }
+  }
+  return turn;
+}
+
+/** Restores a persisted queue, settling anything that cannot simply resume. */
+export function rehydrateQueuedTurns(
+  byThreadKey: Record<string, ReadonlyArray<QueuedTurn>>,
+  now: number,
+): Record<string, ReadonlyArray<QueuedTurn>> {
+  return Object.fromEntries(
+    Object.entries(byThreadKey).map(
+      ([key, turns]) => [key, turns.map((turn) => restoreTurnStatus(turn, now))] as const,
+    ),
+  );
 }
 
 interface QueuedTurnStoreState {
@@ -172,11 +205,7 @@ export const useQueuedTurnStore = create<QueuedTurnStoreState>()(
         const persisted = persistedState as Partial<QueuedTurnStoreState> | undefined;
         return {
           ...currentState,
-          byThreadKey: Object.fromEntries(
-            Object.entries(persisted?.byThreadKey ?? {}).map(
-              ([key, turns]) => [key, turns.map(restoreTurnStatus)] as const,
-            ),
-          ),
+          byThreadKey: rehydrateQueuedTurns(persisted?.byThreadKey ?? {}, Date.now()),
         };
       },
     },

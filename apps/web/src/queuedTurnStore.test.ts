@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime";
-import { selectQueuedTurns, useQueuedTurnStore, type QueuedTurn } from "./queuedTurnStore";
+import {
+  QUEUED_TURN_STALE_AFTER_MS,
+  rehydrateQueuedTurns,
+  selectQueuedTurns,
+  useQueuedTurnStore,
+  type QueuedTurn,
+} from "./queuedTurnStore";
 
 const threadRef = scopeThreadRef(EnvironmentId.make("local"), ThreadId.make("thread-1"));
 
@@ -72,5 +78,34 @@ describe("queuedTurnStore", () => {
       status: "queued",
       error: null,
     });
+  });
+
+  it("restores a queue written moments ago untouched", () => {
+    const createdAt = Date.parse(turn("first").command.createdAt);
+    const restored = rehydrateQueuedTurns(
+      { [scopedThreadKey(threadRef)]: [turn("first")] },
+      createdAt + 60_000,
+    );
+    expect(restored[scopedThreadKey(threadRef)]?.[0]).toMatchObject({ status: "queued" });
+  });
+
+  it("does not send a message on its own after the app was closed overnight", () => {
+    const createdAt = Date.parse(turn("first").command.createdAt);
+    const restored = rehydrateQueuedTurns(
+      { [scopedThreadKey(threadRef)]: [turn("first"), turn("second")] },
+      createdAt + QUEUED_TURN_STALE_AFTER_MS + 1,
+    );
+    expect(restored[scopedThreadKey(threadRef)]?.map((entry) => entry.status)).toEqual([
+      "failed",
+      "failed",
+    ]);
+  });
+
+  it("does not resend a turn whose fate was unknown when the app went away", () => {
+    const restored = rehydrateQueuedTurns(
+      { [scopedThreadKey(threadRef)]: [{ ...turn("first"), status: "sending" }] },
+      Date.parse(turn("first").command.createdAt) + 1_000,
+    );
+    expect(restored[scopedThreadKey(threadRef)]?.[0]).toMatchObject({ status: "failed" });
   });
 });
