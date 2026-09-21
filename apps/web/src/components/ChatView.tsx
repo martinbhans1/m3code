@@ -191,7 +191,12 @@ import { appendPreviewAnnotationPrompt } from "../lib/previewAnnotation";
 import { appendReviewCommentsToPrompt, type ReviewCommentContext } from "../reviewCommentContext";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
 import { QueuedTurns } from "./chat/QueuedTurns";
-import { type QueuedTurn, selectQueuedTurns, useQueuedTurnStore } from "../queuedTurnStore";
+import {
+  type QueuedTurn,
+  queuedTurnCommandForDispatch,
+  selectQueuedTurns,
+  useQueuedTurnStore,
+} from "../queuedTurnStore";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
@@ -1898,7 +1903,7 @@ function ChatViewContent(props: ChatViewProps) {
       const api = readEnvironmentApi(threadRef.environmentId);
       if (!api) return;
       useQueuedTurnStore.getState().markSending(threadRef, id);
-      void api.orchestration.dispatchCommand(turn.command).then(
+      void api.orchestration.dispatchCommand(queuedTurnCommandForDispatch(turn, new Date())).then(
         () => useQueuedTurnStore.getState().remove(threadRef, id),
         (error: unknown) =>
           useQueuedTurnStore

@@ -3,6 +3,7 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime";
 import {
   QUEUED_TURN_STALE_AFTER_MS,
+  queuedTurnCommandForDispatch,
   rehydrateQueuedTurns,
   selectQueuedTurns,
   useQueuedTurnStore,
@@ -107,5 +108,17 @@ describe("queuedTurnStore", () => {
       Date.parse(turn("first").command.createdAt) + 1_000,
     );
     expect(restored[scopedThreadKey(threadRef)]?.[0]).toMatchObject({ status: "failed" });
+  });
+});
+
+describe("queuedTurnCommandForDispatch", () => {
+  it("dates the message from when it leaves the queue, not when it was typed", () => {
+    const queued = turn("first");
+    const sentAt = new Date("2026-07-15T02:00:00.000Z");
+    const command = queuedTurnCommandForDispatch(queued, sentAt);
+    expect(command.createdAt).toBe("2026-07-15T02:00:00.000Z");
+    expect(command.message).toBe(queued.command.message);
+    // The stored turn keeps its typed-at time; restart staleness is judged on it.
+    expect(queued.command.createdAt).toBe("2026-07-15T00:00:00.000Z");
   });
 });

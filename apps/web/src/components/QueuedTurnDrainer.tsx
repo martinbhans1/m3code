@@ -12,7 +12,7 @@ import {
   type QueuedTurnDispatchGuard,
   type QueuedTurnDrainCandidate,
 } from "../queuedTurnDrain";
-import { useQueuedTurnStore } from "../queuedTurnStore";
+import { queuedTurnCommandForDispatch, useQueuedTurnStore } from "../queuedTurnStore";
 import {
   getWsConnectionStatus,
   getWsConnectionUiState,
@@ -101,7 +101,7 @@ export function QueuedTurnDrainer() {
         const { key, turn } = candidate;
         guards.set(key, { kind: "in-flight" });
         useQueuedTurnStore.getState().markSending(turn.threadRef, turn.id);
-        void api.orchestration.dispatchCommand(turn.command).then(
+        void api.orchestration.dispatchCommand(queuedTurnCommandForDispatch(turn, new Date())).then(
           () => {
             guards.set(key, { kind: "dispatched", at: Date.now() });
             useQueuedTurnStore.getState().remove(turn.threadRef, turn.id);

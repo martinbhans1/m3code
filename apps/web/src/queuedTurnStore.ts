@@ -67,6 +67,19 @@ function restoreTurnStatus(turn: QueuedTurn, now: number): QueuedTurn {
   return turn;
 }
 
+/**
+ * The command to actually send for a queued turn, stamped with the moment it
+ * leaves the queue.
+ *
+ * The server dates the user message from the command, and the timeline sorts
+ * by that date. Keeping the time the message was typed would slot a message
+ * queued an hour ago in above everything the agent said during that hour —
+ * the agent reads it after that work, so that is where it belongs.
+ */
+export function queuedTurnCommandForDispatch(turn: QueuedTurn, now: Date): TurnStartCommand {
+  return { ...turn.command, createdAt: now.toISOString() };
+}
+
 /** Restores a persisted queue, settling anything that cannot simply resume. */
 export function rehydrateQueuedTurns(
   byThreadKey: Record<string, ReadonlyArray<QueuedTurn>>,
