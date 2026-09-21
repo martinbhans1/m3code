@@ -1799,7 +1799,38 @@ it.effect("creates a new conversation and starts it, keeping control of what it 
   ).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect("lets the orchestrator choose GPT-5.6 with the sanctioned medium effort", () =>
+it.effect("lets the orchestrator choose GPT-5.6 Sol or GPT-6 Astra by default", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      for (const model of ["gpt-5.6-sol", "gpt-6-astra"]) {
+        resetAccess();
+        dispatched.length = 0;
+
+        const result = yield* callTool("create_thread", {
+          projectTitle: "dealjourney",
+          title: "Run the Codex task",
+          message: "Handle this with Codex.",
+          model,
+        });
+
+        expect(result.isError).toBe(false);
+        expect(dispatched[0]).toMatchObject({
+          type: "thread.create",
+          modelSelection: {
+            instanceId: "codex",
+            model,
+            options: [{ id: "reasoningEffort", value: "medium" }],
+          },
+        });
+      }
+
+      resetAccess();
+      dispatched.length = 0;
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("refuses an unsanctioned model and says where the list is set", () =>
   Effect.scoped(
     Effect.gen(function* () {
       resetAccess();
@@ -1809,18 +1840,14 @@ it.effect("lets the orchestrator choose GPT-5.6 with the sanctioned medium effor
         projectTitle: "dealjourney",
         title: "Run the Codex task",
         message: "Handle this with Codex.",
-        model: "gpt-5.6",
+        model: "gpt-4o",
       });
 
-      expect(result.isError).toBe(false);
-      expect(dispatched[0]).toMatchObject({
-        type: "thread.create",
-        modelSelection: {
-          instanceId: "codex",
-          model: "gpt-5.6",
-          options: [{ id: "reasoningEffort", value: "medium" }],
-        },
-      });
+      expect(result.isError).toBe(true);
+      expect(dispatched).toHaveLength(0);
+      const text = result.content.map((entry) => ("text" in entry ? entry.text : "")).join(" ");
+      expect(text).toContain('"gpt-6-astra"');
+      expect(text).toContain("Settings > Orchestrator > Orchestrator model choices");
 
       resetAccess();
       dispatched.length = 0;

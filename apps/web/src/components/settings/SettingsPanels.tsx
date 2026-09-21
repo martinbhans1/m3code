@@ -977,7 +977,7 @@ export function GeneralSettingsPanel() {
 
         <SettingsRow
           title="Orchestrator model choices"
-          description="Models the orchestrator may pick from when it opens a new conversation. Opus 5 and GPT-5.6 are enabled by default; clear the list to always inherit each project's default."
+          description="Models the orchestrator may pick from when it opens a new conversation. Opus 5, GPT-5.6 Sol and GPT-6 Astra are enabled by default; clear the list to always inherit each project's default."
           resetAction={
             settings.orchestratorModelChoices.length > 0 ? (
               <SettingResetButton

@@ -1376,7 +1376,7 @@ const handlers = {
         );
         if (match === undefined) {
           return yield* new OrchestratorToolError({
-            message: `"${requestedModel}" is not a model you may choose. Allowed: ${allowedList}. Pick one of those or omit \`model\`; do not ask the user to widen the list unless they raise it.`,
+            message: `"${requestedModel}" is not a model you may choose. Allowed: ${allowedList}. Pick one of those or omit \`model\`; do not ask the user to widen the list unless they raise it. If they do, it lives under Settings > Orchestrator > Orchestrator model choices.`,
           });
         }
         modelSelection = match;

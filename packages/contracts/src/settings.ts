@@ -485,7 +485,12 @@ export const ServerSettings = Schema.Struct({
         },
         {
           instanceId: ProviderInstanceId.make("codex"),
-          model: "gpt-5.6",
+          model: "gpt-5.6-sol",
+          options: [{ id: "reasoningEffort", value: "medium" }],
+        },
+        {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-6-astra",
           options: [{ id: "reasoningEffort", value: "medium" }],
         },
       ]),
