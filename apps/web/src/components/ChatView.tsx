@@ -4499,14 +4499,20 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
 
-      updatePendingUserInputDraftAnswer(activePendingUserInput.requestId, questionId, (existing) =>
-        togglePendingUserInputOptionSelection(question, existing, optionLabel),
+      // Passing the on-screen index pins it, so picking never jumps the card
+      // to the next question.
+      updatePendingUserInputDraftAnswer(
+        activePendingUserInput.requestId,
+        questionId,
+        (existing) => togglePendingUserInputOptionSelection(question, existing, optionLabel),
+        activePendingQuestionIndex,
       );
       promptRef.current = "";
       composerRef.current?.resetCursorState({ cursor: 0 });
     },
     [
       activePendingProgress?.activeQuestion,
+      activePendingQuestionIndex,
       activePendingUserInput,
       composerRef,
       updatePendingUserInputDraftAnswer,
@@ -4525,8 +4531,13 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
       promptRef.current = value;
-      updatePendingUserInputDraftAnswer(activePendingUserInput.requestId, questionId, (existing) =>
-        setPendingUserInputCustomAnswer(existing, value),
+      // Pinning the on-screen index keeps the first keystroke from counting
+      // question 1 as answered and jumping to question 2.
+      updatePendingUserInputDraftAnswer(
+        activePendingUserInput.requestId,
+        questionId,
+        (existing) => setPendingUserInputCustomAnswer(existing, value),
+        activePendingQuestionIndex,
       );
       const snapshot = composerRef.current?.readSnapshot();
       if (
@@ -4537,7 +4548,12 @@ function ChatViewContent(props: ChatViewProps) {
         composerRef.current?.focusAt(nextCursor);
       }
     },
-    [activePendingUserInput, composerRef, updatePendingUserInputDraftAnswer],
+    [
+      activePendingQuestionIndex,
+      activePendingUserInput,
+      composerRef,
+      updatePendingUserInputDraftAnswer,
+    ],
   );
 
   const onAdvanceActivePendingUserInput = useCallback(() => {

@@ -89,6 +89,41 @@ describe("pendingUserInputDraftStore", () => {
     expect(findFirstUnansweredPendingUserInputQuestionIndex(QUESTIONS, draft.answers)).toBe(1);
   });
 
+  it("stays on the question being answered instead of jumping to the next", () => {
+    const { updateAnswer } = usePendingUserInputDraftStore.getState();
+    const onScreen = () => {
+      const draft = selectPendingUserInputDraft(
+        usePendingUserInputDraftStore.getState().byRequestId,
+        "req-1",
+      );
+      // Same resolution ChatView uses for the question on screen.
+      return (
+        draft.questionIndex ??
+        findFirstUnansweredPendingUserInputQuestionIndex(QUESTIONS, draft.answers)
+      );
+    };
+
+    expect(onScreen()).toBe(0);
+    // Picking on question 1 must not move the card to question 2.
+    updateAnswer(
+      "req-1",
+      "q1",
+      (existing) => togglePendingUserInputOptionSelection(QUESTIONS[0]!, existing, "First"),
+      onScreen(),
+    );
+    expect(onScreen()).toBe(0);
+
+    // Nor must typing the first character of your own answer.
+    usePendingUserInputDraftStore.setState({ byRequestId: {} });
+    updateAnswer(
+      "req-1",
+      "q1",
+      (existing) => setPendingUserInputCustomAnswer(existing, "M"),
+      onScreen(),
+    );
+    expect(onScreen()).toBe(0);
+  });
+
   it("drops the draft once its answers have been submitted", () => {
     const { updateAnswer, clear } = usePendingUserInputDraftStore.getState();
     updateAnswer("req-1", "q1", (existing) =>

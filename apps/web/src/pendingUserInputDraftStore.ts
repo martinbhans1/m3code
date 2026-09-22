@@ -48,10 +48,17 @@ function prune(
 interface PendingUserInputDraftStoreState {
   readonly byRequestId: Record<string, PendingUserInputDraft>;
   setQuestionIndex: (requestId: string, questionIndex: number) => void;
+  /**
+   * `currentQuestionIndex` is the question the user is looking at. When no
+   * place is recorded yet it gets pinned here: otherwise the panel keeps
+   * showing "the first unanswered question", so the first click or keystroke
+   * on question 1 would make it answered and jump straight to question 2.
+   */
   updateAnswer: (
     requestId: string,
     questionId: string,
     update: (existing: PendingUserInputDraftAnswer | undefined) => PendingUserInputDraftAnswer,
+    currentQuestionIndex?: number,
   ) => void;
   clear: (requestId: string) => void;
 }
@@ -86,7 +93,7 @@ export const usePendingUserInputDraftStore = create<PendingUserInputDraftStoreSt
             }),
           };
         }),
-      updateAnswer: (requestId, questionId, update) =>
+      updateAnswer: (requestId, questionId, update, currentQuestionIndex) =>
         set((state) => {
           const existing = state.byRequestId[requestId] ?? EMPTY_PENDING_USER_INPUT_DRAFT;
           return {
@@ -94,6 +101,7 @@ export const usePendingUserInputDraftStore = create<PendingUserInputDraftStoreSt
               ...state.byRequestId,
               [requestId]: {
                 ...existing,
+                questionIndex: existing.questionIndex ?? currentQuestionIndex ?? null,
                 answers: {
                   ...existing.answers,
                   [questionId]: update(existing.answers[questionId]),
