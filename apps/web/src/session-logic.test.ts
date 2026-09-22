@@ -214,7 +214,8 @@ describe("derivePendingUserInputs", () => {
     ]);
     expect(requests).toHaveLength(1);
     expect(requests[0]?.responseMode).toBe("message");
-    expect(requests[0]?.questions[0]?.defaultOptionLabel).toBe("Banana");
+    // An older payload's suggestion must never survive into the UI as a pick.
+    expect(requests[0]?.questions[0]).not.toHaveProperty("defaultOptionLabel");
     expect(requests[0]?.questions[1]?.options).toEqual([]);
   });
   it("tracks open structured prompts and removes resolved ones", () => {

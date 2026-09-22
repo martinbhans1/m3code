@@ -479,11 +479,8 @@ function parseUserInputQuestions(
         question: question.question,
         options,
         multiSelect: question.multiSelect === true,
-        ...(question.multiSelect !== true &&
-        typeof question.defaultOptionLabel === "string" &&
-        options.some((option) => option.label === question.defaultOptionLabel)
-          ? { defaultOptionLabel: question.defaultOptionLabel }
-          : {}),
+        // A `defaultOptionLabel` on older payloads is dropped on purpose:
+        // nothing is ever preselected.
       };
     })
     .filter((question): question is UserInputQuestion => question !== null);

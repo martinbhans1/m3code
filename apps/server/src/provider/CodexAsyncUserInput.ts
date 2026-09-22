@@ -37,7 +37,7 @@ export function codexAsyncUserInputPayload(item: typeof CodexAsyncUserInputNotif
           label: label.trim(),
           description: "",
         })),
-        ...(question.options?.[0] ? { defaultOptionLabel: question.options[0].trim() } : {}),
+        // No preselected option: the user always picks explicitly.
         multiSelect: false,
       })),
     },

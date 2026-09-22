@@ -1063,7 +1063,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       if (result.value.type !== "user-input.requested") return;
       assert.equal(result.value.requestId, "codex-async:async-question-1");
       assert.equal(result.value.payload.responseMode, "message");
-      assert.equal(result.value.payload.questions[0]?.defaultOptionLabel, "Short");
+      assert.equal("defaultOptionLabel" in (result.value.payload.questions[0] ?? {}), false);
       assert.deepEqual(result.value.payload.questions[1]?.options, []);
     }),
   );

@@ -14,7 +14,6 @@ interface PendingUserInputPanelProps {
   answers: Record<string, PendingUserInputDraftAnswer>;
   questionIndex: number;
   onToggleOption: (questionId: string, optionLabel: string) => void;
-  onAdvance: () => void;
 }
 
 export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserInputPanel({
@@ -23,7 +22,6 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
   answers,
   questionIndex,
   onToggleOption,
-  onAdvance,
 }: PendingUserInputPanelProps) {
   if (pendingUserInputs.length === 0) return null;
   const activePrompt = pendingUserInputs[0];
@@ -37,34 +35,30 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
       answers={answers}
       questionIndex={questionIndex}
       onToggleOption={onToggleOption}
-      onAdvance={onAdvance}
     />
   );
 });
 
+/**
+ * Nothing here ever chooses for the user. Options start unselected, a click
+ * only ticks or unticks, and moving to the next question or sending is always
+ * an explicit Next/Submit — never a side effect of picking.
+ */
 const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard({
   prompt,
   isResponding,
   answers,
   questionIndex,
   onToggleOption,
-  onAdvance,
 }: {
   prompt: PendingUserInput;
   isResponding: boolean;
   answers: Record<string, PendingUserInputDraftAnswer>;
   questionIndex: number;
   onToggleOption: (questionId: string, optionLabel: string) => void;
-  onAdvance: () => void;
 }) {
   const progress = derivePendingUserInputProgress(prompt.questions, answers, questionIndex);
   const activeQuestion = progress.activeQuestion;
-  const autoAdvanceTimerRef = useRef<number | null>(null);
-  const onAdvanceRef = useRef(onAdvance);
-  const [optimisticSingleSelect, setOptimisticSingleSelect] = useState<{
-    questionId: string;
-    optionLabel: string;
-  } | null>(null);
   // Local, and reset per request because the panel remounts on `requestId`.
   const [isCollapsed, setIsCollapsed] = useState(false);
   const optionsId = useId();
@@ -82,72 +76,14 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
     setIsCollapsed(collapsing);
   };
 
-  useEffect(() => {
-    onAdvanceRef.current = onAdvance;
-  }, [onAdvance]);
-
-  useEffect(() => {
-    if (!activeQuestion || activeQuestion.multiSelect || !optimisticSingleSelect) {
-      return;
-    }
-    if (optimisticSingleSelect.questionId !== activeQuestion.id) {
-      setOptimisticSingleSelect(null);
-      return;
-    }
-    if (
-      progress.customAnswer.trim().length === 0 &&
-      progress.selectedOptionLabels.includes(optimisticSingleSelect.optionLabel)
-    ) {
-      setOptimisticSingleSelect(null);
-    }
-  }, [
-    activeQuestion,
-    optimisticSingleSelect,
-    progress.customAnswer,
-    progress.selectedOptionLabels,
-  ]);
-
-  // Clear auto-advance timer on unmount
-  useEffect(() => {
-    return () => {
-      if (autoAdvanceTimerRef.current !== null) {
-        window.clearTimeout(autoAdvanceTimerRef.current);
-      }
-    };
-  }, []);
-
   const handleOptionSelection = useEffectEvent((questionId: string, optionLabel: string) => {
-    if (activeQuestion?.multiSelect) {
-      onToggleOption(questionId, optionLabel);
-      return;
-    }
-    setOptimisticSingleSelect({ questionId, optionLabel });
     onToggleOption(questionId, optionLabel);
-    if (prompt.responseMode === "message") {
-      return;
-    }
-    // Skipping ahead on a click is a convenience while questions remain. On the
-    // last question of a set "advance" means sending every answer, and that has
-    // to stay an explicit act — otherwise one click fires off a whole
-    // questionnaire you were still working through. A lone question is
-    // different: the click is the entire answer, so it still goes straight out.
-    if (progress.isLastQuestion && prompt.questions.length > 1) {
-      return;
-    }
-    if (autoAdvanceTimerRef.current !== null) {
-      window.clearTimeout(autoAdvanceTimerRef.current);
-    }
-    autoAdvanceTimerRef.current = window.setTimeout(() => {
-      autoAdvanceTimerRef.current = null;
-      onAdvanceRef.current();
-    }, 200);
   });
 
-  // Keyboard shortcut: number keys 1-9 select corresponding options when focus is
-  // outside editable fields. Multi-select prompts toggle options in place; single-
-  // select prompts keep the existing auto-advance behavior. While the card is
-  // collapsed the options are off-screen, so the shortcuts are parked too —
-  // otherwise a stray digit answers a question the user cannot see.
+  // Keyboard shortcut: number keys 1-9 toggle the matching option when focus is
+  // outside editable fields. Like a click, a shortcut never advances or sends.
+  // While the card is collapsed the options are off-screen, so the shortcuts
+  // are parked too — otherwise a stray digit answers a question you cannot see.
   useEffect(() => {
     if (!activeQuestion || isResponding || isCollapsed) return;
     const handler = (event: globalThis.KeyboardEvent) => {
@@ -231,12 +167,8 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
           className="mt-3 max-h-[38dvh] space-y-1.5 overflow-y-auto overscroll-contain pr-0.5 sm:max-h-[46dvh]"
         >
           {activeQuestion.options.map((option, index) => {
-            const isOptimisticallySelected =
-              optimisticSingleSelect?.questionId === activeQuestion.id &&
-              optimisticSingleSelect.optionLabel === option.label;
             const isSelected =
-              isOptimisticallySelected ||
-              (!customAnswerActive && progress.selectedOptionLabels.includes(option.label));
+              !customAnswerActive && progress.selectedOptionLabels.includes(option.label);
             const shortcutKey = index < 9 ? index + 1 : null;
             const className = cn(
               "group flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left outline-none transition-all duration-150 focus-visible:border-primary/40 focus-visible:ring-1 focus-visible:ring-primary/25",

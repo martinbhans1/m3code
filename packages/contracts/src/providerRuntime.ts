@@ -453,7 +453,9 @@ export const UserInputQuestion = Schema.Struct({
   header: TrimmedNonEmptyStringSchema,
   question: TrimmedNonEmptyStringSchema,
   options: Schema.Array(UserInputQuestionOption),
-  defaultOptionLabel: Schema.optional(TrimmedNonEmptyStringSchema),
+  // Deliberately no default/preselected option: every answer must be an
+  // explicit pick. Older persisted payloads may still carry
+  // `defaultOptionLabel`; Struct decoding drops it.
   multiSelect: Schema.optional(Schema.Boolean).pipe(
     Schema.withConstructorDefault(Effect.succeed(false)),
   ),

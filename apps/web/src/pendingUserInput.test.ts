@@ -41,23 +41,26 @@ const multiSelectQuestion = {
 } as const;
 
 describe("resolvePendingUserInputAnswer", () => {
-  it("preselects an async default but lets a custom answer override it", () => {
-    const question = { ...singleSelectQuestion, defaultOptionLabel: "Orchestration-first" };
-    expect(
-      findFirstUnansweredPendingUserInputQuestionIndex([question, { ...question, id: "q2" }], {}),
-    ).toBe(0);
-    expect(resolvePendingUserInputAnswer(question, undefined)).toBe("Orchestration-first");
-    expect(derivePendingUserInputProgress([question], {}, 0).selectedOptionLabels).toEqual([
-      "Orchestration-first",
-    ]);
-    expect(resolvePendingUserInputAnswer(question, { customAnswer: "Something else" })).toBe(
-      "Something else",
-    );
+  it("never preselects anything, even when an old question carries a suggestion", () => {
+    for (const base of [singleSelectQuestion, multiSelectQuestion]) {
+      // Older persisted Codex questions carried a suggested first option.
+      const question = {
+        ...base,
+        defaultOptionLabel: base.options[0].label,
+      } as unknown as typeof base;
+      const progress = derivePendingUserInputProgress([question], {}, 0);
+      expect(progress.selectedOptionLabels).toEqual([]);
+      expect(progress.resolvedAnswer).toBeNull();
+      expect(progress.canAdvance).toBe(false);
+      expect(progress.isComplete).toBe(false);
+      expect(resolvePendingUserInputAnswer(question, undefined)).toBeNull();
+      expect(countAnsweredPendingUserInputQuestions([question], {})).toBe(0);
+    }
   });
-  it("never pre-ticks an option on a multi-select, even with a default", () => {
-    const question = { ...multiSelectQuestion, defaultOptionLabel: "Server" };
-    expect(derivePendingUserInputProgress([question], {}, 0).selectedOptionLabels).toEqual([]);
-    expect(resolvePendingUserInputAnswer(question, undefined)).toBeNull();
+  it("lets a custom answer stand without any pick", () => {
+    expect(resolvePendingUserInputAnswer(singleSelectQuestion, { customAnswer: "Other" })).toBe(
+      "Other",
+    );
   });
   it("prefers a custom answer over selected options", () => {
     expect(
@@ -99,6 +102,22 @@ describe("resolvePendingUserInputAnswer", () => {
 });
 
 describe("togglePendingUserInputOptionSelection", () => {
+  it("lets a single choice be clicked off again", () => {
+    const picked = togglePendingUserInputOptionSelection(
+      singleSelectQuestion,
+      undefined,
+      "Orchestration-first",
+    );
+    expect(picked.selectedOptionLabels).toEqual(["Orchestration-first"]);
+    const cleared = togglePendingUserInputOptionSelection(
+      singleSelectQuestion,
+      picked,
+      "Orchestration-first",
+    );
+    expect(cleared.selectedOptionLabels).toBeUndefined();
+    expect(resolvePendingUserInputAnswer(singleSelectQuestion, cleared)).toBeNull();
+  });
+
   it("toggles options for multi-select questions", () => {
     expect(togglePendingUserInputOptionSelection(multiSelectQuestion, undefined, "Server")).toEqual(
       {

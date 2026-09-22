@@ -4544,6 +4544,11 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activePendingUserInput || !activePendingProgress) {
       return;
     }
+    // Enter in an empty composer must never skip a question the user has not
+    // answered: moving on needs an explicit pick or a typed answer.
+    if (!activePendingProgress.canAdvance) {
+      return;
+    }
     if (activePendingProgress.isLastQuestion) {
       if (activePendingResolvedAnswers) {
         void onRespondToUserInput(activePendingUserInput.requestId, activePendingResolvedAnswers);

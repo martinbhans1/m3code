@@ -59,7 +59,8 @@ export function resolvePendingUserInputAnswer(
     return selectedOptionLabels.length > 0 ? selectedOptionLabels : null;
   }
 
-  return selectedOptionLabels[0] ?? question.defaultOptionLabel ?? null;
+  // Only an explicit pick counts. There is no default to fall back to.
+  return selectedOptionLabels[0] ?? null;
 }
 
 export function setPendingUserInputCustomAnswer(
@@ -96,9 +97,14 @@ export function togglePendingUserInputOptionSelection(
     };
   }
 
+  // Clicking the current pick again clears it, so a single choice can always
+  // be taken back.
+  const alreadySelected = normalizeSelectedOptionLabels(draft?.selectedOptionLabels).includes(
+    optionLabel,
+  );
   return {
     customAnswer: "",
-    selectedOptionLabels: [optionLabel],
+    ...(alreadySelected ? {} : { selectedOptionLabels: [optionLabel] }),
   };
 }
 
@@ -162,14 +168,8 @@ export function derivePendingUserInputProgress(
     questionIndex: normalizedQuestionIndex,
     activeQuestion,
     activeDraft,
-    // A default only ever stands in for a single choice. On a multi-select it
-    // would tick a box the answer never counts, so every box starts empty.
-    selectedOptionLabels: normalizeSelectedOptionLabels(
-      activeDraft?.selectedOptionLabels ??
-        (activeQuestion?.defaultOptionLabel && !activeQuestion.multiSelect
-          ? [activeQuestion.defaultOptionLabel]
-          : undefined),
-    ),
+    // Nothing starts selected: only options the user clicked are shown ticked.
+    selectedOptionLabels: normalizeSelectedOptionLabels(activeDraft?.selectedOptionLabels),
     customAnswer,
     resolvedAnswer,
     usingCustomAnswer: customAnswer.trim().length > 0,

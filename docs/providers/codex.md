@@ -4,7 +4,7 @@
 
 When Codex exposes `request_user_input_async`, M3 Code displays its questions above
 the composer while the agent continues working. Choose an option or type your own
-answer, then submit. The first suggested option is preselected; selecting an option
+answer, then submit. Nothing is preselected, and selecting an option
 does not send it automatically. Questions without suggestions accept free text.
 
 Submitted answers become user messages: they steer the running agent or start a new
