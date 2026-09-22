@@ -992,15 +992,17 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
             ORCHESTRATION_WS_METHODS.subscribeThread,
             Effect.gen(function* () {
               const [threadDetail, snapshotSequence] = yield* Effect.all([
-                projectionSnapshotQuery.getThreadDetailById(input.threadId).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new OrchestrationGetSnapshotError({
-                        message: `Failed to load thread ${input.threadId}`,
-                        cause,
-                      }),
+                projectionSnapshotQuery
+                  .getThreadDetailById(input.threadId, { includeArchived: true })
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new OrchestrationGetSnapshotError({
+                          message: `Failed to load thread ${input.threadId}`,
+                          cause,
+                        }),
+                    ),
                   ),
-                ),
                 projectionSnapshotQuery.getSnapshotSequence().pipe(
                   Effect.map(({ snapshotSequence }) => snapshotSequence),
                   Effect.mapError(

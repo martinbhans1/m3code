@@ -193,9 +193,14 @@ export interface ProjectionSnapshotQueryShape {
 
   /**
    * Read a single active thread detail snapshot by id.
+   *
+   * `includeArchived` also returns an archived thread, for the reader who opens
+   * one to read it back. Every other caller acts on the thread (runs turns,
+   * captures checkpoints), and an archived one must stay invisible to them.
    */
   readonly getThreadDetailById: (
     threadId: ThreadId,
+    options?: { readonly includeArchived?: boolean },
   ) => Effect.Effect<Option.Option<OrchestrationThread>, ProjectionRepositoryError>;
 
   /**

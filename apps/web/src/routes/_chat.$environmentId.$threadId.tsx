@@ -1,5 +1,5 @@
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import ChatView from "../components/ChatView";
 import { threadHasStarted } from "../components/ChatView.logic";
@@ -8,6 +8,8 @@ import { type DiffRouteSearch, parseDiffRouteSearch } from "../diffRouteSearch";
 import { selectEnvironmentState, selectThreadExistsByRef, useStore } from "../store";
 import { createThreadSelectorByRef } from "../storeSelectors";
 import { resolveThreadRouteRef } from "../threadRoutes";
+import { retainThreadDetailSubscription } from "../environments/runtime/service";
+import { useArchivedThreadSnapshots } from "../lib/archivedThreadsState";
 import { SidebarInset } from "~/components/ui/sidebar";
 import { NoActiveThreadState } from "../components/NoActiveThreadState";
 
@@ -42,15 +44,60 @@ function ChatThreadRouteView() {
     return store.hasDraftThreadsInEnvironment(threadRef.environmentId);
   });
   const routeThreadExists = threadExists || draftThreadExists;
+  // A thread that was live here and then vanished was archived or deleted out
+  // from under the reader: send them away as before rather than re-open it.
+  const liveThreadRef = useRef<typeof threadRef>(null);
+  if (serverThread && serverThread.archivedAt === null) {
+    liveThreadRef.current = threadRef;
+  }
+  const threadWasLive = threadRef !== null && liveThreadRef.current === threadRef;
+  // The live thread list never carries archived threads, so a search hit or an
+  // old link to one lands here unknown. Ask the archived list before giving up;
+  // the lookup only runs while the thread is missing, not on every open.
+  const archivedLookupEnvironmentIds = useMemo(
+    () =>
+      threadRef && bootstrapComplete && !routeThreadExists && !threadWasLive
+        ? [threadRef.environmentId]
+        : [],
+    [bootstrapComplete, routeThreadExists, threadRef, threadWasLive],
+  );
+  const archivedLookup = useArchivedThreadSnapshots(archivedLookupEnvironmentIds);
+  const archivedLookupPending = archivedLookupEnvironmentIds.length > 0 && archivedLookup.isLoading;
+  const foundInArchive =
+    archivedLookupEnvironmentIds.length > 0 &&
+    archivedLookup.snapshots.some(
+      (entry) =>
+        entry.environmentId === threadRef?.environmentId &&
+        entry.snapshot.threads.some((thread) => thread.id === threadRef.threadId),
+    );
+  // Once its detail loads the thread is in the store, carrying `archivedAt`,
+  // which keeps this true after the archive lookup above switches off.
+  const showArchivedThread = foundInArchive || (serverThread?.archivedAt ?? null) !== null;
   const serverThreadStarted = threadHasStarted(serverThread);
   const environmentHasAnyThreads = environmentHasServerThreads || environmentHasDraftThreads;
 
   useEffect(() => {
     if (!threadRef || !bootstrapComplete) return;
+    if (archivedLookupPending || showArchivedThread) return;
     if (!routeThreadExists && environmentHasAnyThreads) {
       void navigate({ to: "/", replace: true });
     }
-  }, [bootstrapComplete, environmentHasAnyThreads, navigate, routeThreadExists, threadRef]);
+  }, [
+    archivedLookupPending,
+    bootstrapComplete,
+    environmentHasAnyThreads,
+    navigate,
+    routeThreadExists,
+    showArchivedThread,
+    threadRef,
+  ]);
+
+  // Load the archived thread's full detail; writing it into the store is what
+  // makes `routeThreadExists` true and lets ChatView render it read-back.
+  useEffect(() => {
+    if (!threadRef || !showArchivedThread) return;
+    return retainThreadDetailSubscription(threadRef.environmentId, threadRef.threadId);
+  }, [showArchivedThread, threadRef]);
 
   useEffect(() => {
     if (!threadRef || !serverThreadStarted || !draftThread?.promotedTo) return;
@@ -73,7 +120,11 @@ function ChatThreadRouteView() {
   // lands a frame or two late, and flashing "this thread is gone" at someone
   // who just deleted a thread (or is simply still connecting) reads as an error
   // when nothing is wrong.
-  if (!bootstrapComplete || (!routeThreadExists && environmentHasAnyThreads)) {
+  if (
+    !bootstrapComplete ||
+    (!routeThreadExists &&
+      (environmentHasAnyThreads || archivedLookupPending || showArchivedThread))
+  ) {
     return <NoActiveThreadState headerLabel="Loading" title="Loading thread…" description="" />;
   }
   if (!routeThreadExists) {

@@ -809,6 +809,42 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  // Same row as `getActiveThreadRowById`, archived threads included.
+  const getUndeletedThreadRowById = SqlSchema.findOneOption({
+    Request: ThreadIdLookupInput,
+    Result: ProjectionThreadDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          project_id AS "projectId",
+          title,
+          model_selection_json AS "modelSelection",
+          runtime_mode AS "runtimeMode",
+          interaction_mode AS "interactionMode",
+          branch,
+          worktree_path AS "worktreePath",
+          latest_turn_id AS "latestTurnId",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          archived_at AS "archivedAt",
+          pinned_at AS "pinnedAt",
+          done_at AS "doneAt",
+          latest_user_message_at AS "latestUserMessageAt",
+          pending_approval_count AS "pendingApprovalCount",
+          pending_user_input_count AS "pendingUserInputCount",
+          pending_followup_count AS "pendingFollowupCount",
+          has_actionable_proposed_plan AS "hasActionableProposedPlan",
+          handoff_thread_id AS "handoffThreadId",
+          source_thread_id AS "sourceThreadId",
+          deleted_at AS "deletedAt"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+          AND deleted_at IS NULL
+        LIMIT 1
+      `,
+  });
+
   // `attachments` is omitted rather than nulled when absent, matching how the
   // domain type distinguishes "no attachments" from "not loaded".
   const toThreadMessage = (row: {
@@ -1298,7 +1334,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           AND turns.turn_id = threads.latest_turn_id
         WHERE threads.thread_id = ${threadId}
           AND threads.deleted_at IS NULL
-          AND threads.archived_at IS NULL
         LIMIT 1
       `,
   });
@@ -2344,8 +2379,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       } satisfies OrchestrationThreadShell);
     });
 
-  const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (threadId) =>
+  const getThreadDetailById: ProjectionSnapshotQueryShape["getThreadDetailById"] = (
+    threadId,
+    options,
+  ) =>
     Effect.gen(function* () {
+      const getThreadRow = options?.includeArchived
+        ? getUndeletedThreadRowById
+        : getActiveThreadRowById;
       const [
         threadRow,
         messageRows,
@@ -2355,7 +2396,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         latestTurnRow,
         sessionRow,
       ] = yield* Effect.all([
-        getActiveThreadRowById({ threadId }).pipe(
+        getThreadRow({ threadId }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadDetailById:getThread:query",

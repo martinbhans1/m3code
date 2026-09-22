@@ -571,6 +571,18 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         [ThreadId.make("thread-archived")],
       );
       assert.equal(archivedShellSnapshot.threads[0]?.archivedAt, "2026-04-06T00:00:06.000Z");
+
+      // Reactors must never act on an archived thread, but a reader opening one
+      // to read it back has to get its detail.
+      const hiddenDetail = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-archived"),
+      );
+      assert.isTrue(Option.isNone(hiddenDetail));
+      const readableDetail = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-archived"),
+        { includeArchived: true },
+      );
+      assert.equal(Option.getOrUndefined(readableDetail)?.archivedAt, "2026-04-06T00:00:06.000Z");
     }),
   );
 
