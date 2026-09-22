@@ -1016,6 +1016,23 @@ label:has(> select#reasoning-effort) select {
   animation: ultrathink-rainbow 10s linear infinite;
 }
 
+/* ── Usage gauge notch ─────────────────────────────────────────────────────
+   The composer's usage gauge is absolutely positioned over the top-right of
+   the input area, so it is out of flow and a long first line runs underneath
+   it. This reserves a matching notch in the first line only: text wraps around
+   the dial and every line below it keeps the full width. Scoped with :has() so
+   the notch disappears along with the gauge, which renders nothing when there
+   is no context window and no provider reporting usage. */
+.composer-input-area:has([data-composer-usage-meter]) [data-testid="composer-editor"]::before {
+  content: "";
+  float: right;
+  /* Enough to clear the dial where it overhangs the editor's text column,
+     plus a small gap so glyphs do not touch it. */
+  width: 1.75rem;
+  /* Shorter than one line box, so only the first line is indented. */
+  height: 1.25rem;
+}
+
 /* ── Smooth caret ──────────────────────────────────────────────────────────
    When enabled, the composer hides its native caret and paints a custom one
    that transitions between positions. The overlay is positioned in JS (see

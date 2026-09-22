@@ -624,6 +624,24 @@ export const ServerProviderUpdateInput = Schema.Struct({
 });
 export type ServerProviderUpdateInput = typeof ServerProviderUpdateInput.Type;
 
+export const ServerProviderAuthenticateInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+});
+export type ServerProviderAuthenticateInput = typeof ServerProviderAuthenticateInput.Type;
+
+export class ServerProviderAuthenticateError extends Schema.TaggedErrorClass<ServerProviderAuthenticateError>()(
+  "ServerProviderAuthenticateError",
+  {
+    instanceId: ProviderInstanceId,
+    reason: TrimmedNonEmptyString,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `Provider authentication failed for ${this.instanceId}: ${this.reason}`;
+  }
+}
+
 export class ServerProviderUpdateError extends Schema.TaggedErrorClass<ServerProviderUpdateError>()(
   "ServerProviderUpdateError",
   {

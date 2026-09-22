@@ -108,6 +108,16 @@ export function useThreadActions() {
     });
   }, []);
 
+  const setThreadDone = useCallback(async (target: ScopedThreadRef, done: boolean) => {
+    const api = readEnvironmentApi(target.environmentId);
+    if (!api) return;
+    await api.orchestration.dispatchCommand({
+      type: done ? "thread.mark-done" : "thread.unmark-done",
+      commandId: newCommandId(),
+      threadId: target.threadId,
+    });
+  }, []);
+
   const deleteThread = useCallback(
     async (target: ScopedThreadRef, opts: { deletedThreadKeys?: ReadonlySet<string> } = {}) => {
       const api = readEnvironmentApi(target.environmentId);
@@ -297,6 +307,7 @@ export function useThreadActions() {
     archiveThread,
     unarchiveThread,
     setThreadPinned,
+    setThreadDone,
     deleteThread,
     confirmAndDeleteThread,
   };

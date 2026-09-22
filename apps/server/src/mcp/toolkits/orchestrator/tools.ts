@@ -1,6 +1,7 @@
 import {
   ApprovalRequestId,
   IsoDateTime,
+  MessageId,
   OrchestratorAccessOverride,
   ProjectId,
   RuntimeMode,
@@ -99,6 +100,26 @@ export const OrchestratorThreadSummary = Schema.Struct({
   hasPendingFollowups: Schema.Boolean,
   archived: Schema.Boolean,
   pinned: Schema.Boolean,
+  /**
+   * The user stamped this conversation settled. It stays in their list and
+   * stays searchable — this is not archiving — but they have said they are
+   * finished with it, so do not offer to continue it unless they bring it up.
+   * Clears itself as soon as they send into the thread again.
+   */
+  done: Schema.Boolean,
+  /**
+   * Nobody has ruled on this one and it has gone quiet: untouched for days,
+   * not running, not blocking the user, and still carrying follow-ups its own
+   * agent recorded as open.
+   *
+   * This is the highest-value thing you can put in front of the user, because
+   * it is the only category nothing else nags about. A blocked thread is loud;
+   * a cold one is simply forgotten. Lead with these when they ask what they
+   * are losing track of.
+   */
+  cold: Schema.Boolean,
+  /** Whole days since anything happened here. Null if the timestamp is unreadable. */
+  quietDays: Schema.NullOr(Schema.Int),
   /**
    * What the user has shared this conversation for. "watch" is read-only —
    * `send_to_thread` will refuse it.
@@ -216,13 +237,140 @@ export const OrchestratorPendingApproval = Schema.Struct({
 });
 
 export const OrchestratorMessage = Schema.Struct({
+  /**
+   * Zero-based position in the conversation, counting from its first message.
+   * Pass it back as `fromIndex` to read from here, and use it with
+   * `window.messageCount` to know where in the conversation you are standing.
+   */
+  index: Schema.Int,
+  messageId: MessageId,
+  /** The turn this message belongs to. Pass it to `view: 'activity'` to see what that turn ran. */
+  turnId: Schema.NullOr(Schema.String),
   role: Schema.Literals(["user", "assistant", "system"]),
+  /** The text, from `textStart`, cut at the per-message budget. */
   text: Schema.String,
-  /** True when `text` was cut short to keep the tool result small. */
+  /** Length of the whole message, not of what came back. */
+  charCount: Schema.Int,
+  /** Offset into the message that `text` starts at. Zero unless you asked for a later part. */
+  textStart: Schema.Int,
+  /**
+   * True when there is more of this message after `text`. Never a dead end:
+   * read on with `messageLimit: 1`, `aroundMessageId` set to this message, and
+   * `textFrom` set to `textStart + text.length`.
+   */
   truncated: Schema.Boolean,
   /** True while this message is still being written — treat it as unfinished. */
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
+});
+
+/**
+ * One line per message: the map you read before deciding what to read in full.
+ *
+ * Cheap by construction — the previews are cut in the database — so mapping a
+ * long conversation costs a fraction of reading even its tail.
+ */
+export const OrchestratorMessageOutlineEntry = Schema.Struct({
+  index: Schema.Int,
+  messageId: MessageId,
+  /** The turn this message belongs to, for `view: 'activity'`. */
+  turnId: Schema.NullOr(Schema.String),
+  role: Schema.Literals(["user", "assistant", "system"]),
+  /** The opening of the message. */
+  preview: Schema.String,
+  /** Length of the whole message. A big number here is where the substance is. */
+  charCount: Schema.Int,
+  /** True when the message is longer than its preview. */
+  truncated: Schema.Boolean,
+  /**
+   * Tool calls the agent completed in this turn, on the assistant message that
+   * closed it. Zero means it only talked; a large number means this is where
+   * the work happened, and `read_thread_changes` will say what it touched.
+   */
+  toolCalls: Schema.Int,
+  streaming: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * One message inside a conversation that contains a searched-for phrase, and
+ * where the phrase sits — in the conversation, and in the message.
+ */
+export const OrchestratorMessageMatch = Schema.Struct({
+  /** Position in the conversation. Read around it with `aroundMessageId` or `fromIndex`. */
+  index: Schema.Int,
+  messageId: MessageId,
+  role: Schema.Literals(["user", "assistant", "system"]),
+  /**
+   * Offset of the first occurrence within the message. On a long message, read
+   * it with `textFrom` set a little before this rather than from its start.
+   */
+  matchOffset: Schema.Int,
+  charCount: Schema.Int,
+  /** Text around the first occurrence. */
+  snippet: Schema.String,
+  createdAt: IsoDateTime,
+});
+
+/**
+ * One tool call a turn actually made: what ran, and what came back.
+ *
+ * This is evidence rather than testimony. A conversation saying it ran the
+ * tests and a conversation having run them are different facts, and until this
+ * existed only the first was readable from here.
+ */
+export const OrchestratorTurnActivity = Schema.Struct({
+  /** Position within the turn, counting the tool calls in the order they ran. */
+  index: Schema.Int,
+  /** The tool, e.g. "Bash", "Edit", "Read". */
+  tool: Schema.String,
+  /** The provider's own one-line label for the call. */
+  title: Schema.String,
+  /** True when the call was refused rather than run. */
+  denied: Schema.Boolean,
+  /** True when the tool reported an error. A turn full of these did not do what it says. */
+  failed: Schema.Boolean,
+  /** What it was asked to do — the command line, the file path, the pattern. */
+  input: Schema.String,
+  /** What came back, cut at the per-item budget. */
+  output: Schema.String,
+  /** Length of the whole output, not of what came back. */
+  outputChars: Schema.Int,
+  truncated: Schema.Boolean,
+  createdAt: IsoDateTime,
+});
+
+/** What a turn did, in aggregate, beside the page of its calls. */
+export const OrchestratorTurnSummary = Schema.Struct({
+  turnId: Schema.String,
+  /** Tool calls in the whole turn, which can be more than this page holds. */
+  activityCount: Schema.Int,
+  /** How many of the calls on this page failed or were refused. */
+  failedOnPage: Schema.Int,
+  /** Index of the first call returned, or null when none were. */
+  firstIndex: Schema.NullOr(Schema.Int),
+  lastIndex: Schema.NullOr(Schema.Int),
+  /** Calls after this page. Read them with `fromIndex`. */
+  remaining: Schema.Int,
+});
+
+/**
+ * Where the returned slice sits in the conversation, and how much is on either
+ * side of it. This is what makes a cut recoverable rather than terminal: a
+ * non-zero `olderRemaining` is an instruction, not a warning.
+ */
+export const OrchestratorMessageWindow = Schema.Struct({
+  /** Total messages in the conversation. */
+  messageCount: Schema.Int,
+  /** Index of the first message returned, or null when none were. */
+  firstIndex: Schema.NullOr(Schema.Int),
+  lastIndex: Schema.NullOr(Schema.Int),
+  /** Messages before this slice. Read them with `fromIndex`. */
+  olderRemaining: Schema.Int,
+  /** Messages after this slice. */
+  newerRemaining: Schema.Int,
+  /** Messages dropped from this slice because the character budget ran out. */
+  droppedToBudget: Schema.Int,
 });
 
 export const ListThreadsInput = Schema.Struct({
@@ -236,6 +384,18 @@ export const ListThreadsInput = Schema.Struct({
     Schema.Boolean.annotate({
       description:
         "Return only threads blocked on the user: awaiting approval, awaiting input, failed, interrupted mid-turn, or holding unanswered follow-ups.",
+    }),
+  ),
+  onlyCold: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Return only conversations that have gone cold: quiet for days, not running, not blocking on the user, not stamped done, and still holding follow-ups their own agent left open. This is the 'what am I losing track of?' filter, and it is the one that finds work nothing else reminds the user about.",
+    }),
+  ),
+  includeDone: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "Include conversations the user stamped settled. Defaults to false: they said they were finished, so they are noise in a sweep of live work. Turn it on when they are looking back over what they have completed, or searching for something specific.",
     }),
   ),
   includeArchived: Schema.optional(Schema.Boolean),
@@ -303,7 +463,7 @@ export const SearchThreadsInput = Schema.Struct({
 
 export const SearchThreadsTool = Tool.make("search_threads", {
   description:
-    "Find the conversation that owns a topic, by keyword and by meaning, across the titles and message content of every conversation you can see. Use this the moment the user describes work without naming the thread ('the one where we were fixing the email templates'). Returns a matched snippet per thread so you can confirm you have the right one before acting.\n\nSet `exact` to grep instead: literal substring, no tokenizing or ranking, for identifiers, file paths, error messages and commands. `matchKind` tells you which you got — 'exact' contains your string verbatim, 'content' matched every keyword, 'content-loose' matched only some of them after an all-terms search failed, and 'semantic' matched by meaning with none of your words necessarily present. Only 'exact' is certain; on the others, read the snippet and confirm the thread with the user before acting on it.\n\nAn empty result is only trustworthy in `exact` mode. Otherwise, and always when `list_threads`'s `accessMode` is 'per-conversation', absent means unshared at least as often as it means non-existent — say so rather than telling the user the work does not exist.",
+    "Find the conversation that owns a topic, by keyword and by meaning, across the titles and message content of every conversation you can see. Use this the moment the user describes work without naming the thread ('the one where we were fixing the email templates'). Returns a matched snippet per thread so you can confirm you have the right one before acting.\n\nSet `exact` to grep instead: literal substring, no tokenizing or ranking, for identifiers, file paths, error messages and commands. `matchKind` tells you which you got — 'exact' contains your string verbatim, 'content' matched every keyword, 'content-loose' matched only some of them after an all-terms search failed, and 'semantic' matched by meaning with none of your words necessarily present. Only 'exact' is certain; on the others, read the snippet and confirm the thread with the user before acting on it.\n\n`matchedMessageId` is where the hit actually landed: hand it to read_thread as `aroundMessageId` and you are reading the conversation around the match rather than paging towards it. It is null for title and semantic matches, which point at a conversation rather than at a place in one — for those, search inside the conversation with read_thread's own 'search' view.\n\nAn empty result is only trustworthy in `exact` mode. Otherwise, and always when `list_threads`'s `accessMode` is 'per-conversation', absent means unshared at least as often as it means non-existent — say so rather than telling the user the work does not exist.",
   parameters: SearchThreadsInput,
   success: Schema.Struct({
     results: Schema.Array(
@@ -314,6 +474,15 @@ export const SearchThreadsTool = Tool.make("search_threads", {
         branch: Schema.NullOr(Schema.String),
         snippet: Schema.NullOr(Schema.String),
         matchedRole: Schema.NullOr(Schema.Literals(["user", "assistant", "system"])),
+        /**
+         * The message the hit landed on. Pass it straight to `read_thread` as
+         * `aroundMessageId` to read the conversation around it.
+         *
+         * Null on a title match and on a semantic one — a semantic hit matches
+         * a stretch rather than a message, so there is nowhere exact to point.
+         * Find the spot with `read_thread`'s own search or outline instead.
+         */
+        matchedMessageId: Schema.NullOr(MessageId),
         matchKind: Schema.String,
         archived: Schema.Boolean,
         updatedAt: IsoDateTime,
@@ -335,36 +504,99 @@ export const SearchThreadsTool = Tool.make("search_threads", {
 
 export const ReadThreadInput = Schema.Struct({
   threadId: ThreadId,
+  view: Schema.optional(
+    Schema.Literals(["tail", "outline", "window", "search", "activity"]).annotate({
+      description:
+        "How to read. 'tail' (the default) is the end of the conversation plus everything it is blocked on — the orientation read. 'outline' maps the whole conversation one line per message, cheaply, so you can see where the substance is before spending anything on it. 'window' reads a stretch anywhere in it, chosen with `fromIndex` or `aroundMessageId`. 'search' finds a phrase inside this one conversation and returns where each hit sits, which you then read with 'window'. 'activity' reads what one turn actually DID — the commands it ran and what they printed — chosen with `turnId` or `aroundMessageId`. Searching beats scanning when you know what you are looking for; map first when you do not; and when the question is whether work really happened, read the activity rather than the prose.",
+    }),
+  ),
   messageLimit: Schema.optional(
-    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 60 })).annotate({
-      description: "How many of the most recent messages to return. Defaults to 12.",
+    Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 400 })).annotate({
+      description:
+        "How many messages to return. Defaults to 12 for 'tail' and 'window', which cap at 60, and to 200 for 'outline', which caps at 400.",
     }),
   ),
   messageChars: Schema.optional(
-    Schema.Int.check(Schema.isBetween({ minimum: 200, maximum: 20_000 })).annotate({
+    Schema.Int.check(Schema.isBetween({ minimum: 200, maximum: 60_000 })).annotate({
       description:
-        "How much of each message to return before it is cut, in characters. Defaults to 1000, which is sized for orientation. Raise it when a message came back `truncated: true` and you actually need the rest of it — a decision the user wrote out, a note you are being asked about. Pair a large value with a small `messageLimit`: the whole result is capped regardless, and oldest messages are dropped first to stay inside it.",
+        "How much of each message to return before it is cut, in characters. Defaults to 1000, which is sized for orientation. Raise it when a message came back `truncated: true` and you actually need the rest of it. The whole result is capped regardless, and `window.droppedToBudget` says how many messages that cost you — pair a large value with a small `messageLimit` and read on from where it stopped.",
+    }),
+  ),
+  fromIndex: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100_000 })).annotate({
+      description:
+        "Zero-based index of the first message to return, for 'outline' and 'window'. This is how you page: take `window.firstIndex` from a slice and subtract to walk backwards, or `lastIndex + 1` to walk forwards.",
+    }),
+  ),
+  aroundMessageId: Schema.optional(
+    MessageId.annotate({
+      description:
+        "Centre the slice on this message instead of on an index. Use it to read the context around something you already have an id for, and with `textFrom` to read on through a long message that came back cut.",
+    }),
+  ),
+  textFrom: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10_000_000 })).annotate({
+      description:
+        "Start this message's text at this character offset rather than at its beginning — how you read the rest of something that came back `truncated`. Requires `messageLimit: 1`, so pin the message with `aroundMessageId` or `fromIndex` first.",
+    }),
+  ),
+  previewChars: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 40, maximum: 1_000 })).annotate({
+      description:
+        "How much of each message an 'outline' line shows. Defaults to 160, and is trimmed further when a wide outline would otherwise breach the total budget.",
+    }),
+  ),
+  turnId: Schema.optional(
+    Schema.String.annotate({
+      description:
+        "Which turn to read the activity of, for `view: 'activity'`. Turn ids come back on every message and outline entry. `aroundMessageId` does the same job when you have a message rather than a turn.",
+    }),
+  ),
+  query: Schema.optional(
+    Schema.String.check(Schema.isMinLength(2)).annotate({
+      description:
+        "The phrase to find, for `view: 'search'`. A literal, case-insensitive substring — not keywords, not meaning — so quote what you are actually looking for: an error message, a file path, a name, a decision the user phrased a particular way. Nothing found here means nothing in this conversation contains that string.",
     }),
   ),
 });
 
 export const ReadThreadTool = Tool.make("read_thread", {
   description:
-    "Read the tail of one conversation: its current state, its most recent messages, any question it is stopped on, and its follow-ups both open and closed. Use it to tell the user where a thread actually stands, and to check what the thread already knows before you send it more work — so the message you relay does not repeat what it just did. Message text is truncated; this is for orientation, not for reviewing code.\n\nWhen `pendingQuestions` is non-empty the thread is parked waiting for an answer and will do nothing until it gets one. Read the options out to the user, and answer with answer_thread_question once they have chosen. `pendingApprovals` parks it just as hard, and carries the command or file it is asking to touch — put that in front of the user verbatim and relay their decision with respond_to_approval.\n\n`recentlyResolvedFollowups` is the memory the follow-up deck does not have: what was already spun off into another conversation, done, or dismissed. Check it before offering to start work on something, or you will hand out a job somebody is already doing — and it is where you find the conversation that picked a follow-up up.",
+    "Read one conversation — all of it, if you need to. Five views: 'tail' returns the end of it plus everything it is blocked on, and is where you start; 'outline' maps every message in it, one cheap line each, with each message's real length and how many tools that turn ran; 'window' reads any stretch of it in full, chosen by index or centred on a message id; 'search' finds a phrase inside this one conversation and says where each hit is, which you then read with 'window'; 'activity' reads what a single turn actually did — every command it ran and what that command printed. Use 'search' when you know the words to look for and 'outline' when you do not — search_threads finds which conversation, this finds where inside it.\n\nThe 'activity' view is how you check a claim instead of relaying it. An agent reporting that it ran the tests, wrote the file or fixed the bug is testimony; the commands it ran and their output are evidence, and they disagree more often than you would expect. Reach for it whenever a conversation says work is finished and something turns on whether it is: read the turn that closed it, look at what actually ran, and say what you found rather than what it claimed. `failed: true` on a call means the tool itself errored.\n\nNothing here is a dead end. Every result carries `window`, which says how long the conversation is and how much sits on either side of what you got — page with `fromIndex`, and read on through a single long message with `textFrom`. When a read is not enough, take another one rather than reporting what you saw as all there was.\n\nRead deeply when the answer depends on it: what a conversation actually decided, whether it argued something out or simply stopped, what it did before its closing summary. Scan first with 'outline' and spend the depth where the outline says the substance is — a message of thirty thousand characters, or a turn that ran forty tools. What is expensive is reading everything at full depth by habit, not reading one conversation properly.\n\nWhen `pendingQuestions` is non-empty the thread is parked waiting for an answer and will do nothing until it gets one. Read the options out to the user, and answer with answer_thread_question once they have chosen. `pendingApprovals` parks it just as hard, and carries the command or file it is asking to touch — put that in front of the user verbatim and relay their decision with respond_to_approval. Those, and the follow-up lists, come back on the 'tail' view only; the other two views are for reading, and return them as null rather than as empty.\n\n`recentlyResolvedFollowups` is the memory the follow-up deck does not have: what was already spun off into another conversation, done, or dismissed. Check it before offering to start work on something, or you will hand out a job somebody is already doing — and it is where you find the conversation that picked a follow-up up.\n\nThis is what a conversation said, not what it did. Claims about finished work still get checked with read_thread_changes.",
   parameters: ReadThreadInput,
   success: Schema.Struct({
     thread: OrchestratorThreadSummary,
+    /** The messages of this slice, oldest first. Empty on the 'outline' view. */
     messages: Schema.Array(OrchestratorMessage),
-    /** Unanswered questions blocking the thread, oldest first. */
-    pendingQuestions: Schema.Array(OrchestratorPendingQuestionSet),
-    /** Unanswered approval requests blocking the thread, oldest first. */
-    pendingApprovals: Schema.Array(OrchestratorPendingApproval),
-    pendingFollowups: Schema.Array(OrchestratorFollowupSummary),
+    /** One line per message, oldest first. Null except on the 'outline' view. */
+    outline: Schema.NullOr(Schema.Array(OrchestratorMessageOutlineEntry)),
+    /** Messages containing the phrase, oldest first. Null except on the 'search' view. */
+    matches: Schema.NullOr(Schema.Array(OrchestratorMessageMatch)),
+    /** The turn's tool calls in the order they ran. Null except on the 'activity' view. */
+    activity: Schema.NullOr(Schema.Array(OrchestratorTurnActivity)),
+    /** What the turn did in aggregate. Null except on the 'activity' view. */
+    turn: Schema.NullOr(OrchestratorTurnSummary),
+    /**
+     * How many messages in the conversation contain the phrase, which can be
+     * more than `matches` holds. Null except on the 'search' view.
+     */
+    matchCount: Schema.NullOr(Schema.Int),
+    /** Where this slice sits in the conversation, and what is left on either side. */
+    window: OrchestratorMessageWindow,
+    /**
+     * Unanswered questions blocking the thread, oldest first. Null on the
+     * 'outline' and 'window' views, which do not read for them — null means not
+     * looked at, never "none".
+     */
+    pendingQuestions: Schema.NullOr(Schema.Array(OrchestratorPendingQuestionSet)),
+    /** Unanswered approval requests blocking the thread, oldest first. Null as above. */
+    pendingApprovals: Schema.NullOr(Schema.Array(OrchestratorPendingApproval)),
+    pendingFollowups: Schema.NullOr(Schema.Array(OrchestratorFollowupSummary)),
     /**
      * The most recently closed follow-ups, newest first, capped at ten. Not the
-     * whole history — enough to see what has already been handled.
+     * whole history — enough to see what has already been handled. Null as above.
      */
-    recentlyResolvedFollowups: Schema.Array(OrchestratorResolvedFollowup),
+    recentlyResolvedFollowups: Schema.NullOr(Schema.Array(OrchestratorResolvedFollowup)),
   }),
   failure: OrchestratorToolError,
   dependencies,
@@ -380,6 +612,7 @@ export const OrchestratorPendingSection = Schema.Literals([
   "questions",
   "failed",
   "followups",
+  "cold",
 ]);
 
 export const ListPendingInput = Schema.Struct({
@@ -387,7 +620,7 @@ export const ListPendingInput = Schema.Struct({
   sections: Schema.optional(
     Schema.Array(OrchestratorPendingSection).annotate({
       description:
-        "Which sections to return. Omit for all four. Narrow to one when you are working through a backlog — 'followups' alone pages much further for the same result size.",
+        "Which sections to return. Omit for all five. Narrow to one when you are working through a backlog — 'followups' alone pages much further for the same result size.",
     }),
   ),
   since: Schema.optional(
@@ -426,13 +659,15 @@ export const OrchestratorPendingCounts = Schema.Struct({
   awaitingApproval: Schema.Int,
   awaitingUserInput: Schema.Int,
   failed: Schema.Int,
+  /** Null when `sections` left the cold section out — unknown, not zero. */
+  cold: Schema.NullOr(Schema.Int),
   /** Null when `sections` left follow-ups out — unknown, not zero. */
   pendingFollowups: Schema.NullOr(Schema.Int),
 });
 
 export const ListPendingTool = Tool.make("list_pending", {
   description:
-    "List everything currently waiting on the user across all conversations: threads blocked on an approval, threads asking a question, threads that failed, and follow-up to-dos agents recorded but nobody has acted on. Use this for 'what am I forgetting?' — unanswered follow-ups in particular are invisible unless their thread is reopened.\n\nEach section is capped and paged independently. `counts` holds the true totals and is filled in whether or not you asked for that section's items, so lead with those — \"57 follow-ups pending, here are the oldest 25\" is the useful answer, and reporting a capped page as the whole backlog is not. To work through one section, pass that one name in `sections` with an `offset`; to narrow by time, use `since`/`until`.\n\nOnly page forward if you are just reading. The moment you resolve a follow-up or answer a question, the list shrinks under you and `nextOffset` would skip past everything that shifted into the gap — call again with `offset: 0` instead, and repeat until the count reaches zero.\n\n`pendingQuestions` carries the actual questions and options behind `awaitingUserInput`, so you can put the choice to the user here and answer it with answer_thread_question without opening each thread. `pendingApprovalRequests` does the same for `awaitingApproval` — the command or file each thread is asking to touch — and respond_to_approval answers those. A thread listed in either section with nothing in the matching array means the request could not be read from here; open it with read_thread rather than reporting it as having nothing pending.",
+    "List everything currently waiting on the user across all conversations: threads blocked on an approval, threads asking a question, threads that failed, follow-up to-dos agents recorded but nobody has acted on, and conversations that have gone cold. Use this for 'what am I forgetting?' — unanswered follow-ups in particular are invisible unless their thread is reopened.\n\nThe loud sections come first — approvals, questions, failures — and the user usually already knows about those. The last two are the ones they have actually lost. An unanswered follow-up is invisible unless its thread is reopened, and a `cold` thread — quiet for days, not running, not blocking anything, still holding open follow-ups — is invisible full stop, because nothing anywhere nags about it. When the user asks what needs continuing rather than what is stuck, lead with `cold` and work down.\n\nDo not read a short `cold` list as proof there is nothing to continue. It counts only threads whose agents recorded open follow-ups; a thread that finished quietly without recording one looks identical to one with nothing left to do, and that difference is not visible from here.\n\nEach section is capped and paged independently. `counts` holds the true totals and is filled in whether or not you asked for that section's items, so lead with those — \"57 follow-ups pending, here are the oldest 25\" is the useful answer, and reporting a capped page as the whole backlog is not. To work through one section, pass that one name in `sections` with an `offset`; to narrow by time, use `since`/`until`.\n\nOnly page forward if you are just reading. The moment you resolve a follow-up or answer a question, the list shrinks under you and `nextOffset` would skip past everything that shifted into the gap — call again with `offset: 0` instead, and repeat until the count reaches zero.\n\n`pendingQuestions` carries the actual questions and options behind `awaitingUserInput`, so you can put the choice to the user here and answer it with answer_thread_question without opening each thread. `pendingApprovalRequests` does the same for `awaitingApproval` — the command or file each thread is asking to touch — and respond_to_approval answers those. A thread listed in either section with nothing in the matching array means the request could not be read from here; open it with read_thread rather than reporting it as having nothing pending.",
   parameters: ListPendingInput,
   success: Schema.Struct({
     awaitingApproval: Schema.Array(OrchestratorThreadSummary),
@@ -449,6 +684,12 @@ export const ListPendingTool = Tool.make("list_pending", {
     pendingApprovalRequests: Schema.Array(OrchestratorPendingApproval),
     failed: Schema.Array(OrchestratorThreadSummary),
     pendingFollowups: Schema.Array(OrchestratorFollowupSummary),
+    /**
+     * Conversations that have gone quiet with work still open in them. Oldest
+     * first, because the longest-forgotten one is the most likely to be the
+     * thing the user has actually lost.
+     */
+    cold: Schema.Array(OrchestratorThreadSummary),
     /** True totals per section, before the cap. Report these, not the array lengths. */
     counts: OrchestratorPendingCounts,
     /**

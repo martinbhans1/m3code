@@ -7,6 +7,7 @@
 import type { ServerProviderUsageSeverity } from "@t3tools/contracts";
 
 import type {
+  ProviderUsagePaceStatus,
   ProviderUsageSummary,
   ProviderUsageWindowPresentation,
 } from "../settings/providerStatus";
@@ -26,9 +27,22 @@ export const USAGE_SEVERITY_COLOR: Record<ServerProviderUsageSeverity, string> =
 /** Shown when a window exists but the provider reported no utilization. */
 const UNKNOWN_PERCENT_PLACEHOLDER = "--";
 
+/**
+ * Colour for the pace verdict. Only a projection that overruns the window
+ * earns alarm colour: "on pace for 68%" is good news and must not compete
+ * with the bar for attention.
+ */
+const PACE_STATUS_CLASS: Record<ProviderUsagePaceStatus, string> = {
+  comfortable: "text-muted-foreground/60",
+  tight: "text-amber-500/90",
+  exhausting: "text-red-500/90",
+};
+
 function ProviderUsageWindowRow(props: { window: ProviderUsageWindowPresentation }) {
   const { window } = props;
   const clampedPercent = Math.max(0, Math.min(100, window.percent ?? 0));
+  const pace = window.percent === null ? null : window.pace;
+  const projectedWidth = Math.min(100, pace?.projectedPercent ?? 0);
 
   return (
     <div className="flex flex-col gap-1">
@@ -44,25 +58,62 @@ function ProviderUsageWindowRow(props: { window: ProviderUsageWindowPresentation
           "nothing used", which is a different and wrong claim. */}
       {window.percent === null ? null : (
         <div
-          className="h-1.5 w-full overflow-hidden rounded-full bg-muted/60"
+          className="relative h-1.5 w-full overflow-hidden rounded-full bg-muted/60"
           role="progressbar"
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={Math.round(clampedPercent)}
           aria-label={`${window.label} usage`}
         >
+          {/* Ghost extension out to the projected finish. Sits behind the
+              real fill so it reads as "where this is heading", never as
+              usage that has already happened. */}
+          {pace && projectedWidth > clampedPercent ? (
+            <div
+              className="absolute inset-y-0 left-0 rounded-full opacity-30"
+              style={{
+                width: `${projectedWidth}%`,
+                backgroundColor: USAGE_SEVERITY_COLOR[window.severity],
+              }}
+            />
+          ) : null}
           <div
-            className="h-full rounded-full transition-[width,background-color] duration-500 ease-out motion-reduce:transition-none"
+            className="absolute inset-y-0 left-0 rounded-full transition-[width,background-color] duration-500 ease-out motion-reduce:transition-none"
             style={{
               width: `${clampedPercent}%`,
               backgroundColor: USAGE_SEVERITY_COLOR[window.severity],
             }}
           />
+          {/* The clock: where usage would sit if it were spread evenly across
+              the window. Fill left of it means you are burning slower than
+              time; right of it means faster. */}
+          {pace ? (
+            <div
+              data-usage-pace-tick={window.id}
+              className="absolute inset-y-0 w-px bg-foreground/50"
+              style={{ left: `${Math.min(100, Math.max(0, pace.elapsedPercent))}%` }}
+              aria-hidden="true"
+            />
+          ) : null}
         </div>
       )}
-      {window.resetLabel ? (
-        <div className="text-[11px] leading-4 text-muted-foreground/60">{window.resetLabel}</div>
-      ) : null}
+      {/* Reset countdown and pace verdict share a line when they fit and wrap
+          when they don't — the popup is narrow and the pace sentence is the
+          longest string in it. */}
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+        {window.resetLabel ? (
+          <span className="text-[11px] leading-4 text-muted-foreground/60">
+            {window.resetLabel}
+          </span>
+        ) : (
+          <span />
+        )}
+        {pace ? (
+          <span className={`text-right text-[11px] leading-4 ${PACE_STATUS_CLASS[pace.status]}`}>
+            {pace.label}
+          </span>
+        ) : null}
+      </div>
     </div>
   );
 }

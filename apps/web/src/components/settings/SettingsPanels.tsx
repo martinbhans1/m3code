@@ -1,7 +1,7 @@
 import { ArchiveIcon, ArchiveX, LoaderIcon, PlusIcon, RefreshCwIcon, XIcon } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   defaultInstanceIdForDriver,
   type DesktopUpdateChannel,
@@ -12,7 +12,12 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime";
-import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
+import {
+  DEFAULT_PROVIDER_USAGE_ALERT_AUTO_DISMISS_SECONDS,
+  DEFAULT_PROVIDER_USAGE_ALERT_REPEAT_MINUTES,
+  DEFAULT_PROVIDER_USAGE_ALERT_THRESHOLDS,
+  DEFAULT_UNIFIED_SETTINGS,
+} from "@t3tools/contracts/settings";
 import {
   ORCHESTRATOR_ACCESS_LABELS,
   ORCHESTRATOR_ACCESS_ORDER,
@@ -50,8 +55,14 @@ import {
   useTheme,
   type Theme,
 } from "../../hooks/useTheme";
+import {
+  useShowInteractionModeControl,
+  useShowRuntimeModeControl,
+} from "../../hooks/useComposerControlPrefs";
 import { SidebarTintControl } from "./SidebarTintControl";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
+import { useSystemNotificationPermission } from "../../hooks/useSystemNotificationPermission";
+import type { SystemNotificationPermission } from "../../lib/systemNotifications";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import {
   setDesktopUpdateStateQueryData,
@@ -103,10 +114,67 @@ import {
   SettingsPageContainer,
   SettingsRow,
   SettingsSection,
+  SettingsTabs,
   useRelativeTimeTick,
 } from "./settingsLayout";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { useServerObservability, useServerProviders } from "../../rpc/serverState";
+import { parseProviderUsageAlertThresholds } from "../../providerUsageAlerts.logic";
+
+/**
+ * Categories for the General page. Everything used to live in one list, which
+ * made a specific setting impossible to find; the sidebar keeps the top-level
+ * areas and these split the largest of them by what the setting affects.
+ */
+const GENERAL_SETTINGS_TABS = [
+  { id: "appearance", label: "Appearance" },
+  { id: "chat", label: "Chat" },
+  { id: "notifications", label: "Notifications" },
+  { id: "orchestrator", label: "Orchestrator" },
+  { id: "workspace", label: "Projects" },
+  { id: "about", label: "About" },
+] as const;
+
+type GeneralSettingsTabId = (typeof GENERAL_SETTINGS_TABS)[number]["id"];
+
+const GENERAL_SETTINGS_TAB_STORAGE_KEY = "t3:settings-general-tab";
+
+function readStoredGeneralSettingsTab(): GeneralSettingsTabId {
+  try {
+    const stored = window.localStorage.getItem(GENERAL_SETTINGS_TAB_STORAGE_KEY);
+    const match = GENERAL_SETTINGS_TABS.find((tab) => tab.id === stored);
+    return match?.id ?? "appearance";
+  } catch {
+    return "appearance";
+  }
+}
+
+const USAGE_ALERT_REPEAT_OPTIONS = [
+  { minutes: 0, label: "Only when crossed" },
+  { minutes: 30, label: "Every 30 minutes" },
+  { minutes: 60, label: "Every hour" },
+  { minutes: 180, label: "Every 3 hours" },
+  { minutes: 360, label: "Every 6 hours" },
+  { minutes: 720, label: "Every 12 hours" },
+] as const;
+
+function usageAlertRepeatLabel(minutes: number): string {
+  const match = USAGE_ALERT_REPEAT_OPTIONS.find((option) => option.minutes === minutes);
+  return match?.label ?? `Every ${minutes} minutes`;
+}
+
+const USAGE_ALERT_AUTO_DISMISS_OPTIONS = [
+  { seconds: 0, label: "Until dismissed" },
+  { seconds: 5, label: "After 5 seconds" },
+  { seconds: 10, label: "After 10 seconds" },
+  { seconds: 30, label: "After 30 seconds" },
+  { seconds: 60, label: "After 1 minute" },
+] as const;
+
+function usageAlertAutoDismissLabel(seconds: number): string {
+  const match = USAGE_ALERT_AUTO_DISMISS_OPTIONS.find((option) => option.seconds === seconds);
+  return match?.label ?? `After ${seconds} seconds`;
+}
 
 const THEME_GROUPS = [
   {
@@ -118,6 +186,38 @@ const THEME_GROUPS = [
     themes: THEME_DEFINITIONS.filter((definition) => definition.group === "Dark"),
   },
 ] as const;
+
+function isSystemNotificationSettingDirty(settings: {
+  readonly systemNotificationsEnabled: boolean;
+  readonly systemNotifyOnTurnCompleted: boolean;
+  readonly systemNotifyOnInputNeeded: boolean;
+  readonly systemNotifyOnFailure: boolean;
+  readonly systemNotificationsSuppressWhenFocused: boolean;
+}): boolean {
+  return (
+    settings.systemNotificationsEnabled !== DEFAULT_UNIFIED_SETTINGS.systemNotificationsEnabled ||
+    settings.systemNotifyOnTurnCompleted !== DEFAULT_UNIFIED_SETTINGS.systemNotifyOnTurnCompleted ||
+    settings.systemNotifyOnInputNeeded !== DEFAULT_UNIFIED_SETTINGS.systemNotifyOnInputNeeded ||
+    settings.systemNotifyOnFailure !== DEFAULT_UNIFIED_SETTINGS.systemNotifyOnFailure ||
+    settings.systemNotificationsSuppressWhenFocused !==
+      DEFAULT_UNIFIED_SETTINGS.systemNotificationsSuppressWhenFocused
+  );
+}
+
+function systemNotificationStatusText(
+  permission: SystemNotificationPermission,
+): string | undefined {
+  switch (permission) {
+    case "unsupported":
+      return "This browser cannot show system notifications.";
+    case "denied":
+      return "Blocked by the system. Allow notifications for this app in your OS or browser settings.";
+    case "default":
+      return "Permission has not been granted yet — turning this on asks for it.";
+    case "granted":
+      return undefined;
+  }
+}
 
 function themeLabel(value: Theme): string {
   if (value === "system") return "System";
@@ -424,6 +524,12 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
+      ...(!Equal.equals(
+        settings.providerUsageAlertThresholds,
+        DEFAULT_UNIFIED_SETTINGS.providerUsageAlertThresholds,
+      )
+        ? ["Plan usage alerts"]
+        : []),
       ...(settings.sidebarThreadPreviewCount !== DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount
         ? ["Visible threads"]
         : []),
@@ -471,18 +577,27 @@ export function useSettingsRestore(onRestored?: () => void) {
       DEFAULT_UNIFIED_SETTINGS.showThreadChangeRequestStatus
         ? ["Pull request status"]
         : []),
+      ...(settings.showGitCounts !== DEFAULT_UNIFIED_SETTINGS.showGitCounts ? ["Git counts"] : []),
+      ...(isSystemNotificationSettingDirty(settings) ? ["Conversation notifications"] : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
     ],
     [
       isGitWritingModelDirty,
+      settings.systemNotificationsEnabled,
+      settings.systemNotifyOnTurnCompleted,
+      settings.systemNotifyOnInputNeeded,
+      settings.systemNotifyOnFailure,
+      settings.systemNotificationsSuppressWhenFocused,
       settings.autoOpenPlanSidebar,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
       settings.showThreadChangeRequestStatus,
+      settings.showGitCounts,
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
       settings.defaultOrchestratorThreadAccess,
       settings.orchestratorAccessOverride,
+      settings.providerUsageAlertThresholds,
       settings.diffIgnoreWhitespace,
       settings.diffWordWrap,
       settings.automaticGitFetchInterval,
@@ -507,6 +622,7 @@ export function useSettingsRestore(onRestored?: () => void) {
     setTheme("system");
     updateSettings({
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
+      providerUsageAlertThresholds: [...DEFAULT_UNIFIED_SETTINGS.providerUsageAlertThresholds],
       diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
       sidebarThreadPreviewCount: DEFAULT_UNIFIED_SETTINGS.sidebarThreadPreviewCount,
@@ -521,6 +637,13 @@ export function useSettingsRestore(onRestored?: () => void) {
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
       showThreadChangeRequestStatus: DEFAULT_UNIFIED_SETTINGS.showThreadChangeRequestStatus,
+      showGitCounts: DEFAULT_UNIFIED_SETTINGS.showGitCounts,
+      systemNotificationsEnabled: DEFAULT_UNIFIED_SETTINGS.systemNotificationsEnabled,
+      systemNotifyOnTurnCompleted: DEFAULT_UNIFIED_SETTINGS.systemNotifyOnTurnCompleted,
+      systemNotifyOnInputNeeded: DEFAULT_UNIFIED_SETTINGS.systemNotifyOnInputNeeded,
+      systemNotifyOnFailure: DEFAULT_UNIFIED_SETTINGS.systemNotifyOnFailure,
+      systemNotificationsSuppressWhenFocused:
+        DEFAULT_UNIFIED_SETTINGS.systemNotificationsSuppressWhenFocused,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
     });
     onRestored?.();
@@ -533,13 +656,21 @@ export function useSettingsRestore(onRestored?: () => void) {
 }
 
 export function GeneralSettingsPanel() {
+  const [activeTab, setActiveTab] = useState<GeneralSettingsTabId>(readStoredGeneralSettingsTab);
   const { theme, setTheme } = useTheme();
   const { environment, setEnvironment, definitions: environmentDefinitions } = useEnvironment();
   const { chromeTint, setChromeTint } = useChromeTint();
   const { smoothCaret, setSmoothCaret } = useSmoothCaret();
   const { caretThickness, setCaretThickness } = useCaretThickness();
+  const [showInteractionModeControl, setShowInteractionModeControl] =
+    useShowInteractionModeControl();
+  const [showRuntimeModeControl, setShowRuntimeModeControl] = useShowRuntimeModeControl();
   const settings = useSettings();
   const { updateSettings } = useUpdateSettings();
+  const {
+    permission: systemNotificationPermission,
+    requestPermission: requestSystemNotifications,
+  } = useSystemNotificationPermission();
   const observability = useServerObservability();
   const serverProviders = useServerProviders();
   const diagnosticsDescription = formatDiagnosticsDescription({
@@ -573,126 +704,555 @@ export function GeneralSettingsPanel() {
     DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection ?? null,
   );
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(GENERAL_SETTINGS_TAB_STORAGE_KEY, activeTab);
+    } catch {
+      // Private mode — the tab simply resets to the first category next time.
+    }
+  }, [activeTab]);
+
   return (
     <SettingsPageContainer>
-      <SettingsSection title="General">
-        <SettingsRow
-          title="Theme"
-          description="Choose how M3 Code looks across the app."
-          resetAction={
-            theme !== "system" ? (
-              <SettingResetButton label="theme" onClick={() => setTheme("system")} />
-            ) : null
-          }
-          control={
-            <Select
-              value={theme}
-              onValueChange={(value) => {
-                if (isValidTheme(value)) {
-                  setTheme(value);
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Theme preference">
-                <SelectValue>{themeLabel(theme)}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="system">
-                  System
-                </SelectItem>
-                {THEME_GROUPS.map((group) => (
-                  <SelectGroup key={group.label}>
-                    <SelectGroupLabel>{group.label}</SelectGroupLabel>
-                    {group.themes.map((definition) => (
-                      <SelectItem hideIndicator key={definition.id} value={definition.id}>
-                        {definition.label}
+      <SettingsTabs
+        label="Settings categories"
+        tabs={GENERAL_SETTINGS_TABS}
+        value={activeTab}
+        onValueChange={setActiveTab}
+      />
+
+      {activeTab === "appearance" ? (
+        <SettingsSection title="Appearance">
+          <SettingsRow
+            title="Theme"
+            description="Choose how M3 Code looks across the app."
+            resetAction={
+              theme !== "system" ? (
+                <SettingResetButton label="theme" onClick={() => setTheme("system")} />
+              ) : null
+            }
+            control={
+              <Select
+                value={theme}
+                onValueChange={(value) => {
+                  if (isValidTheme(value)) {
+                    setTheme(value);
+                  }
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-40" aria-label="Theme preference">
+                  <SelectValue>{themeLabel(theme)}</SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  <SelectItem hideIndicator value="system">
+                    System
+                  </SelectItem>
+                  {THEME_GROUPS.map((group) => (
+                    <SelectGroup key={group.label}>
+                      <SelectGroupLabel>{group.label}</SelectGroupLabel>
+                      {group.themes.map((definition) => (
+                        <SelectItem hideIndicator key={definition.id} value={definition.id}>
+                          {definition.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  ))}
+                </SelectPopup>
+              </Select>
+            }
+          />
+
+          <SettingsRow
+            title="Ambient background"
+            description="How lively the backdrop behind the sidebar and chat is. Works with any theme."
+            control={
+              <Select
+                value={environment}
+                onValueChange={(value) => {
+                  if (isValidEnvironment(value)) {
+                    setEnvironment(value);
+                  }
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-40" aria-label="Ambient background">
+                  <SelectValue>
+                    {environmentDefinitions.find((definition) => definition.id === environment)
+                      ?.label ?? environment}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {environmentDefinitions.map((definition) => (
+                    <SelectItem hideIndicator key={definition.id} value={definition.id}>
+                      {definition.label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            }
+          />
+
+          <SettingsRow
+            title="Sidebar & header tint"
+            description="Tint the sidebar and header (and the ambient glow) toward a hue you pick. Auto follows the theme."
+            control={<SidebarTintControl value={chromeTint} onChange={setChromeTint} />}
+          />
+
+          <SettingsRow
+            title="Smooth caret"
+            description="Animate the chat composer's text cursor so it glides between positions as you type and move."
+            resetAction={
+              smoothCaret ? (
+                <SettingResetButton label="smooth caret" onClick={() => setSmoothCaret(false)} />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={smoothCaret}
+                onCheckedChange={(checked) => setSmoothCaret(Boolean(checked))}
+                aria-label="Smooth caret animation"
+              />
+            }
+          />
+
+          {smoothCaret ? (
+            <SettingsRow
+              title="Caret thickness"
+              description="How wide the composer's smooth caret is drawn."
+              resetAction={
+                caretThickness !== DEFAULT_CARET_THICKNESS ? (
+                  <SettingResetButton
+                    label="caret thickness"
+                    onClick={() => setCaretThickness(DEFAULT_CARET_THICKNESS)}
+                  />
+                ) : null
+              }
+              control={
+                <Select
+                  value={String(caretThickness)}
+                  onValueChange={(value) => setCaretThickness(Number(value))}
+                >
+                  <SelectTrigger className="w-full sm:w-40" aria-label="Caret thickness">
+                    <SelectValue>
+                      {CARET_THICKNESS_OPTIONS.find((option) => option.value === caretThickness)
+                        ?.label ?? `${caretThickness}px`}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end" alignItemWithTrigger={false}>
+                    {CARET_THICKNESS_OPTIONS.map((option) => (
+                      <SelectItem hideIndicator key={option.value} value={String(option.value)}>
+                        {option.label}
                       </SelectItem>
                     ))}
-                  </SelectGroup>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-
-        <SettingsRow
-          title="Ambient background"
-          description="How lively the backdrop behind the sidebar and chat is. Works with any theme."
-          control={
-            <Select
-              value={environment}
-              onValueChange={(value) => {
-                if (isValidEnvironment(value)) {
-                  setEnvironment(value);
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Ambient background">
-                <SelectValue>
-                  {environmentDefinitions.find((definition) => definition.id === environment)
-                    ?.label ?? environment}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {environmentDefinitions.map((definition) => (
-                  <SelectItem hideIndicator key={definition.id} value={definition.id}>
-                    {definition.label}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-
-        <SettingsRow
-          title="Sidebar & header tint"
-          description="Tint the sidebar and header (and the ambient glow) toward a hue you pick. Auto follows the theme."
-          control={<SidebarTintControl value={chromeTint} onChange={setChromeTint} />}
-        />
-
-        <SettingsRow
-          title="Smooth caret"
-          description="Animate the chat composer's text cursor so it glides between positions as you type and move."
-          resetAction={
-            smoothCaret ? (
-              <SettingResetButton label="smooth caret" onClick={() => setSmoothCaret(false)} />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={smoothCaret}
-              onCheckedChange={(checked) => setSmoothCaret(Boolean(checked))}
-              aria-label="Smooth caret animation"
+                  </SelectPopup>
+                </Select>
+              }
             />
-          }
-        />
+          ) : null}
 
-        {smoothCaret ? (
           <SettingsRow
-            title="Caret thickness"
-            description="How wide the composer's smooth caret is drawn."
+            title="Time format"
+            description="System default follows your browser or OS clock preference."
             resetAction={
-              caretThickness !== DEFAULT_CARET_THICKNESS ? (
+              settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat ? (
                 <SettingResetButton
-                  label="caret thickness"
-                  onClick={() => setCaretThickness(DEFAULT_CARET_THICKNESS)}
+                  label="time format"
+                  onClick={() =>
+                    updateSettings({
+                      timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
+                    })
+                  }
                 />
               ) : null
             }
             control={
               <Select
-                value={String(caretThickness)}
-                onValueChange={(value) => setCaretThickness(Number(value))}
+                value={settings.timestampFormat}
+                onValueChange={(value) => {
+                  if (value === "locale" || value === "12-hour" || value === "24-hour") {
+                    updateSettings({ timestampFormat: value });
+                  }
+                }}
               >
-                <SelectTrigger className="w-full sm:w-40" aria-label="Caret thickness">
+                <SelectTrigger className="w-full sm:w-40" aria-label="Timestamp format">
+                  <SelectValue>{TIMESTAMP_FORMAT_LABELS[settings.timestampFormat]}</SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  <SelectItem hideIndicator value="locale">
+                    {TIMESTAMP_FORMAT_LABELS.locale}
+                  </SelectItem>
+                  <SelectItem hideIndicator value="12-hour">
+                    {TIMESTAMP_FORMAT_LABELS["12-hour"]}
+                  </SelectItem>
+                  <SelectItem hideIndicator value="24-hour">
+                    {TIMESTAMP_FORMAT_LABELS["24-hour"]}
+                  </SelectItem>
+                </SelectPopup>
+              </Select>
+            }
+          />
+        </SettingsSection>
+      ) : null}
+
+      {activeTab === "chat" ? (
+        <SettingsSection title="Composer">
+          <SettingsRow
+            title="Plan mode button"
+            description="Show the Build/Plan toggle in the chat composer. Hiding it leaves the mode where you last set it."
+            resetAction={
+              !showInteractionModeControl ? (
+                <SettingResetButton
+                  label="plan mode button"
+                  onClick={() => setShowInteractionModeControl(true)}
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={showInteractionModeControl}
+                onCheckedChange={(checked) => setShowInteractionModeControl(Boolean(checked))}
+                aria-label="Show the plan mode button in the composer"
+              />
+            }
+          />
+
+          <SettingsRow
+            title="Permission mode picker"
+            description="Show the Supervised / Auto-accept edits / Full access picker in the chat composer. Hiding it keeps the mode you last chose."
+            resetAction={
+              !showRuntimeModeControl ? (
+                <SettingResetButton
+                  label="permission mode picker"
+                  onClick={() => setShowRuntimeModeControl(true)}
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={showRuntimeModeControl}
+                onCheckedChange={(checked) => setShowRuntimeModeControl(Boolean(checked))}
+                aria-label="Show the permission mode picker in the composer"
+              />
+            }
+          />
+
+          <SettingsRow
+            title="New threads"
+            description="Pick the default workspace mode for newly created draft threads."
+            resetAction={
+              settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode ? (
+                <SettingResetButton
+                  label="new threads"
+                  onClick={() =>
+                    updateSettings({
+                      defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Select
+                value={settings.defaultThreadEnvMode}
+                onValueChange={(value) => {
+                  if (value === "local" || value === "worktree") {
+                    updateSettings({ defaultThreadEnvMode: value });
+                  }
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-44" aria-label="Default thread mode">
                   <SelectValue>
-                    {CARET_THICKNESS_OPTIONS.find((option) => option.value === caretThickness)
-                      ?.label ?? `${caretThickness}px`}
+                    {settings.defaultThreadEnvMode === "worktree" ? "New worktree" : "Local"}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectPopup align="end" alignItemWithTrigger={false}>
-                  {CARET_THICKNESS_OPTIONS.map((option) => (
-                    <SelectItem hideIndicator key={option.value} value={String(option.value)}>
+                  <SelectItem hideIndicator value="local">
+                    Local
+                  </SelectItem>
+                  <SelectItem hideIndicator value="worktree">
+                    New worktree
+                  </SelectItem>
+                </SelectPopup>
+              </Select>
+            }
+          />
+
+          <SettingsRow
+            title="Auto-open task panel"
+            description="Open the right-side plan and task panel automatically when steps appear."
+            resetAction={
+              settings.autoOpenPlanSidebar !== DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar ? (
+                <SettingResetButton
+                  label="auto-open task panel"
+                  onClick={() =>
+                    updateSettings({
+                      autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.autoOpenPlanSidebar}
+                onCheckedChange={(checked) =>
+                  updateSettings({ autoOpenPlanSidebar: Boolean(checked) })
+                }
+                aria-label="Open the task panel automatically"
+              />
+            }
+          />
+        </SettingsSection>
+      ) : null}
+
+      {activeTab === "chat" ? (
+        <SettingsSection title="Messages">
+          <SettingsRow
+            title="Assistant output"
+            description="Show token-by-token output while a response is in progress."
+            resetAction={
+              settings.enableAssistantStreaming !==
+              DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming ? (
+                <SettingResetButton
+                  label="assistant output"
+                  onClick={() =>
+                    updateSettings({
+                      enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.enableAssistantStreaming}
+                onCheckedChange={(checked) =>
+                  updateSettings({ enableAssistantStreaming: Boolean(checked) })
+                }
+                aria-label="Stream assistant messages"
+              />
+            }
+          />
+        </SettingsSection>
+      ) : null}
+
+      {activeTab === "chat" ? (
+        <SettingsSection title="Diffs">
+          <SettingsRow
+            title="Diff line wrapping"
+            description="Set the default wrap state when the diff panel opens."
+            resetAction={
+              settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap ? (
+                <SettingResetButton
+                  label="diff line wrapping"
+                  onClick={() =>
+                    updateSettings({
+                      diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.diffWordWrap}
+                onCheckedChange={(checked) => updateSettings({ diffWordWrap: Boolean(checked) })}
+                aria-label="Wrap diff lines by default"
+              />
+            }
+          />
+
+          <SettingsRow
+            title="Hide whitespace changes"
+            description="Set whether the diff panel ignores whitespace-only edits by default."
+            resetAction={
+              settings.diffIgnoreWhitespace !== DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace ? (
+                <SettingResetButton
+                  label="diff whitespace changes"
+                  onClick={() =>
+                    updateSettings({
+                      diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.diffIgnoreWhitespace}
+                onCheckedChange={(checked) =>
+                  updateSettings({ diffIgnoreWhitespace: Boolean(checked) })
+                }
+                aria-label="Hide whitespace changes by default"
+              />
+            }
+          />
+        </SettingsSection>
+      ) : null}
+
+      {activeTab === "notifications" ? (
+        <SettingsSection title="Conversation notifications">
+          <SettingsRow
+            title="Notify me outside the app"
+            description="Raise a system notification when a conversation stops needing the agent and starts needing you. The conversation you already have open never notifies."
+            status={systemNotificationStatusText(systemNotificationPermission)}
+            resetAction={
+              settings.systemNotificationsEnabled !==
+              DEFAULT_UNIFIED_SETTINGS.systemNotificationsEnabled ? (
+                <SettingResetButton
+                  label="system notifications"
+                  onClick={() =>
+                    updateSettings({
+                      systemNotificationsEnabled:
+                        DEFAULT_UNIFIED_SETTINGS.systemNotificationsEnabled,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.systemNotificationsEnabled}
+                onCheckedChange={(checked) => {
+                  const nextEnabled = Boolean(checked);
+                  updateSettings({ systemNotificationsEnabled: nextEnabled });
+                  if (nextEnabled) {
+                    void requestSystemNotifications();
+                  }
+                }}
+                aria-label="Notify me outside the app"
+              />
+            }
+          />
+
+          <SettingsRow
+            title="When a conversation finishes"
+            description="The agent has replied and is waiting for your next message."
+            control={
+              <Switch
+                checked={settings.systemNotifyOnTurnCompleted}
+                disabled={!settings.systemNotificationsEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ systemNotifyOnTurnCompleted: Boolean(checked) })
+                }
+                aria-label="Notify when a conversation finishes"
+              />
+            }
+          />
+
+          <SettingsRow
+            title="When a conversation needs an answer"
+            description="An approval, a question, or a plan waiting to be reviewed."
+            control={
+              <Switch
+                checked={settings.systemNotifyOnInputNeeded}
+                disabled={!settings.systemNotificationsEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ systemNotifyOnInputNeeded: Boolean(checked) })
+                }
+                aria-label="Notify when a conversation needs an answer"
+              />
+            }
+          />
+
+          <SettingsRow
+            title="When a conversation fails"
+            description="The agent or its session stopped with an error."
+            control={
+              <Switch
+                checked={settings.systemNotifyOnFailure}
+                disabled={!settings.systemNotificationsEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ systemNotifyOnFailure: Boolean(checked) })
+                }
+                aria-label="Notify when a conversation fails"
+              />
+            }
+          />
+
+          <SettingsRow
+            title="Only while the app is in the background"
+            description="Off by default, so a conversation in another project still reaches you while you are working in this window."
+            control={
+              <Switch
+                checked={settings.systemNotificationsSuppressWhenFocused}
+                disabled={!settings.systemNotificationsEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ systemNotificationsSuppressWhenFocused: Boolean(checked) })
+                }
+                aria-label="Only notify while the app is in the background"
+              />
+            }
+          />
+        </SettingsSection>
+      ) : null}
+
+      {activeTab === "notifications" ? (
+        <SettingsSection title="Plan usage alerts">
+          <SettingsRow
+            title="Plan usage alerts"
+            description="Show a persistent notification when any provider limit reaches a threshold. Enter comma-separated percentages; leave blank to disable."
+            resetAction={
+              !Equal.equals(
+                settings.providerUsageAlertThresholds,
+                DEFAULT_PROVIDER_USAGE_ALERT_THRESHOLDS,
+              ) ? (
+                <SettingResetButton
+                  label="plan usage alerts"
+                  onClick={() =>
+                    updateSettings({
+                      providerUsageAlertThresholds: [...DEFAULT_PROVIDER_USAGE_ALERT_THRESHOLDS],
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <DraftInput
+                className="w-full sm:w-40"
+                value={settings.providerUsageAlertThresholds.join(", ")}
+                onCommit={(value) =>
+                  updateSettings({
+                    providerUsageAlertThresholds: parseProviderUsageAlertThresholds(value),
+                  })
+                }
+                placeholder="50, 80"
+                spellCheck={false}
+                aria-label="Plan usage alert thresholds"
+              />
+            }
+          />
+
+          <SettingsRow
+            title="Repeat reminders"
+            description="How often to re-announce a limit that is still above a threshold you have already been told about."
+            resetAction={
+              settings.providerUsageAlertRepeatMinutes !==
+              DEFAULT_PROVIDER_USAGE_ALERT_REPEAT_MINUTES ? (
+                <SettingResetButton
+                  label="usage alert repeat"
+                  onClick={() =>
+                    updateSettings({
+                      providerUsageAlertRepeatMinutes: DEFAULT_PROVIDER_USAGE_ALERT_REPEAT_MINUTES,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Select
+                value={String(settings.providerUsageAlertRepeatMinutes)}
+                onValueChange={(value) =>
+                  updateSettings({ providerUsageAlertRepeatMinutes: Number(value) })
+                }
+              >
+                <SelectTrigger className="w-full sm:w-52" aria-label="Plan usage alert repeat">
+                  <SelectValue>
+                    {usageAlertRepeatLabel(settings.providerUsageAlertRepeatMinutes)}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {USAGE_ALERT_REPEAT_OPTIONS.map((option) => (
+                    <SelectItem hideIndicator key={option.minutes} value={String(option.minutes)}>
                       {option.label}
                     </SelectItem>
                   ))}
@@ -700,555 +1260,446 @@ export function GeneralSettingsPanel() {
               </Select>
             }
           />
-        ) : null}
 
-        <SettingsRow
-          title="Time format"
-          description="System default follows your browser or OS clock preference."
-          resetAction={
-            settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat ? (
-              <SettingResetButton
-                label="time format"
-                onClick={() =>
-                  updateSettings({
-                    timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={settings.timestampFormat}
-              onValueChange={(value) => {
-                if (value === "locale" || value === "12-hour" || value === "24-hour") {
-                  updateSettings({ timestampFormat: value });
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-40" aria-label="Timestamp format">
-                <SelectValue>{TIMESTAMP_FORMAT_LABELS[settings.timestampFormat]}</SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="locale">
-                  {TIMESTAMP_FORMAT_LABELS.locale}
-                </SelectItem>
-                <SelectItem hideIndicator value="12-hour">
-                  {TIMESTAMP_FORMAT_LABELS["12-hour"]}
-                </SelectItem>
-                <SelectItem hideIndicator value="24-hour">
-                  {TIMESTAMP_FORMAT_LABELS["24-hour"]}
-                </SelectItem>
-              </SelectPopup>
-            </Select>
-          }
-        />
-
-        <SettingsRow
-          title="Diff line wrapping"
-          description="Set the default wrap state when the diff panel opens."
-          resetAction={
-            settings.diffWordWrap !== DEFAULT_UNIFIED_SETTINGS.diffWordWrap ? (
-              <SettingResetButton
-                label="diff line wrapping"
-                onClick={() =>
-                  updateSettings({
-                    diffWordWrap: DEFAULT_UNIFIED_SETTINGS.diffWordWrap,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.diffWordWrap}
-              onCheckedChange={(checked) => updateSettings({ diffWordWrap: Boolean(checked) })}
-              aria-label="Wrap diff lines by default"
-            />
-          }
-        />
-
-        <SettingsRow
-          title="Hide whitespace changes"
-          description="Set whether the diff panel ignores whitespace-only edits by default."
-          resetAction={
-            settings.diffIgnoreWhitespace !== DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace ? (
-              <SettingResetButton
-                label="diff whitespace changes"
-                onClick={() =>
-                  updateSettings({
-                    diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.diffIgnoreWhitespace}
-              onCheckedChange={(checked) =>
-                updateSettings({ diffIgnoreWhitespace: Boolean(checked) })
-              }
-              aria-label="Hide whitespace changes by default"
-            />
-          }
-        />
-
-        <SettingsRow
-          title="Assistant output"
-          description="Show token-by-token output while a response is in progress."
-          resetAction={
-            settings.enableAssistantStreaming !==
-            DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming ? (
-              <SettingResetButton
-                label="assistant output"
-                onClick={() =>
-                  updateSettings({
-                    enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.enableAssistantStreaming}
-              onCheckedChange={(checked) =>
-                updateSettings({ enableAssistantStreaming: Boolean(checked) })
-              }
-              aria-label="Stream assistant messages"
-            />
-          }
-        />
-
-        <SettingsRow
-          title="Auto-open task panel"
-          description="Open the right-side plan and task panel automatically when steps appear."
-          resetAction={
-            settings.autoOpenPlanSidebar !== DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar ? (
-              <SettingResetButton
-                label="auto-open task panel"
-                onClick={() =>
-                  updateSettings({
-                    autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.autoOpenPlanSidebar}
-              onCheckedChange={(checked) =>
-                updateSettings({ autoOpenPlanSidebar: Boolean(checked) })
-              }
-              aria-label="Open the task panel automatically"
-            />
-          }
-        />
-
-        <SettingsRow
-          title="New threads"
-          description="Pick the default workspace mode for newly created draft threads."
-          resetAction={
-            settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode ? (
-              <SettingResetButton
-                label="new threads"
-                onClick={() =>
-                  updateSettings({
-                    defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={settings.defaultThreadEnvMode}
-              onValueChange={(value) => {
-                if (value === "local" || value === "worktree") {
-                  updateSettings({ defaultThreadEnvMode: value });
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-44" aria-label="Default thread mode">
-                <SelectValue>
-                  {settings.defaultThreadEnvMode === "worktree" ? "New worktree" : "Local"}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                <SelectItem hideIndicator value="local">
-                  Local
-                </SelectItem>
-                <SelectItem hideIndicator value="worktree">
-                  New worktree
-                </SelectItem>
-              </SelectPopup>
-            </Select>
-          }
-        />
-
-        <SettingsRow
-          title="What the orchestrator can reach"
-          description={`Overrides every per-conversation setting at once. ${ORCHESTRATOR_OVERRIDE_DESCRIPTIONS[settings.orchestratorAccessOverride]} Also on the orchestrator's own composer, next to its model picker.`}
-          resetAction={
-            settings.orchestratorAccessOverride !==
-            DEFAULT_UNIFIED_SETTINGS.orchestratorAccessOverride ? (
-              <SettingResetButton
-                label="orchestrator reach"
-                onClick={() =>
-                  updateSettings({
-                    orchestratorAccessOverride: DEFAULT_UNIFIED_SETTINGS.orchestratorAccessOverride,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={settings.orchestratorAccessOverride}
-              onValueChange={(value) => {
-                if (!value) return;
-                updateSettings({
-                  orchestratorAccessOverride: value as typeof settings.orchestratorAccessOverride,
-                });
-              }}
-            >
-              <SelectTrigger
-                className="w-full sm:w-56"
-                aria-label="What the orchestrator can reach"
-              >
-                <SelectValue>
-                  {ORCHESTRATOR_OVERRIDE_LABELS[settings.orchestratorAccessOverride]}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {ORCHESTRATOR_OVERRIDE_ORDER.map((override) => (
-                  <SelectItem hideIndicator key={override} value={override}>
-                    {ORCHESTRATOR_OVERRIDE_LABELS[override]}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-
-        <SettingsRow
-          title="Orchestrator access"
-          description="How much of a conversation the orchestrator can see by default, for conversations you never set individually. Only consulted while the setting above is “Per conversation”."
-          resetAction={
-            settings.defaultOrchestratorThreadAccess !==
-            DEFAULT_UNIFIED_SETTINGS.defaultOrchestratorThreadAccess ? (
-              <SettingResetButton
-                label="orchestrator access"
-                onClick={() =>
-                  updateSettings({
-                    defaultOrchestratorThreadAccess:
-                      DEFAULT_UNIFIED_SETTINGS.defaultOrchestratorThreadAccess,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Select
-              value={settings.defaultOrchestratorThreadAccess}
-              onValueChange={(value) => {
-                if (value === "none" || value === "watch" || value === "control") {
-                  updateSettings({ defaultOrchestratorThreadAccess: value });
-                }
-              }}
-            >
-              <SelectTrigger className="w-full sm:w-44" aria-label="Default orchestrator access">
-                <SelectValue>
-                  {ORCHESTRATOR_ACCESS_LABELS[settings.defaultOrchestratorThreadAccess]}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectPopup align="end" alignItemWithTrigger={false}>
-                {ORCHESTRATOR_ACCESS_ORDER.map((access) => (
-                  <SelectItem hideIndicator key={access} value={access}>
-                    {ORCHESTRATOR_ACCESS_LABELS[access]}
-                  </SelectItem>
-                ))}
-              </SelectPopup>
-            </Select>
-          }
-        />
-
-        <SettingsRow
-          title="Orchestrator model choices"
-          description="Models the orchestrator may pick from when it opens a new conversation. Opus 5, GPT-5.6 Sol and GPT-6 Astra are enabled by default; clear the list to always inherit each project's default."
-          resetAction={
-            settings.orchestratorModelChoices.length > 0 ? (
-              <SettingResetButton
-                label="orchestrator model choices"
-                onClick={() => updateSettings({ orchestratorModelChoices: [] })}
-              />
-            ) : null
-          }
-          control={
-            <div className="flex flex-col items-end gap-2">
-              {settings.orchestratorModelChoices.length > 0 ? (
-                <div className="flex flex-wrap items-center justify-end gap-1.5">
-                  {settings.orchestratorModelChoices.map((choice) => (
-                    <span
-                      key={`${choice.instanceId}:${choice.model}`}
-                      className="inline-flex items-center gap-1 rounded-md border bg-muted/40 py-0.5 pr-0.5 pl-2 text-xs"
-                    >
-                      {choice.model}
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-sm"
-                        className="size-5 text-muted-foreground hover:text-foreground"
-                        aria-label={`Remove ${choice.model}`}
-                        onClick={() =>
-                          updateSettings({
-                            orchestratorModelChoices: settings.orchestratorModelChoices.filter(
-                              (entry) =>
-                                !(
-                                  entry.instanceId === choice.instanceId &&
-                                  entry.model === choice.model
-                                ),
-                            ),
-                          })
-                        }
-                      >
-                        <XIcon className="size-3" />
-                      </Button>
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-              <ProviderModelPicker
-                activeInstanceId={textGenInstanceId}
-                model=""
-                lockedProvider={null}
-                instanceEntries={gitModelInstanceEntries}
-                modelOptionsByInstance={gitModelOptionsByInstance}
-                triggerVariant="outline"
-                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                onInstanceModelChange={(instanceId, model) => {
-                  // Adding, not selecting: the picker is being used as a menu of
-                  // everything available, and the row below it is the real value.
-                  const alreadyChosen = settings.orchestratorModelChoices.some(
-                    (entry) => entry.instanceId === instanceId && entry.model === model,
-                  );
-                  if (alreadyChosen) return;
-                  updateSettings({
-                    orchestratorModelChoices: [
-                      ...settings.orchestratorModelChoices,
-                      createModelSelection(instanceId, model),
-                    ],
-                  });
-                }}
-              />
-            </div>
-          }
-        />
-
-        <SettingsRow
-          title="Add project starts in"
-          description='Leave empty to use "~/" when the Add Project browser opens.'
-          resetAction={
-            settings.addProjectBaseDirectory !==
-            DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory ? (
-              <SettingResetButton
-                label="add project base directory"
-                onClick={() =>
-                  updateSettings({
-                    addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <DraftInput
-              className="w-full sm:w-72"
-              value={settings.addProjectBaseDirectory}
-              onCommit={(next) => updateSettings({ addProjectBaseDirectory: next })}
-              placeholder="~/"
-              spellCheck={false}
-              aria-label="Add project base directory"
-            />
-          }
-        />
-
-        <SettingsRow
-          title="Archive confirmation"
-          description="Require a second click on the inline archive action before a thread is archived."
-          resetAction={
-            settings.confirmThreadArchive !== DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive ? (
-              <SettingResetButton
-                label="archive confirmation"
-                onClick={() =>
-                  updateSettings({
-                    confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.confirmThreadArchive}
-              onCheckedChange={(checked) =>
-                updateSettings({ confirmThreadArchive: Boolean(checked) })
-              }
-              aria-label="Confirm thread archiving"
-            />
-          }
-        />
-
-        <SettingsRow
-          title="Delete confirmation"
-          description="Ask before deleting a thread and its chat history."
-          resetAction={
-            settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete ? (
-              <SettingResetButton
-                label="delete confirmation"
-                onClick={() =>
-                  updateSettings({
-                    confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.confirmThreadDelete}
-              onCheckedChange={(checked) =>
-                updateSettings({ confirmThreadDelete: Boolean(checked) })
-              }
-              aria-label="Confirm thread deletion"
-            />
-          }
-        />
-
-        <SettingsRow
-          title="Pull request status on threads"
-          description="Show a per-thread icon in the sidebar reflecting the status of its pull/merge request. Off by default — hide it if your projects don't use pull requests."
-          resetAction={
-            settings.showThreadChangeRequestStatus !==
-            DEFAULT_UNIFIED_SETTINGS.showThreadChangeRequestStatus ? (
-              <SettingResetButton
-                label="pull request status"
-                onClick={() =>
-                  updateSettings({
-                    showThreadChangeRequestStatus:
-                      DEFAULT_UNIFIED_SETTINGS.showThreadChangeRequestStatus,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <Switch
-              checked={settings.showThreadChangeRequestStatus}
-              onCheckedChange={(checked) =>
-                updateSettings({ showThreadChangeRequestStatus: Boolean(checked) })
-              }
-              aria-label="Show pull request status on threads"
-            />
-          }
-        />
-
-        <SettingsRow
-          title="Text generation model"
-          description="Configure the model used for generated commit messages, PR titles, and similar Git text."
-          resetAction={
-            isGitWritingModelDirty ? (
-              <SettingResetButton
-                label="text generation model"
-                onClick={() =>
-                  updateSettings({
-                    textGenerationModelSelection:
-                      DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
-                  })
-                }
-              />
-            ) : null
-          }
-          control={
-            <div className="flex flex-wrap items-center justify-end gap-1.5">
-              <ProviderModelPicker
-                activeInstanceId={textGenInstanceId}
-                model={textGenModel}
-                lockedProvider={null}
-                instanceEntries={gitModelInstanceEntries}
-                modelOptionsByInstance={gitModelOptionsByInstance}
-                triggerVariant="outline"
-                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                onInstanceModelChange={(instanceId, model) => {
-                  updateSettings({
-                    textGenerationModelSelection: resolveAppModelSelectionState(
-                      {
-                        ...settings,
-                        textGenerationModelSelection: createModelSelection(instanceId, model),
-                      },
-                      serverProviders,
-                    ),
-                  });
-                }}
-              />
-              <TraitsPicker
-                provider={textGenProvider}
-                models={
-                  // Use the exact instance's models (rather than the
-                  // first-kind-match) so a custom text-gen instance like
-                  // `codex_personal` gets its own model list, not the
-                  // default Codex one.
-                  textGenInstanceEntry?.models ?? []
-                }
-                model={textGenModel}
-                prompt=""
-                onPromptChange={() => {}}
-                modelOptions={textGenModelOptions}
-                allowPromptInjectedEffort={false}
-                triggerVariant="outline"
-                triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
-                onModelOptionsChange={(nextOptions) => {
-                  updateSettings({
-                    textGenerationModelSelection: resolveAppModelSelectionState(
-                      {
-                        ...settings,
-                        textGenerationModelSelection: createModelSelection(
-                          textGenInstanceId,
-                          textGenModel,
-                          nextOptions,
-                        ),
-                      },
-                      serverProviders,
-                    ),
-                  });
-                }}
-              />
-            </div>
-          }
-        />
-      </SettingsSection>
-
-      <SettingsSection title="About">
-        {isElectron || HOSTED_APP_CHANNEL ? (
-          <AboutVersionSection />
-        ) : (
           <SettingsRow
-            title={<AboutVersionTitle />}
-            description="Current version of the application."
+            title="Dismiss automatically"
+            description="How long a usage alert stays on screen. The countdown pauses while the app is in the background."
+            resetAction={
+              settings.providerUsageAlertAutoDismissSeconds !==
+              DEFAULT_PROVIDER_USAGE_ALERT_AUTO_DISMISS_SECONDS ? (
+                <SettingResetButton
+                  label="usage alert auto-dismiss"
+                  onClick={() =>
+                    updateSettings({
+                      providerUsageAlertAutoDismissSeconds:
+                        DEFAULT_PROVIDER_USAGE_ALERT_AUTO_DISMISS_SECONDS,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Select
+                value={String(settings.providerUsageAlertAutoDismissSeconds)}
+                onValueChange={(value) =>
+                  updateSettings({ providerUsageAlertAutoDismissSeconds: Number(value) })
+                }
+              >
+                <SelectTrigger className="w-full sm:w-52" aria-label="Plan usage alert dismissal">
+                  <SelectValue>
+                    {usageAlertAutoDismissLabel(settings.providerUsageAlertAutoDismissSeconds)}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {USAGE_ALERT_AUTO_DISMISS_OPTIONS.map((option) => (
+                    <SelectItem hideIndicator key={option.seconds} value={String(option.seconds)}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            }
           />
-        )}
-        <SettingsRow
-          title="Diagnostics"
-          description={diagnosticsDescription}
-          control={
-            <Button render={<Link to="/settings/diagnostics" />} size="xs" variant="outline">
-              View diagnostics
-            </Button>
-          }
-        />
-      </SettingsSection>
+        </SettingsSection>
+      ) : null}
+
+      {activeTab === "orchestrator" ? (
+        <SettingsSection title="Orchestrator">
+          <SettingsRow
+            title="What the orchestrator can reach"
+            description={`Overrides every per-conversation setting at once. ${ORCHESTRATOR_OVERRIDE_DESCRIPTIONS[settings.orchestratorAccessOverride]} Also on the orchestrator's own composer, next to its model picker.`}
+            resetAction={
+              settings.orchestratorAccessOverride !==
+              DEFAULT_UNIFIED_SETTINGS.orchestratorAccessOverride ? (
+                <SettingResetButton
+                  label="orchestrator reach"
+                  onClick={() =>
+                    updateSettings({
+                      orchestratorAccessOverride:
+                        DEFAULT_UNIFIED_SETTINGS.orchestratorAccessOverride,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Select
+                value={settings.orchestratorAccessOverride}
+                onValueChange={(value) => {
+                  if (!value) return;
+                  updateSettings({
+                    orchestratorAccessOverride: value as typeof settings.orchestratorAccessOverride,
+                  });
+                }}
+              >
+                <SelectTrigger
+                  className="w-full sm:w-56"
+                  aria-label="What the orchestrator can reach"
+                >
+                  <SelectValue>
+                    {ORCHESTRATOR_OVERRIDE_LABELS[settings.orchestratorAccessOverride]}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {ORCHESTRATOR_OVERRIDE_ORDER.map((override) => (
+                    <SelectItem hideIndicator key={override} value={override}>
+                      {ORCHESTRATOR_OVERRIDE_LABELS[override]}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            }
+          />
+
+          <SettingsRow
+            title="Orchestrator access"
+            description="How much of a conversation the orchestrator can see by default, for conversations you never set individually. Only consulted while the setting above is “Per conversation”."
+            resetAction={
+              settings.defaultOrchestratorThreadAccess !==
+              DEFAULT_UNIFIED_SETTINGS.defaultOrchestratorThreadAccess ? (
+                <SettingResetButton
+                  label="orchestrator access"
+                  onClick={() =>
+                    updateSettings({
+                      defaultOrchestratorThreadAccess:
+                        DEFAULT_UNIFIED_SETTINGS.defaultOrchestratorThreadAccess,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Select
+                value={settings.defaultOrchestratorThreadAccess}
+                onValueChange={(value) => {
+                  if (value === "none" || value === "watch" || value === "control") {
+                    updateSettings({ defaultOrchestratorThreadAccess: value });
+                  }
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-44" aria-label="Default orchestrator access">
+                  <SelectValue>
+                    {ORCHESTRATOR_ACCESS_LABELS[settings.defaultOrchestratorThreadAccess]}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {ORCHESTRATOR_ACCESS_ORDER.map((access) => (
+                    <SelectItem hideIndicator key={access} value={access}>
+                      {ORCHESTRATOR_ACCESS_LABELS[access]}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            }
+          />
+
+          <SettingsRow
+            title="Orchestrator model choices"
+            description="Models the orchestrator may pick from when it opens a new conversation. Opus 5, GPT-5.6 Sol and GPT-6 Astra are enabled by default; clear the list to always inherit each project's default."
+            resetAction={
+              settings.orchestratorModelChoices.length > 0 ? (
+                <SettingResetButton
+                  label="orchestrator model choices"
+                  onClick={() => updateSettings({ orchestratorModelChoices: [] })}
+                />
+              ) : null
+            }
+            control={
+              <div className="flex flex-col items-end gap-2">
+                {settings.orchestratorModelChoices.length > 0 ? (
+                  <div className="flex flex-wrap items-center justify-end gap-1.5">
+                    {settings.orchestratorModelChoices.map((choice) => (
+                      <span
+                        key={`${choice.instanceId}:${choice.model}`}
+                        className="inline-flex items-center gap-1 rounded-md border bg-muted/40 py-0.5 pr-0.5 pl-2 text-xs"
+                      >
+                        {choice.model}
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          className="size-5 text-muted-foreground hover:text-foreground"
+                          aria-label={`Remove ${choice.model}`}
+                          onClick={() =>
+                            updateSettings({
+                              orchestratorModelChoices: settings.orchestratorModelChoices.filter(
+                                (entry) =>
+                                  !(
+                                    entry.instanceId === choice.instanceId &&
+                                    entry.model === choice.model
+                                  ),
+                              ),
+                            })
+                          }
+                        >
+                          <XIcon className="size-3" />
+                        </Button>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                <ProviderModelPicker
+                  activeInstanceId={textGenInstanceId}
+                  model=""
+                  lockedProvider={null}
+                  instanceEntries={gitModelInstanceEntries}
+                  modelOptionsByInstance={gitModelOptionsByInstance}
+                  triggerVariant="outline"
+                  triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                  onInstanceModelChange={(instanceId, model) => {
+                    // Adding, not selecting: the picker is being used as a menu of
+                    // everything available, and the row below it is the real value.
+                    const alreadyChosen = settings.orchestratorModelChoices.some(
+                      (entry) => entry.instanceId === instanceId && entry.model === model,
+                    );
+                    if (alreadyChosen) return;
+                    updateSettings({
+                      orchestratorModelChoices: [
+                        ...settings.orchestratorModelChoices,
+                        createModelSelection(instanceId, model),
+                      ],
+                    });
+                  }}
+                />
+              </div>
+            }
+          />
+        </SettingsSection>
+      ) : null}
+
+      {activeTab === "orchestrator" ? (
+        <SettingsSection title="Text generation">
+          <SettingsRow
+            title="Text generation model"
+            description="Configure the model used for generated commit messages, PR titles, and similar Git text."
+            resetAction={
+              isGitWritingModelDirty ? (
+                <SettingResetButton
+                  label="text generation model"
+                  onClick={() =>
+                    updateSettings({
+                      textGenerationModelSelection:
+                        DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                <ProviderModelPicker
+                  activeInstanceId={textGenInstanceId}
+                  model={textGenModel}
+                  lockedProvider={null}
+                  instanceEntries={gitModelInstanceEntries}
+                  modelOptionsByInstance={gitModelOptionsByInstance}
+                  triggerVariant="outline"
+                  triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                  onInstanceModelChange={(instanceId, model) => {
+                    updateSettings({
+                      textGenerationModelSelection: resolveAppModelSelectionState(
+                        {
+                          ...settings,
+                          textGenerationModelSelection: createModelSelection(instanceId, model),
+                        },
+                        serverProviders,
+                      ),
+                    });
+                  }}
+                />
+                <TraitsPicker
+                  provider={textGenProvider}
+                  models={
+                    // Use the exact instance's models (rather than the
+                    // first-kind-match) so a custom text-gen instance like
+                    // `codex_personal` gets its own model list, not the
+                    // default Codex one.
+                    textGenInstanceEntry?.models ?? []
+                  }
+                  model={textGenModel}
+                  prompt=""
+                  onPromptChange={() => {}}
+                  modelOptions={textGenModelOptions}
+                  allowPromptInjectedEffort={false}
+                  triggerVariant="outline"
+                  triggerClassName="min-w-0 max-w-none shrink-0 text-foreground/90 hover:text-foreground"
+                  onModelOptionsChange={(nextOptions) => {
+                    updateSettings({
+                      textGenerationModelSelection: resolveAppModelSelectionState(
+                        {
+                          ...settings,
+                          textGenerationModelSelection: createModelSelection(
+                            textGenInstanceId,
+                            textGenModel,
+                            nextOptions,
+                          ),
+                        },
+                        serverProviders,
+                      ),
+                    });
+                  }}
+                />
+              </div>
+            }
+          />
+        </SettingsSection>
+      ) : null}
+
+      {activeTab === "workspace" ? (
+        <SettingsSection title="Projects & threads">
+          <SettingsRow
+            title="Add project starts in"
+            description='Leave empty to use "~/" when the Add Project browser opens.'
+            resetAction={
+              settings.addProjectBaseDirectory !==
+              DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory ? (
+                <SettingResetButton
+                  label="add project base directory"
+                  onClick={() =>
+                    updateSettings({
+                      addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <DraftInput
+                className="w-full sm:w-72"
+                value={settings.addProjectBaseDirectory}
+                onCommit={(next) => updateSettings({ addProjectBaseDirectory: next })}
+                placeholder="~/"
+                spellCheck={false}
+                aria-label="Add project base directory"
+              />
+            }
+          />
+
+          <SettingsRow
+            title="Archive confirmation"
+            description="Require a second click on the inline archive action before a thread is archived."
+            resetAction={
+              settings.confirmThreadArchive !== DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive ? (
+                <SettingResetButton
+                  label="archive confirmation"
+                  onClick={() =>
+                    updateSettings({
+                      confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.confirmThreadArchive}
+                onCheckedChange={(checked) =>
+                  updateSettings({ confirmThreadArchive: Boolean(checked) })
+                }
+                aria-label="Confirm thread archiving"
+              />
+            }
+          />
+
+          <SettingsRow
+            title="Delete confirmation"
+            description="Ask before deleting a thread and its chat history."
+            resetAction={
+              settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete ? (
+                <SettingResetButton
+                  label="delete confirmation"
+                  onClick={() =>
+                    updateSettings({
+                      confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.confirmThreadDelete}
+                onCheckedChange={(checked) =>
+                  updateSettings({ confirmThreadDelete: Boolean(checked) })
+                }
+                aria-label="Confirm thread deletion"
+              />
+            }
+          />
+
+          <SettingsRow
+            title="Git counts in the thread header"
+            description="Show how many files are uncommitted and how many commits are waiting to be pushed, next to the branch name. Read from the git status already being streamed, so it costs nothing extra. Right-click a project in the sidebar to override this for that project alone."
+            resetAction={
+              settings.showGitCounts !== DEFAULT_UNIFIED_SETTINGS.showGitCounts ? (
+                <SettingResetButton
+                  label="git counts"
+                  onClick={() =>
+                    updateSettings({ showGitCounts: DEFAULT_UNIFIED_SETTINGS.showGitCounts })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.showGitCounts}
+                onCheckedChange={(checked) => updateSettings({ showGitCounts: Boolean(checked) })}
+                aria-label="Show git counts in the thread header"
+              />
+            }
+          />
+
+          <SettingsRow
+            title="Pull request status on threads"
+            description="Show a per-thread icon in the sidebar reflecting the status of its pull/merge request. Off by default — hide it if your projects don't use pull requests."
+            resetAction={
+              settings.showThreadChangeRequestStatus !==
+              DEFAULT_UNIFIED_SETTINGS.showThreadChangeRequestStatus ? (
+                <SettingResetButton
+                  label="pull request status"
+                  onClick={() =>
+                    updateSettings({
+                      showThreadChangeRequestStatus:
+                        DEFAULT_UNIFIED_SETTINGS.showThreadChangeRequestStatus,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.showThreadChangeRequestStatus}
+                onCheckedChange={(checked) =>
+                  updateSettings({ showThreadChangeRequestStatus: Boolean(checked) })
+                }
+                aria-label="Show pull request status on threads"
+              />
+            }
+          />
+        </SettingsSection>
+      ) : null}
+
+      {activeTab === "about" ? (
+        <SettingsSection title="About">
+          {isElectron || HOSTED_APP_CHANNEL ? (
+            <AboutVersionSection />
+          ) : (
+            <SettingsRow
+              title={<AboutVersionTitle />}
+              description="Current version of the application."
+            />
+          )}
+          <SettingsRow
+            title="Diagnostics"
+            description={diagnosticsDescription}
+            control={
+              <Button render={<Link to="/settings/diagnostics" />} size="xs" variant="outline">
+                View diagnostics
+              </Button>
+            }
+          />
+        </SettingsSection>
+      ) : null}
     </SettingsPageContainer>
   );
 }
@@ -1261,6 +1712,9 @@ export function ProviderSettingsPanel() {
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
   const [updatingProviderDrivers, setUpdatingProviderDrivers] = useState<
     ReadonlySet<ProviderDriverKind>
+  >(() => new Set());
+  const [authenticatingProviderInstances, setAuthenticatingProviderInstances] = useState<
+    ReadonlySet<ProviderInstanceId>
   >(() => new Set());
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
   const refreshingRef = useRef(false);
@@ -1344,6 +1798,42 @@ export function ProviderSettingsPanel() {
         }
         const next = new Set(previous);
         next.delete(candidate.driver);
+        return next;
+      });
+    }
+  }, []);
+
+  const authenticateProvider = useCallback(async (instanceId: ProviderInstanceId) => {
+    let started = false;
+    setAuthenticatingProviderInstances((previous) => {
+      if (previous.has(instanceId)) return previous;
+      started = true;
+      const next = new Set(previous);
+      next.add(instanceId);
+      return next;
+    });
+    if (!started) return;
+
+    try {
+      await ensureLocalApi().server.authenticateProvider({ instanceId });
+      toastManager.add({
+        type: "success",
+        title: "Claude account connected",
+        description: "The provider status was refreshed with the new credentials.",
+      });
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not sign in to Claude",
+          description:
+            error instanceof Error ? error.message : "The Claude sign-in flow did not complete.",
+        }),
+      );
+    } finally {
+      setAuthenticatingProviderInstances((previous) => {
+        const next = new Set(previous);
+        next.delete(instanceId);
         return next;
       });
     }
@@ -1662,6 +2152,12 @@ export function ProviderSettingsPanel() {
                   : undefined
               }
               isUpdating={showInlineUpdateButton ? isDriverUpdateRunning : undefined}
+              onAuthenticate={
+                row.driver === "claudeAgent" && liveProvider?.installed
+                  ? () => void authenticateProvider(row.instanceId)
+                  : undefined
+              }
+              isAuthenticating={authenticatingProviderInstances.has(row.instanceId)}
             />
           );
         })}

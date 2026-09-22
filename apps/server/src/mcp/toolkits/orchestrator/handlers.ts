@@ -10,6 +10,7 @@ import {
   type IsoDateTime,
   MessageId,
   type OrchestrationFollowup,
+  type OrchestrationMessage,
   type OrchestrationProjectShell,
   type OrchestrationThread,
   type OrchestrationThreadActivity,
@@ -22,6 +23,7 @@ import {
 import { projectThreadAwareness } from "@t3tools/shared/agentAwareness";
 import { resolveOrchestratorThreadAccess } from "@t3tools/shared/orchestratorAccess";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
+import { isThreadCold, threadQuietDays } from "@t3tools/shared/threadDisposition";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -41,6 +43,9 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import {
   deriveFollowupRecords,
   derivePendingFollowups,
+  needsFollowupDetailRepair,
+  pendingFollowupsFromRecords,
+  repairFollowupDetails,
   describeThreadState,
 } from "../followup/records.ts";
 import { OrchestratorToolError, OrchestratorToolkit } from "./tools.ts";
@@ -55,7 +60,7 @@ const DEFAULT_SEARCH_LIMIT = 10;
  */
 const DEFAULT_PENDING_LIMIT = 25;
 /** Fixed order, so the reported `sections` list reads the same way every time. */
-const PENDING_SECTIONS = ["approvals", "questions", "failed", "followups"] as const;
+const PENDING_SECTIONS = ["approvals", "questions", "failed", "followups", "cold"] as const;
 type PendingSection = (typeof PENDING_SECTIONS)[number];
 /**
  * Messages are for orientation, not review. Long assistant turns get cut so a
@@ -72,6 +77,29 @@ const MAX_MESSAGE_CHARS = 1_000;
  * context on its own.
  */
 const MAX_READ_THREAD_CHARS = 60_000;
+/**
+ * Outline defaults. A line per message is cheap enough that the default maps
+ * most conversations whole — which is the point: the caller has to be able to
+ * see where the substance is before it can spend a deep read on the right part.
+ */
+const DEFAULT_OUTLINE_LIMIT = 200;
+const MAX_OUTLINE_LIMIT = 400;
+const DEFAULT_PREVIEW_CHARS = 160;
+/** Below this a preview stops being enough to recognise a message by. */
+const MIN_PREVIEW_CHARS = 40;
+/** Ceiling on messages returned whole, for the tail and for a window alike. */
+const MAX_WINDOW_LIMIT = 60;
+/** Tool calls returned by one activity read, and how much output each carries. */
+const DEFAULT_ACTIVITY_LIMIT = 20;
+const MAX_ACTIVITY_LIMIT = 100;
+const DEFAULT_ACTIVITY_OUTPUT_CHARS = 1_200;
+/** Input is a command line or a path — long enough to read, short enough not to dominate. */
+const MAX_ACTIVITY_INPUT_CHARS = 600;
+
+/** Hits returned by one in-conversation search, and how much text each carries. */
+const DEFAULT_MATCH_LIMIT = 20;
+const MAX_MATCH_LIMIT = 100;
+const MATCH_SNIPPET_CHARS = 240;
 /**
  * Patch budget for `read_thread_changes`. Sized to match the range-diff cap the
  * git driver already uses for LLM-bound patches (GitVcsDriverCore), not the
@@ -187,14 +215,6 @@ const requireOrchestrator = Effect.fn("OrchestratorToolkit.requireCapability")(f
   };
 });
 
-const truncate = (
-  text: string,
-  maxChars: number = MAX_MESSAGE_CHARS,
-): { text: string; truncated: boolean } =>
-  text.length > maxChars
-    ? { text: `${text.slice(0, maxChars)}…`, truncated: true }
-    : { text, truncated: false };
-
 /**
  * Every activity kind the orchestrator derives anything from, and nothing else.
  *
@@ -228,9 +248,9 @@ const ORCHESTRATOR_ACTIVITY_KINDS = [
  * spun off, and would otherwise vanish from every surface here.
  */
 function deriveResolvedFollowups(
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
+  records: ReadonlyMap<string, OrchestrationFollowup>,
 ): Array<OrchestrationFollowup> {
-  return [...deriveFollowupRecords(activities).values()]
+  return [...records.values()]
     .filter((followup) => followup.status !== "pending")
     .toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
@@ -240,6 +260,114 @@ function deriveResolvedFollowups(
  * already been handled on a busy thread without turning a read into a history
  * dump — the pending ones are the part that still needs somebody.
  */
+/**
+ * Tool activity payloads are the provider's own shape, kept structurally intact
+ * by the ingestion sanitizer. These readers pull the three things that answer
+ * "what did this turn actually do" — which tool, what it was asked, what came
+ * back — without asserting a schema the next provider will not match. Anything
+ * unrecognised falls back to its JSON, which is still readable and still true.
+ */
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+
+const compactJson = (value: unknown): string => {
+  if (value === undefined) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return "";
+  }
+};
+
+/** The command line, path or pattern the call was made with. */
+function readActivityInput(payload: unknown): string {
+  const data = asRecord(asRecord(payload)?.data);
+  const input = asRecord(data?.input);
+  if (input === null) {
+    return compactJson(data?.input ?? asRecord(payload)?.detail);
+  }
+  // Commands and paths first: on a Bash or Edit call they are the whole point,
+  // and burying them in a JSON blob makes a scan of forty calls unreadable.
+  for (const key of ["command", "file_path", "filePath", "path", "pattern", "url"]) {
+    const value = input[key];
+    if (typeof value === "string" && value.length > 0) {
+      const description = input.description;
+      return typeof description === "string" && description.length > 0
+        ? `${value}  — ${description}`
+        : value;
+    }
+  }
+  return compactJson(input);
+}
+
+/** What the call printed, and whether it reported an error. */
+function readActivityResult(payload: unknown): { output: string; failed: boolean } {
+  const data = asRecord(asRecord(payload)?.data);
+  const result = data?.result;
+  const resultRecord = asRecord(result);
+  const failed =
+    resultRecord?.is_error === true ||
+    resultRecord?.isError === true ||
+    resultRecord?.status === "error";
+  if (resultRecord === null) {
+    return { output: compactJson(result), failed };
+  }
+  const content = resultRecord.content ?? resultRecord.output ?? resultRecord.rawOutput;
+  if (typeof content === "string") {
+    return { output: content, failed };
+  }
+  // Anthropic-style content blocks: pull the text out rather than handing back
+  // the wrapper, which is all shape and no information.
+  if (Array.isArray(content)) {
+    const text = content
+      .map((block) => {
+        const record = asRecord(block);
+        return typeof record?.text === "string" ? record.text : compactJson(block);
+      })
+      .join("\n");
+    return { output: text, failed };
+  }
+  return { output: compactJson(content ?? result), failed };
+}
+
+function readActivityToolName(payload: unknown, summary: string): string {
+  const data = asRecord(asRecord(payload)?.data);
+  const toolName = data?.toolName;
+  return typeof toolName === "string" && toolName.length > 0 ? toolName : summary;
+}
+
+/**
+ * Where a slice sits in its conversation, and what is left on either side of it.
+ *
+ * Every read of a conversation carries this, because the failure it prevents is
+ * the expensive one: a caller that cannot tell a cut from an ending reports the
+ * tail of a thread as the whole of it, and never knows to come back. With the
+ * counts beside the slice, a cut is somewhere to continue from.
+ */
+function describeWindow(input: {
+  messageCount: number;
+  offset: number;
+  indices: ReadonlyArray<number>;
+  droppedToBudget: number;
+}) {
+  const firstIndex = input.indices[0] ?? null;
+  const lastIndex = input.indices.at(-1) ?? null;
+  return {
+    messageCount: input.messageCount,
+    firstIndex,
+    lastIndex,
+    olderRemaining: firstIndex === null ? Math.min(input.offset, input.messageCount) : firstIndex,
+    newerRemaining:
+      lastIndex === null
+        ? Math.max(0, input.messageCount - input.offset)
+        : Math.max(0, input.messageCount - 1 - lastIndex),
+    droppedToBudget: input.droppedToBudget,
+  };
+}
+
 const MAX_RESOLVED_FOLLOWUPS = 10;
 
 /** Shape closed follow-ups for a tool result, joining each spin-off to its thread. */
@@ -593,6 +721,23 @@ function summarizeThread(input: {
     hasPendingFollowups: thread.hasPendingFollowups,
     archived: thread.archivedAt !== null,
     pinned: thread.pinnedAt !== null,
+    done: thread.doneAt !== null,
+    cold: isThreadCold(
+      {
+        archivedAt: thread.archivedAt,
+        doneAt: thread.doneAt,
+        updatedAt: thread.updatedAt,
+        hasPendingFollowups: thread.hasPendingFollowups,
+        hasPendingApprovals: thread.hasPendingApprovals,
+        hasPendingUserInput: thread.hasPendingUserInput,
+        isRunning:
+          thread.latestTurn?.state === "running" ||
+          thread.session?.status === "running" ||
+          thread.session?.status === "starting",
+      },
+      input.now,
+    ),
+    quietDays: threadQuietDays(thread.updatedAt, input.now),
     orchestratorAccess: input.access,
     isOrchestratorConversation: input.isOrchestratorConversation,
   };
@@ -810,7 +955,12 @@ const handlers = {
       });
       const matched = threads
         .filter((thread) => matchesProject(thread, input.projectTitle))
-        .filter((thread) => input.onlyNeedingAttention !== true || needsAttention(thread));
+        .filter((thread) => input.onlyNeedingAttention !== true || needsAttention(thread))
+        .filter((thread) => input.onlyCold !== true || thread.cold)
+        // Settled threads are hidden by default: the user has ruled on them, so
+        // they are noise in any sweep of live work. An explicit `onlyCold` or a
+        // project filter is still a sweep; only `includeDone` brings them back.
+        .filter((thread) => input.includeDone === true || !thread.done);
 
       const limit = input.limit ?? DEFAULT_THREAD_LIMIT;
       const offset = input.offset ?? 0;
@@ -870,6 +1020,7 @@ const handlers = {
             branch: match.branch,
             snippet: match.snippet,
             matchedRole: match.matchedRole,
+            matchedMessageId: match.matchedMessageId,
             matchKind: match.matchKind,
             archived: match.archivedAt !== null,
             updatedAt: match.updatedAt,
@@ -925,24 +1076,6 @@ const handlers = {
       }
       const thread = shell.value;
 
-      // Two narrow reads rather than the whole thread. The detail query returns
-      // every message and every activity a conversation ever had — on a long one
-      // that is megabytes of tool-call payloads, decoded, to show twelve
-      // messages and derive a couple of pending questions.
-      const [tailMessages, activities] = yield* Effect.all(
-        [
-          projectionSnapshotQuery.getThreadMessagesTail(
-            input.threadId,
-            input.messageLimit ?? DEFAULT_MESSAGE_LIMIT,
-          ),
-          projectionSnapshotQuery.listThreadActivitiesByKinds(
-            input.threadId,
-            ORCHESTRATOR_ACTIVITY_KINDS,
-          ),
-        ],
-        { concurrency: 2 },
-      ).pipe(Effect.mapError(snapshotError("read the conversation")));
-
       const project = yield* projectionSnapshotQuery
         .getProjectShellById(thread.projectId)
         .pipe(Effect.mapError(snapshotError("read the conversation's project")));
@@ -951,49 +1084,395 @@ const handlers = {
         onSome: (value: OrchestrationProjectShell) => value.title,
       });
 
-      // Newest first while the budget is spent, so what survives a tight budget
-      // is the end of the conversation rather than its opening — then flipped
-      // back to reading order. Without this, asking for one message in full and
-      // getting the oldest one instead would be the common case.
-      const budget = { remaining: MAX_READ_THREAD_CHARS };
-      const messages = tailMessages
-        .toReversed()
-        .filter(() => budget.remaining > 0)
-        .map((message) => {
-          const { text, truncated } = truncate(
-            message.text,
-            Math.min(input.messageChars ?? MAX_MESSAGE_CHARS, budget.remaining),
-          );
-          budget.remaining -= text.length;
+      // How long the conversation is, on every view. A slice of it means
+      // nothing without this: it is what separates "that was the whole thing"
+      // from "that was where I stopped reading", and the second one is the
+      // mistake this tool used to make unavoidable.
+      const messageCount = yield* projectionSnapshotQuery
+        .countThreadMessages(input.threadId)
+        .pipe(Effect.mapError(snapshotError("measure the conversation")));
+
+      const view = input.view ?? "tail";
+
+      // Reading on from a cut only makes sense for one message; applied to a
+      // page it would silently behead all of them.
+      if (input.textFrom !== undefined && input.textFrom > 0 && input.messageLimit !== 1) {
+        return yield* new OrchestratorToolError({
+          message:
+            "`textFrom` reads on from where one message was cut, so it only applies to a single message. Pass `messageLimit: 1` with it, and pin which message with `aroundMessageId` or `fromIndex`.",
+        });
+      }
+
+      // A message id — from a search hit, or from an earlier slice — becomes a
+      // place to read around rather than something to go hunting for.
+      const anchorIndex =
+        input.aroundMessageId === undefined
+          ? null
+          : yield* projectionSnapshotQuery
+              .getThreadMessagePosition(input.threadId, input.aroundMessageId)
+              .pipe(
+                Effect.mapError(snapshotError("find that message in the conversation")),
+                Effect.flatMap(
+                  Option.match({
+                    onNone: () =>
+                      new OrchestratorToolError({
+                        message: `Message ${input.aroundMessageId} is not in conversation ${input.threadId}. Message ids come from this tool's own results; a conversation id will not work here.`,
+                      }),
+                    onSome: (position: number) => Effect.succeed(position),
+                  }),
+                ),
+              );
+
+      const limit = Math.min(
+        input.messageLimit ?? (view === "outline" ? DEFAULT_OUTLINE_LIMIT : DEFAULT_MESSAGE_LIMIT),
+        view === "outline" ? MAX_OUTLINE_LIMIT : MAX_WINDOW_LIMIT,
+      );
+      // An anchor is centred rather than used as a start: the point of reading
+      // around a message is what led up to it as much as what followed.
+      const offset =
+        anchorIndex !== null
+          ? Math.max(0, anchorIndex - Math.floor((limit - 1) / 2))
+          : input.fromIndex !== undefined
+            ? input.fromIndex
+            : view === "tail"
+              ? Math.max(0, messageCount - limit)
+              : 0;
+
+      const threadSummary = () =>
+        Effect.map(DateTime.now, (now) =>
+          summarizeThread({
+            access,
+            environmentId: invocation.environmentId,
+            thread,
+            projectTitle,
+            now: DateTime.toEpochMillis(now),
+            isOrchestratorConversation,
+          }),
+        );
+
+      if (view === "activity") {
+        // Either identifier works, because the caller may be holding either: a
+        // turn id from an outline line, or the message that turn produced.
+        const resolvedTurnId =
+          input.turnId ??
+          (input.aroundMessageId === undefined
+            ? null
+            : yield* projectionSnapshotQuery
+                .getThreadMessageTurn(input.threadId, input.aroundMessageId)
+                .pipe(
+                  Effect.mapError(snapshotError("find that message's turn")),
+                  Effect.map(Option.getOrNull),
+                ));
+        if (resolvedTurnId === null) {
+          return yield* new OrchestratorToolError({
+            message:
+              input.turnId === undefined && input.aroundMessageId === undefined
+                ? "Reading a turn's activity needs `turnId`, or `aroundMessageId` for the message that turn produced. Both come back on every message and outline entry."
+                : `No turn found for that message in conversation ${input.threadId}. Messages written outside a turn — the user's own, or one from before turns were recorded — have no activity to read.`,
+          });
+        }
+
+        const activityLimit = Math.min(
+          input.messageLimit ?? DEFAULT_ACTIVITY_LIMIT,
+          MAX_ACTIVITY_LIMIT,
+        );
+        const activityOffset = input.fromIndex ?? 0;
+        const [activities, activityCount] = yield* Effect.all(
+          [
+            projectionSnapshotQuery.listThreadTurnToolActivities(input.threadId, resolvedTurnId, {
+              offset: activityOffset,
+              limit: activityLimit,
+            }),
+            projectionSnapshotQuery.countThreadTurnToolActivities(input.threadId, resolvedTurnId),
+          ],
+          { concurrency: 2 },
+        ).pipe(Effect.mapError(snapshotError("read what that turn did")));
+
+        const outputBudget = input.messageChars ?? DEFAULT_ACTIVITY_OUTPUT_CHARS;
+        let activityRemaining = MAX_READ_THREAD_CHARS;
+        const entries = activities.map((activity, position) => {
+          const { output, failed } = readActivityResult(activity.payload);
+          const kept = output.slice(0, Math.max(0, Math.min(outputBudget, activityRemaining)));
+          activityRemaining -= kept.length;
           return {
-            role: message.role,
-            text,
-            truncated,
-            // A streaming message is the half-written tail of a turn still in
-            // flight. Reporting it as the thread's last word would have the
-            // orchestrator summarize an answer that is not finished.
-            streaming: message.streaming,
-            createdAt: message.createdAt,
+            index: activityOffset + position,
+            tool: readActivityToolName(activity.payload, activity.summary),
+            title: activity.summary,
+            denied: activity.kind === "tool.denied",
+            failed,
+            input: readActivityInput(activity.payload).slice(0, MAX_ACTIVITY_INPUT_CHARS),
+            output: kept,
+            outputChars: output.length,
+            truncated: kept.length < output.length,
+            createdAt: activity.createdAt,
           };
-        })
-        .toReversed();
+        });
+
+        const lastActivityIndex = entries.at(-1)?.index ?? null;
+        return {
+          thread: yield* threadSummary(),
+          messages: [],
+          outline: null,
+          matches: null,
+          matchCount: null,
+          activity: entries,
+          turn: {
+            turnId: resolvedTurnId,
+            activityCount,
+            failedOnPage: entries.filter((entry) => entry.failed || entry.denied).length,
+            firstIndex: entries[0]?.index ?? null,
+            lastIndex: lastActivityIndex,
+            remaining:
+              lastActivityIndex === null
+                ? Math.max(0, activityCount - activityOffset)
+                : Math.max(0, activityCount - 1 - lastActivityIndex),
+          },
+          window: describeWindow({
+            messageCount,
+            offset: 0,
+            indices: [],
+            droppedToBudget: 0,
+          }),
+          pendingQuestions: null,
+          pendingApprovals: null,
+          pendingFollowups: null,
+          recentlyResolvedFollowups: null,
+        };
+      }
+
+      if (view === "search") {
+        if (input.query === undefined) {
+          return yield* new OrchestratorToolError({
+            message: "Searching a conversation needs a `query` — the phrase to look for inside it.",
+          });
+        }
+        const matchLimit = Math.min(input.messageLimit ?? DEFAULT_MATCH_LIMIT, MAX_MATCH_LIMIT);
+        const [matches, matchCount] = yield* Effect.all(
+          [
+            projectionSnapshotQuery.searchThreadMessages(input.threadId, {
+              query: input.query,
+              limit: matchLimit,
+              snippetChars: MATCH_SNIPPET_CHARS,
+            }),
+            // The true total beside the page of hits, so "twenty matches" is
+            // never mistaken for "all the matches" on a conversation that has
+            // two hundred.
+            projectionSnapshotQuery.countThreadMessageMatches(input.threadId, input.query),
+          ],
+          { concurrency: 2 },
+        ).pipe(Effect.mapError(snapshotError("search the conversation")));
+
+        return {
+          thread: yield* threadSummary(),
+          messages: [],
+          outline: null,
+          activity: null,
+          turn: null,
+          matches: matches.map((match) => ({
+            index: match.index,
+            messageId: match.id,
+            role: match.role,
+            matchOffset: match.matchOffset,
+            charCount: match.charCount,
+            snippet: match.snippet,
+            createdAt: match.createdAt,
+          })),
+          matchCount,
+          window: describeWindow({
+            messageCount,
+            offset: 0,
+            indices: [],
+            droppedToBudget: 0,
+          }),
+          pendingQuestions: null,
+          pendingApprovals: null,
+          pendingFollowups: null,
+          recentlyResolvedFollowups: null,
+        };
+      }
+
+      if (view === "outline") {
+        // The previews share the budget the message views spend, so mapping a
+        // conversation can never cost more than reading one — which is what
+        // makes "map it first" the cheap move rather than a second full read.
+        const previewChars = Math.max(
+          MIN_PREVIEW_CHARS,
+          Math.min(
+            input.previewChars ?? DEFAULT_PREVIEW_CHARS,
+            Math.floor(MAX_READ_THREAD_CHARS / limit),
+          ),
+        );
+        const [entries, toolCallsByTurn] = yield* Effect.all(
+          [
+            projectionSnapshotQuery.listThreadMessageOutline(input.threadId, {
+              offset,
+              limit,
+              previewChars,
+            }),
+            projectionSnapshotQuery.countThreadToolCallsByTurn(input.threadId),
+          ],
+          { concurrency: 2 },
+        ).pipe(Effect.mapError(snapshotError("map the conversation")));
+
+        const outline = entries.map((entry, position) => ({
+          index: offset + position,
+          messageId: entry.id,
+          turnId: entry.turnId,
+          role: entry.role,
+          preview: entry.preview,
+          charCount: entry.charCount,
+          truncated: entry.charCount > entry.preview.length,
+          // Counted against the assistant message that closed the turn only.
+          // Hanging it on the user's message too would report the same work
+          // twice and make a turn look busier than it was.
+          toolCalls:
+            entry.role === "assistant" && entry.turnId !== null
+              ? (toolCallsByTurn.get(entry.turnId) ?? 0)
+              : 0,
+          streaming: entry.streaming,
+          createdAt: entry.createdAt,
+        }));
+
+        return {
+          thread: yield* threadSummary(),
+          messages: [],
+          outline,
+          matches: null,
+          matchCount: null,
+          activity: null,
+          turn: null,
+          window: describeWindow({
+            messageCount,
+            offset,
+            indices: outline.map((entry) => entry.index),
+            droppedToBudget: 0,
+          }),
+          // Not read on this view rather than absent: null says "did not look",
+          // where an empty array would say "there are none".
+          pendingQuestions: null,
+          pendingApprovals: null,
+          pendingFollowups: null,
+          recentlyResolvedFollowups: null,
+        };
+      }
+
+      const windowMessages = yield* projectionSnapshotQuery
+        .listThreadMessageWindow(input.threadId, { offset, limit })
+        .pipe(Effect.mapError(snapshotError("read the conversation")));
+
+      const textFrom = input.textFrom ?? 0;
+      const perMessageChars = input.messageChars ?? MAX_MESSAGE_CHARS;
+      // On the tail the budget is spent newest-first, so what survives a tight
+      // one is the end of the conversation rather than its opening. On a window
+      // the caller said where to start, so it is spent from there forwards.
+      const spendOrder =
+        view === "tail"
+          ? windowMessages
+              .map((message, position) => ({ message, index: offset + position }))
+              .toReversed()
+          : windowMessages.map((message, position) => ({ message, index: offset + position }));
+
+      let remaining = MAX_READ_THREAD_CHARS;
+      let droppedToBudget = 0;
+      const spent: Array<{
+        index: number;
+        messageId: MessageId;
+        turnId: OrchestrationMessage["turnId"];
+        role: OrchestrationMessage["role"];
+        text: string;
+        charCount: number;
+        textStart: number;
+        truncated: boolean;
+        streaming: boolean;
+        createdAt: IsoDateTime;
+      }> = [];
+      for (const { message, index } of spendOrder) {
+        if (remaining <= 0) {
+          // Dropped rather than returned empty. A message reported as empty
+          // reads as a message that said nothing; a count of what did not fit
+          // reads as an instruction to come back for it.
+          droppedToBudget += 1;
+          continue;
+        }
+        const start = Math.min(textFrom, message.text.length);
+        const text = message.text.slice(start, start + Math.min(perMessageChars, remaining));
+        remaining -= text.length;
+        spent.push({
+          index,
+          messageId: message.id,
+          turnId: message.turnId,
+          role: message.role,
+          text,
+          charCount: message.text.length,
+          textStart: start,
+          truncated: start + text.length < message.text.length,
+          // A streaming message is the half-written tail of a turn still in
+          // flight. Reporting it as the thread's last word would have the
+          // orchestrator summarize an answer that is not finished.
+          streaming: message.streaming,
+          createdAt: message.createdAt,
+        });
+      }
+      const messages = view === "tail" ? spent.toReversed() : spent;
+
+      const messageWindow = describeWindow({
+        messageCount,
+        offset,
+        indices: messages.map((message) => message.index),
+        droppedToBudget,
+      });
+
+      if (view === "window") {
+        return {
+          thread: yield* threadSummary(),
+          messages,
+          outline: null,
+          matches: null,
+          matchCount: null,
+          activity: null,
+          turn: null,
+          window: messageWindow,
+          pendingQuestions: null,
+          pendingApprovals: null,
+          pendingFollowups: null,
+          recentlyResolvedFollowups: null,
+        };
+      }
+
+      // The orientation read carries what the thread is blocked on. Only the
+      // kinds that answers that: the activity log is sized for rendering a
+      // timeline, and reading all of it here would cost more than the messages.
+      const activities = yield* projectionSnapshotQuery
+        .listThreadActivitiesByKinds(input.threadId, ORCHESTRATOR_ACTIVITY_KINDS)
+        .pipe(Effect.mapError(snapshotError("read the conversation")));
+
+      // One record set for both halves, repaired first: follow-ups recorded
+      // before the adapter learned to read misnamed arguments carry no detail
+      // of their own, and the tool call that made them still does. The extra
+      // read only happens when something is missing.
+      const followupRecords = deriveFollowupRecords(activities);
+      if (needsFollowupDetailRepair(followupRecords)) {
+        const toolCalls = yield* projectionSnapshotQuery
+          .listFollowupToolCallActivities(input.threadId)
+          .pipe(Effect.mapError(snapshotError("read the conversation's follow-ups")));
+        repairFollowupDetails(followupRecords, toolCalls);
+      }
 
       const recentlyResolvedFollowups = yield* summarizeResolvedFollowups(
-        deriveResolvedFollowups(activities).slice(0, MAX_RESOLVED_FOLLOWUPS),
+        deriveResolvedFollowups(followupRecords).slice(0, MAX_RESOLVED_FOLLOWUPS),
       ).pipe(
         Effect.mapError(snapshotError("read the conversations a follow-up was spun off into")),
       );
 
       return {
-        thread: summarizeThread({
-          access,
-          environmentId: invocation.environmentId,
-          thread,
-          projectTitle,
-          now: DateTime.toEpochMillis(yield* DateTime.now),
-          isOrchestratorConversation,
-        }),
+        thread: yield* threadSummary(),
         messages,
+        outline: null,
+        matches: null,
+        matchCount: null,
+        activity: null,
+        turn: null,
+        window: messageWindow,
         pendingQuestions: toPendingQuestionSets(derivePendingUserInputs(activities), {
           threadId: thread.id,
           threadTitle: thread.title,
@@ -1004,7 +1483,7 @@ const handlers = {
           threadTitle: thread.title,
           projectTitle,
         }),
-        pendingFollowups: derivePendingFollowups(activities).map((followup) => ({
+        pendingFollowups: pendingFollowupsFromRecords(followupRecords).map((followup) => ({
           ...followup,
           threadId: thread.id,
           threadTitle: thread.title,
@@ -1053,6 +1532,14 @@ const handlers = {
       const awaitingApproval = inRange.filter((thread) => thread.awaitingApproval);
       const awaitingUserInput = inRange.filter((thread) => thread.awaitingUserInput);
       const failed = inRange.filter((thread) => thread.phase === "failed");
+      // Oldest first, unlike the other thread sections: the point of this one is
+      // that the longest-untouched thread is the most likely to be the thing the
+      // user has actually lost track of, so it belongs on the first page.
+      // `isThreadCold` has already excluded anything blocked, running, archived
+      // or stamped done, so nothing here double-counts the sections above.
+      const cold = inRange
+        .filter((thread) => thread.cold)
+        .toSorted((left, right) => left.updatedAt.localeCompare(right.updatedAt));
 
       // Questions are hydrated only for the page of threads actually being
       // returned, rather than for every waiting thread — at library scale the
@@ -1098,47 +1585,64 @@ const handlers = {
           // Only the activity kinds these two derivations read. Loading the
           // whole thread detail here meant pulling every tool call and step
           // payload in the conversation to look at a handful of rows.
-          projectionSnapshotQuery
-            .listThreadActivitiesByKinds(thread.threadId, ORCHESTRATOR_ACTIVITY_KINDS)
-            .pipe(
-              Effect.map((activities) => ({
-                followups: followupThreadIds.has(thread.threadId)
-                  ? derivePendingFollowups(activities)
-                      .filter((followup) => withinBounds(followup.createdAt, bounds))
-                      .map((followup) => ({
-                        ...followup,
-                        threadId: thread.threadId,
-                        threadTitle: thread.title,
-                        projectTitle: thread.projectTitle,
-                      }))
-                  : [],
-                questions: questionThreadIds.has(thread.threadId)
-                  ? toPendingQuestionSets(derivePendingUserInputs(activities), {
-                      threadId: thread.threadId,
-                      threadTitle: thread.title,
-                      projectTitle: thread.projectTitle,
-                    })
-                  : [],
-                approvals: approvalThreadIds.has(thread.threadId)
-                  ? toPendingApprovals(derivePendingApprovals(activities), {
-                      threadId: thread.threadId,
-                      threadTitle: thread.title,
-                      projectTitle: thread.projectTitle,
-                    })
-                  : [],
-              })),
-              // A thread that will not load contributes nothing rather than
-              // failing the whole call, but it is logged: its follow-ups are
-              // silently missing from a count the orchestrator presents to the
-              // user as the complete backlog.
-              Effect.tapCause((cause) =>
-                Effect.logWarning("Could not read a pending thread; its items are missing", {
+          Effect.gen(function* () {
+            const activities = yield* projectionSnapshotQuery.listThreadActivitiesByKinds(
+              thread.threadId,
+              ORCHESTRATOR_ACTIVITY_KINDS,
+            );
+
+            let followups: ReturnType<typeof pendingFollowupsFromRecords> = [];
+            if (followupThreadIds.has(thread.threadId)) {
+              const records = deriveFollowupRecords(activities);
+              // Repaired only for the threads that actually hold a follow-up
+              // missing its detail, so the sweep does not pay a second read per
+              // thread for a deck that is already whole.
+              if (needsFollowupDetailRepair(records)) {
+                const toolCalls = yield* projectionSnapshotQuery.listFollowupToolCallActivities(
+                  thread.threadId,
+                );
+                repairFollowupDetails(records, toolCalls);
+              }
+              followups = pendingFollowupsFromRecords(records);
+            }
+
+            return {
+              followups: followups
+                .filter((followup) => withinBounds(followup.createdAt, bounds))
+                .map((followup) => ({
+                  ...followup,
                   threadId: thread.threadId,
-                  cause,
-                }),
-              ),
-              Effect.orElseSucceed(() => ({ followups: [], questions: [], approvals: [] })),
+                  threadTitle: thread.title,
+                  projectTitle: thread.projectTitle,
+                })),
+              questions: questionThreadIds.has(thread.threadId)
+                ? toPendingQuestionSets(derivePendingUserInputs(activities), {
+                    threadId: thread.threadId,
+                    threadTitle: thread.title,
+                    projectTitle: thread.projectTitle,
+                  })
+                : [],
+              approvals: approvalThreadIds.has(thread.threadId)
+                ? toPendingApprovals(derivePendingApprovals(activities), {
+                    threadId: thread.threadId,
+                    threadTitle: thread.title,
+                    projectTitle: thread.projectTitle,
+                  })
+                : [],
+            };
+          }).pipe(
+            // A thread that will not load contributes nothing rather than
+            // failing the whole call, but it is logged: its follow-ups are
+            // silently missing from a count the orchestrator presents to the
+            // user as the complete backlog.
+            Effect.tapCause((cause) =>
+              Effect.logWarning("Could not read a pending thread; its items are missing", {
+                threadId: thread.threadId,
+                cause,
+              }),
             ),
+            Effect.orElseSucceed(() => ({ followups: [], questions: [], approvals: [] })),
+          ),
         { concurrency: 4 },
       );
 
@@ -1156,12 +1660,14 @@ const handlers = {
         // are the one total that cannot be read off the thread list, so leaving
         // it out is honest where a zero would be a lie.
         pendingFollowups: sections.has("followups") ? pendingFollowups.length : null,
+        cold: sections.has("cold") ? cold.length : null,
       };
       const sectionPages = [
         [sections.has("approvals") ? awaitingApproval : [], page(awaitingApproval)],
         [sections.has("questions") ? awaitingUserInput : [], questionThreads],
         [sections.has("failed") ? failed : [], page(failed)],
         [pendingFollowups, page(pendingFollowups)],
+        [sections.has("cold") ? cold : [], page(cold)],
       ] as const;
 
       return {
@@ -1171,6 +1677,7 @@ const handlers = {
         pendingApprovalRequests: hydrated.flatMap((entry) => entry.approvals),
         failed: sections.has("failed") ? page(failed) : [],
         pendingFollowups: page(pendingFollowups),
+        cold: sections.has("cold") ? page(cold) : [],
         counts,
         // The furthest any section still has to go, so a single follow-up call
         // picks up whatever was left out of any of them.
@@ -2210,7 +2717,13 @@ const handlers = {
         });
       }
 
-      const followups = deriveFollowupRecords(thread.activities);
+      // The full activity log is already loaded here, so the repair costs
+      // nothing extra — and because closing a follow-up re-appends the whole
+      // record, a detail recovered here is written back for good.
+      const followups = repairFollowupDetails(
+        deriveFollowupRecords(thread.activities),
+        thread.activities,
+      );
       const existing = followups.get(input.followupId);
       if (existing === undefined) {
         const pending = [...followups.values()]

@@ -156,7 +156,16 @@ import { newCommandId, newDraftId, newMessageId, newThreadId } from "~/lib/utils
 import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
 import { useSettings } from "../hooks/useSettings";
 import { useOrchestratorProjectId } from "../hooks/useOrchestratorConversation";
-import { resolveAppModelSelectionForInstance } from "../modelSelection";
+import {
+  type AppModelOption,
+  getAppModelOptionsForInstance,
+  resolveAppModelSelectionForInstance,
+} from "../modelSelection";
+import {
+  deriveProviderInstanceEntries,
+  type ProviderInstanceEntry,
+  sortProviderInstanceEntries,
+} from "../providerInstances";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
 import {
   deriveLogicalProjectKeyFromSettings,
@@ -190,6 +199,7 @@ import {
 import { appendPreviewAnnotationPrompt } from "../lib/previewAnnotation";
 import { appendReviewCommentsToPrompt, type ReviewCommentContext } from "../reviewCommentContext";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
+import { getComposerProviderState } from "./chat/composerProviderState";
 import { QueuedTurns } from "./chat/QueuedTurns";
 import {
   type QueuedTurn,
@@ -1876,6 +1886,22 @@ function ChatViewContent(props: ChatViewProps) {
     versionMismatchServerLabel,
   ]);
   const providerStatuses = serverConfig?.providers ?? EMPTY_PROVIDERS;
+  // Same instance-aware projection the composer's model picker runs on. Derived
+  // here too because the "Start custom…" dialog carries its own picker, and the
+  // composer's copy lives behind a ref that cannot be read during render.
+  const providerInstanceEntries = useMemo<ReadonlyArray<ProviderInstanceEntry>>(
+    () => sortProviderInstanceEntries(deriveProviderInstanceEntries(providerStatuses)),
+    [providerStatuses],
+  );
+  const modelOptionsByInstance = useMemo<
+    ReadonlyMap<ProviderInstanceId, ReadonlyArray<AppModelOption>>
+  >(() => {
+    const out = new Map<ProviderInstanceId, ReadonlyArray<AppModelOption>>();
+    for (const entry of providerInstanceEntries) {
+      out.set(entry.instanceId, getAppModelOptionsForInstance(settings, entry));
+    }
+    return out;
+  }, [providerInstanceEntries, settings]);
   const unlockedSelectedProvider = resolveSelectableProvider(
     providerStatuses,
     selectedProviderByThreadId ?? threadProvider ?? ProviderDriverKind.make("codex"),
@@ -1947,6 +1973,13 @@ function ChatViewContent(props: ChatViewProps) {
   // The follow-up the "Start custom…" dialog is open for, held separately from
   // the deck's own paging so the dialog keeps showing the task you opened it on.
   const [customStartFollowup, setCustomStartFollowup] = useState<FollowupState | null>(null);
+  // The composer's provider/model at the moment the dialog was opened. Captured
+  // into state rather than read live, so the picker inside the dialog does not
+  // snap back every time a websocket update re-renders the composer.
+  const [customStartDefaultSelection, setCustomStartDefaultSelection] = useState<{
+    instanceId: ProviderInstanceId;
+    model: string;
+  } | null>(null);
   const pendingApprovals = useMemo(
     () => derivePendingApprovals(threadActivities),
     [threadActivities],
@@ -5022,8 +5055,54 @@ function ChatViewContent(props: ChatViewProps) {
     [isServerThread, openMessageThread],
   );
 
+  /**
+   * Turn a provider/model picked in the "Start custom…" dialog into everything a
+   * dispatch needs: the wire selection, plus the driver/model/effort trio the
+   * prompt formatter uses to decide on a thinking-effort prefix. Returns null
+   * when there is no override, in which case the composer's own state stands.
+   */
+  const resolveFollowupModelOverride = useCallback(
+    (override: { instanceId: ProviderInstanceId; model: string } | null | undefined) => {
+      if (!override) return null;
+      const entry = providerInstanceEntries.find(
+        (candidate) => candidate.instanceId === override.instanceId,
+      );
+      if (!entry) return null;
+      const model =
+        resolveAppModelSelectionForInstance(
+          override.instanceId,
+          settings,
+          providerStatuses,
+          override.model,
+        ) ?? override.model;
+      const { promptEffort, modelOptionsForDispatch } = getComposerProviderState({
+        provider: entry.driverKind,
+        model,
+        models: entry.models,
+        prompt: "",
+        modelOptions: undefined,
+      });
+      return {
+        modelSelection: createModelSelection(override.instanceId, model, modelOptionsForDispatch),
+        provider: entry.driverKind,
+        model,
+        models: entry.models,
+        effort: promptEffort,
+      };
+    },
+    [providerInstanceEntries, providerStatuses, settings],
+  );
+
   const onDoFollowupNow = useCallback(
-    async (followup: FollowupState) => {
+    async (
+      followup: FollowupState,
+      options?: {
+        /** Free text from the "Start custom…" dialog, folded into the prompt. */
+        extraContext?: string;
+        /** Provider/model override for this one turn. */
+        modelSelection?: { instanceId: ProviderInstanceId; model: string } | null;
+      },
+    ) => {
       const api = readEnvironmentApi(environmentId);
       if (
         !api ||
@@ -5041,12 +5120,14 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
       const createdAt = new Date().toISOString();
+      const override = resolveFollowupModelOverride(options?.modelSelection);
+      const modelSelection = override?.modelSelection ?? sendCtx.selectedModelSelection;
       const outgoingText = formatOutgoingPrompt({
-        provider: sendCtx.selectedProvider,
-        model: sendCtx.selectedModel,
-        models: sendCtx.selectedProviderModels,
-        effort: sendCtx.selectedPromptEffort,
-        text: buildFollowupPrompt(followup),
+        provider: override?.provider ?? sendCtx.selectedProvider,
+        model: override?.model ?? sendCtx.selectedModel,
+        models: override?.models ?? sendCtx.selectedProviderModels,
+        effort: override?.effort ?? sendCtx.selectedPromptEffort,
+        text: buildFollowupPrompt(followup, options?.extraContext),
       });
       setFollowupBusyId(followup.id);
       sendInFlightRef.current = true;
@@ -5062,7 +5143,7 @@ function ChatViewContent(props: ChatViewProps) {
             text: outgoingText,
             attachments: [],
           },
-          modelSelection: sendCtx.selectedModelSelection,
+          modelSelection,
           titleSeed: activeThread.title,
           runtimeMode,
           interactionMode: "default",
@@ -5090,6 +5171,7 @@ function ChatViewContent(props: ChatViewProps) {
       isSendBusy,
       isServerThread,
       resetLocalDispatch,
+      resolveFollowupModelOverride,
       runtimeMode,
       setThreadError,
       upsertFollowupStatus,
@@ -5109,6 +5191,8 @@ function ChatViewContent(props: ChatViewProps) {
         extraContext?: string;
         /** Cross-link both threads and badge this one as handed off. */
         markHandoff?: boolean;
+        /** Provider/model the new conversation should start on. */
+        modelSelection?: { instanceId: ProviderInstanceId; model: string } | null;
       },
     ) => {
       const api = readEnvironmentApi(environmentId);
@@ -5147,11 +5231,13 @@ function ChatViewContent(props: ChatViewProps) {
       const sourceThread = activeThread;
       const createdAt = new Date().toISOString();
       const nextThreadId = newThreadId();
+      const override = resolveFollowupModelOverride(options?.modelSelection);
+      const modelSelection = override?.modelSelection ?? sendCtx.selectedModelSelection;
       const outgoingText = formatOutgoingPrompt({
-        provider: sendCtx.selectedProvider,
-        model: sendCtx.selectedModel,
-        models: sendCtx.selectedProviderModels,
-        effort: sendCtx.selectedPromptEffort,
+        provider: override?.provider ?? sendCtx.selectedProvider,
+        model: override?.model ?? sendCtx.selectedModel,
+        models: override?.models ?? sendCtx.selectedProviderModels,
+        effort: override?.effort ?? sendCtx.selectedPromptEffort,
         text: buildFollowupPrompt(followup, options?.extraContext),
       });
       const nextThreadTitle = truncate(buildFollowupThreadTitle(followup));
@@ -5190,7 +5276,7 @@ function ChatViewContent(props: ChatViewProps) {
           threadId: nextThreadId,
           projectId: targetProject.id,
           title: nextThreadTitle,
-          modelSelection: sendCtx.selectedModelSelection,
+          modelSelection,
           runtimeMode,
           interactionMode: "default",
           branch: crossProject ? null : activeThreadBranch,
@@ -5208,7 +5294,7 @@ function ChatViewContent(props: ChatViewProps) {
               text: outgoingText,
               attachments: [],
             },
-            modelSelection: sendCtx.selectedModelSelection,
+            modelSelection,
             titleSeed: nextThreadTitle,
             runtimeMode,
             interactionMode: "default",
@@ -5342,6 +5428,7 @@ function ChatViewContent(props: ChatViewProps) {
       isServerThread,
       navigate,
       resetLocalDispatch,
+      resolveFollowupModelOverride,
       runtimeMode,
       setThreadError,
       upsertFollowupStatus,
@@ -5807,7 +5894,12 @@ function ChatViewContent(props: ChatViewProps) {
                       void onSpinOffFollowup(followup, { projectId })
                     }
                     onFixInSession={(followup) => void onDoFollowupNow(followup)}
-                    onStartCustom={setCustomStartFollowup}
+                    onStartCustom={(followup) => {
+                      setCustomStartDefaultSelection(
+                        composerRef.current?.getSendContext().selectedModelSelection ?? null,
+                      );
+                      setCustomStartFollowup(followup);
+                    }}
                     onDismiss={onDismissFollowup}
                   />
                 ) : null}
@@ -5821,14 +5913,29 @@ function ChatViewContent(props: ChatViewProps) {
                     }
                   }}
                   canStartInWorktree={isGitRepo && Boolean(activeThreadBranch)}
+                  canRunInCurrentChat={isServerThread}
                   projectChoices={followupProjectChoices}
+                  instanceEntries={providerInstanceEntries}
+                  modelOptionsByInstance={modelOptionsByInstance}
+                  defaultModelSelection={customStartDefaultSelection}
+                  lockedProvider={lockedProvider}
+                  keybindings={keybindings}
+                  getModelDisabledReason={getModelDisabledReason}
                   onStart={(followup, options) => {
                     setCustomStartFollowup(null);
+                    if (options.target === "currentChat") {
+                      void onDoFollowupNow(followup, {
+                        extraContext: options.extraContext,
+                        modelSelection: options.modelSelection,
+                      });
+                      return;
+                    }
                     void onSpinOffFollowup(followup, {
                       worktree: options.worktree,
                       ...(options.projectId ? { projectId: options.projectId } : {}),
                       extraContext: options.extraContext,
                       markHandoff: options.markHandoff,
+                      modelSelection: options.modelSelection,
                     });
                   }}
                 />

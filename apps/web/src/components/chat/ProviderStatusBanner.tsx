@@ -1,8 +1,9 @@
 import { type ServerProvider } from "@t3tools/contracts";
-import { memo } from "react";
-import { InfoIcon } from "lucide-react";
+import { memo, useEffect, useMemo, useState } from "react";
+import { InfoIcon, XIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { formatProviderDriverKindLabel } from "../../providerModels";
+import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export const ProviderStatusBanner = memo(function ProviderStatusBanner({
@@ -10,7 +11,29 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
 }: {
   status: ServerProvider | null;
 }) {
-  if (!status || status.status === "ready" || status.status === "disabled") {
+  const dismissalKey = useMemo(
+    () =>
+      status && status.status !== "ready" && status.status !== "disabled"
+        ? [
+            status.instanceId,
+            status.status,
+            status.auth.status,
+            status.installed ? "installed" : "missing",
+            status.version ?? "",
+            status.message ?? "",
+          ].join("\u0000")
+        : null,
+    [status],
+  );
+  const [dismissedKey, setDismissedKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (dismissedKey !== null && dismissedKey !== dismissalKey) {
+      setDismissedKey(null);
+    }
+  }, [dismissalKey, dismissedKey]);
+
+  if (!status || dismissalKey === null || dismissalKey === dismissedKey) {
     return null;
   }
 
@@ -20,7 +43,7 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
     ? `${providerName} is unauthenticated`
     : `${providerName} provider status`;
   const message = isUnauthenticated
-    ? "Sign in via the CLI to authenticate again."
+    ? "Open Settings → Providers and choose Sign in to authenticate again."
     : (status.message ??
       (status.status === "error"
         ? `${providerName} provider is unavailable.`
@@ -49,6 +72,21 @@ export const ProviderStatusBanner = memo(function ProviderStatusBanner({
             </TooltipPopup>
           </Tooltip>
         </div>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label="Dismiss provider status"
+                onClick={() => setDismissedKey(dismissalKey)}
+              />
+            }
+          >
+            <XIcon />
+          </TooltipTrigger>
+          <TooltipPopup side="top">Dismiss until provider status changes</TooltipPopup>
+        </Tooltip>
       </div>
     </div>
   );

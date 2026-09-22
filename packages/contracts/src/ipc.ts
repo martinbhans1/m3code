@@ -46,6 +46,7 @@ import type {
   ServerUsageReportInput,
   ServerUsageReportResult,
   ServerProviderUpdateInput,
+  ServerProviderAuthenticateInput,
   ServerProviderUpdatedPayload,
   ServerRemoveKeybindingResult,
   ServerSignalProcessInput,
@@ -949,6 +950,12 @@ export interface DesktopBridge {
     position?: { x: number; y: number },
   ) => Promise<T | null>;
   openExternal: (url: string) => Promise<boolean>;
+  /**
+   * Bring the app window to the front. Renderer-side `window.focus()` cannot
+   * raise a minimized or background Electron window, so activating a system
+   * notification has to ask the main process to reveal it.
+   */
+  focusWindow: () => Promise<void>;
   createCloudAuthRequest: () => Promise<string>;
   getCloudAuthToken: () => Promise<string | null>;
   setCloudAuthToken: (token: string) => Promise<boolean>;
@@ -1077,6 +1084,9 @@ export interface LocalApi {
     refreshProviders: (input?: {
       readonly instanceId?: ProviderInstanceId;
     }) => Promise<ServerProviderUpdatedPayload>;
+    authenticateProvider: (
+      input: ServerProviderAuthenticateInput,
+    ) => Promise<ServerProviderUpdatedPayload>;
     updateProvider: (input: ServerProviderUpdateInput) => Promise<ServerProviderUpdatedPayload>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     removeKeybinding: (input: ServerRemoveKeybindingInput) => Promise<ServerRemoveKeybindingResult>;

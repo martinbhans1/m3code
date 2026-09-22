@@ -16,6 +16,7 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 import type { ProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
+import type { ProviderAuthenticationActionError } from "../Errors.ts";
 
 export type ProviderMaintenanceActionKind = "update";
 
@@ -56,6 +57,10 @@ export interface ProviderRegistryShape {
     instanceId: ProviderInstanceId,
     provider: ProviderDriverKind,
   ) => Effect.Effect<ProviderMaintenanceCapabilities>;
+
+  readonly authenticateInstance?: (
+    instanceId: ProviderInstanceId,
+  ) => Effect.Effect<void, ProviderAuthenticationActionError>;
 
   /**
    * Apply volatile maintenance-action state to one configured instance.

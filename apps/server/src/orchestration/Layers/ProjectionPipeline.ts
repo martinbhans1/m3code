@@ -4,6 +4,7 @@ import {
   type OrchestrationSessionStatus,
   ThreadId,
 } from "@t3tools/contracts";
+import { isDoneStampSuperseded } from "@t3tools/shared/threadDisposition";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -531,8 +532,18 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       const { pendingUserInputCount, pendingFollowupCount, handoffThreadId, sourceThreadId } =
         activitySummary;
 
+      // The "settled" stamp is state the user set, but it expires against the
+      // conversation itself: a newer user message means they came back to it.
+      // Doing it here rather than only on the message event means a projection
+      // rebuilt from the log lands in the same place, and every downstream
+      // reader gets to treat `doneAt IS NOT NULL` as the whole predicate.
+      const doneAt = isDoneStampSuperseded(existingRow.value.doneAt, latestUserMessageAt)
+        ? null
+        : existingRow.value.doneAt;
+
       yield* projectionThreadRepository.upsert({
         ...existingRow.value,
+        doneAt,
         latestUserMessageAt,
         pendingApprovalCount,
         pendingUserInputCount,
@@ -562,6 +573,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             updatedAt: event.payload.updatedAt,
             archivedAt: null,
             pinnedAt: null,
+            doneAt: null,
             latestUserMessageAt: null,
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
@@ -628,6 +640,36 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             pinnedAt: null,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.marked-done": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            doneAt: event.payload.doneAt,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.unmarked-done": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            doneAt: null,
             updatedAt: event.payload.updatedAt,
           });
           return;

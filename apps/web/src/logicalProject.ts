@@ -90,6 +90,37 @@ export function resolveProjectGroupingMode(
   );
 }
 
+export interface GitCountsSettings {
+  showGitCounts: boolean;
+  gitCountsProjectOverrides: Record<string, boolean>;
+}
+
+export function selectGitCountsSettings(settings: UnifiedSettings): GitCountsSettings {
+  return {
+    showGitCounts: settings.showGitCounts,
+    gitCountsProjectOverrides: settings.gitCountsProjectOverrides,
+  };
+}
+
+/**
+ * Whether the header git counters are shown for a project. Keyed on the same
+ * physical project key as the grouping overrides, so a project keeps one
+ * identity across every per-project preference. An absent key inherits the
+ * global default.
+ */
+export function resolveGitCountsEnabled(
+  project: Pick<Project, "environmentId" | "cwd"> | null,
+  settings: GitCountsSettings,
+): boolean {
+  if (!project) {
+    return settings.showGitCounts;
+  }
+  return (
+    settings.gitCountsProjectOverrides?.[derivePhysicalProjectKey(project)] ??
+    settings.showGitCounts
+  );
+}
+
 function deriveRepositoryScopedKey(
   project: Pick<Project, "cwd" | "repositoryIdentity">,
   groupingMode: SidebarProjectGroupingMode,

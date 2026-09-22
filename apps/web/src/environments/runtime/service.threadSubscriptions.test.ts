@@ -165,6 +165,7 @@ vi.mock("@t3tools/client-runtime", async (importOriginal) => {
     server: {
       getConfig: vi.fn(),
       refreshProviders: vi.fn(),
+      authenticateProvider: vi.fn(),
       discoverSourceControl: vi.fn(),
       updateProvider: vi.fn(),
       upsertKeybinding: vi.fn(),
@@ -244,6 +245,7 @@ function makeThreadShellSnapshot(params: {
         updatedAt: "2026-04-13T00:00:00.000Z",
         archivedAt: null,
         pinnedAt: null,
+        doneAt: null,
         session: params.sessionStatus
           ? {
               threadId: params.threadId,

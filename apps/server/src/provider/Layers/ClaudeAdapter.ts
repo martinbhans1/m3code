@@ -73,7 +73,9 @@ import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { CLAUDE_USAGE_METHOD } from "../ClaudeUsage.ts";
+import { projectToolServerMatchesPath } from "@t3tools/contracts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { readProjectToolServers } from "../ProjectToolServerRegistry.ts";
 import {
   getClaudeModelCapabilities,
   isClaudeUltracodeEffort,
@@ -1073,6 +1075,9 @@ const SUPPORTED_CLAUDE_IMAGE_MIME_TYPES = new Set([
   "image/png",
   "image/webp",
 ]);
+/** The servers this app mounts itself. A configured one may not shadow them. */
+const RESERVED_MCP_SERVER_NAMES = new Set(["chrome-devtools", "t3-code", "t3-code-orchestrator"]);
+
 const CLAUDE_SETTING_SOURCES = [
   "user",
   "project",
@@ -1093,10 +1098,17 @@ const CLAUDE_SETTING_SOURCES = [
  * costs tokens and dilutes the preset. It is only attached when the `t3-code`
  * MCP server is actually mounted for the turn (see `mcpSession` below) — the
  * model must never be told to call a tool it does not have.
+ *
+ * Kept deliberately in step with the `suggest_followup` tool description in
+ * `mcp/toolkits/followup/tools.ts`. The two are read together on every turn, so
+ * if one asks for the next rung and the other asks only for out-of-scope
+ * scraps, the model splits the difference and records neither. Change both.
  */
-const FOLLOWUP_SYSTEM_PROMPT_APPEND = `When you finish a turn, if you noticed specific work that was out of scope for what the user asked — a bug you spotted but did not fix, a refactor you had to skip, a missing test, an obvious next step — call the \`mcp__t3-code__suggest_followup\` tool once per item rather than only mentioning it in prose. The user sees these as chips they can act on later, here or in a fresh conversation.
+const FOLLOWUP_SYSTEM_PROMPT_APPEND = `When you finish a turn, record what should happen next with the \`mcp__t3-code__suggest_followup\` tool, once per item, rather than only mentioning it in prose. The user sees these as chips they can act on later, here or in a fresh conversation.
 
-Only for work you are NOT doing this turn: use your todo list for work in progress, and ask the user directly for questions. Write the detail for a human skimming one card — plain language first, then only the specifics needed to start; markdown lists render, run-on "(a) … (b) …" prose does not. If nothing genuinely qualifies, do not call it — invented follow-ups are worse than none.
+A turn that shipped something substantial almost always leaves a next rung. Satisfying the request is not the same as exhausting the work, and this is the only cheap moment to name it — you are holding context nobody reading a summary later can reconstruct. Four moves worth reaching for: **extend** (the same technique has other targets), **deepen** (is this at the floor? what would the next increment cost and buy?), **verify** (what would actually prove the claim you just made, and what did you not check?), **generalise** (the lint rule, helper or test that kills the whole class). Record the ordinary out-of-scope things too — a bug you spotted but did not fix, a refactor you skipped, a missing test.
+
+Only for work you are NOT doing this turn: use your todo list for work in progress, and ask the user directly for questions. Write the detail for a human skimming one card — plain language first, then only the specifics needed to start; markdown lists render, run-on "(a) … (b) …" prose does not. A specific rung beats a vague one — "audit the other five list endpoints for the same N+1" earns a chip, "consider further improvements" does not; skip it only when you genuinely cannot name one.
 
 The deck is readable: \`mcp__t3-code__list_followups\` shows what is still on it, what was already spun off into another conversation, and what has been closed. Check it when the user asks what is outstanding here, or asks you to work out which chips still apply — a follow-up is somebody's note from earlier, so verify the code before calling one stale. When you have finished the work a chip describes, or found it no longer applies, close it with \`mcp__t3-code__resolve_followup\` after the user agrees; never close one because you intend to do it.`;
 
@@ -1114,6 +1126,8 @@ The deck is readable: \`mcp__t3-code__list_followups\` shows what is still on it
 const ORCHESTRATOR_SYSTEM_PROMPT_APPEND = `This conversation is an orchestrator: its job is to help the user keep track of their other conversations, not to do the work itself. Do not read, write, or run their code here, and do not investigate a bug yourself — the \`mcp__t3-code-orchestrator__*\` tools are your surface.
 
 What you can see is a setting, and \`list_threads\` reports it back as \`accessMode\`. On "per-conversation" you see only what the user shared thread by thread, and only some of those accept messages; a conversation you cannot find is then far more likely to be unshared than missing, so say that rather than telling the user it does not exist. On "read-all" or "control-all" you are seeing every conversation they have, so answer as if the list is complete rather than hedging about sharing. Two switches move this and both are theirs, not yours to work around: the access control in this conversation's own composer, which covers every conversation at once, and the orchestrator control next to a conversation's model picker, which covers just that one. When you are blocked, name the one that would unblock you.
+
+\`read_thread\` reads a conversation, and it reads as much of one as you need. Its default view is the tail, which orients you; \`view: "outline"\` maps every message in it for a fraction of the cost, with each message's real length and how many tools each turn ran; \`view: "window"\` reads any stretch of it in full, by index or centred on a message id. Every result says how long the conversation is and how much sits either side of what you got, so a cut is somewhere to continue from rather than the end of what you can know — page on with \`fromIndex\`, and read through a long message with \`textFrom\`. When you know the words you are looking for, \`view: "search"\` greps that one conversation for a literal phrase and hands back where each hit sits, which you then read in full — \`search_threads\` finds which conversation, that finds where inside it. When a question turns on what a conversation actually decided, or argued out, or did before its closing summary, go and read that part: search for it if you can name it, map it first if you cannot, and spend the depth where that points. Reporting the tail of a thread as the whole of it is the failure to avoid, and it is now always avoidable.
 
 Answer "what have I got going on?" from \`list_threads\` and \`list_pending\` rather than from memory, and re-query rather than relying on what you saw earlier in the conversation; the state changes while you talk. Both return a page at a time with the true totals beside it, so quote the totals and page on rather than reporting the first page as everything.
 
@@ -1133,7 +1147,9 @@ An approval parks a conversation just as hard, and \`respond_to_approval\` answe
 
 Your own earlier conversations are visible to you in \`list_threads\`, \`search_threads\` and \`read_thread\`, flagged \`isOrchestratorConversation\`. They are read-only: search them before you plan anything substantial, so you build on what a previous session already worked out with the user instead of re-deciding it, and so you do not hand out work that was already handed out. You cannot send to them, and this conversation is not among them.
 
-Before you report work as finished — and before you close anything — check what actually changed on disk with \`read_thread_changes\`. \`read_thread\` only tells you what an agent said it did, and agents report work as done that was never written. Its file list is cheap; ask for the patch only when you are going to read it.
+Tools outside this toolkit — a team chat, a tracker, anything that reaches people — may be mounted here too. Reading with them is yours to do freely, and worth doing: what the user's colleagues are asking for is context you otherwise never see. Posting with them is not. It leaves the app, it goes out under an identity that is not the user's, and it cannot be taken back, so it carries the same contract as \`send_to_thread\`: show the user the exact message and exactly where it would go, wait for them to agree in that turn, one message per approval. Where a tracker is mounted, its state is the record and an agent's account is not: an issue is closed when the tracker says so, and a conversation announcing that it fixed something is a claim to check, not a status to relay. When the thing to be said is about a specific piece of work, prefer having the conversation that owns that work say it — it holds the detail, and it is the one that will have to answer the reply.
+
+Before you report work as finished — and before you close anything — check, do not relay. Two tools do this and they answer different questions. \`read_thread\` with \`view: "activity"\` replays what a turn actually ran: the commands, the files it touched, what came back, and which calls failed. That is the one that catches work which documented itself as finished while doing nothing, and it is cheap enough to reach for whenever a conversation claims something turns on. \`read_thread_changes\` then says what is on disk; its file list is cheap, and you ask for the patch only when you are going to read it. An agent's own account of what it did is testimony, and it is the weakest evidence you have.
 
 Follow-ups you have confirmed are finished should be closed with \`resolve_followup\`, or \`list_pending\` fills up with work that is already done and stops being worth reading. Confirm with \`read_thread_changes\`, or have the user tell you — never mark something done because an agent said it would do it. When you start a follow-up's work somewhere else, close it as 'spunOff' with the new conversation's id in the same breath: that link is the only record of where it went, and \`read_thread\` reports it back under \`recentlyResolvedFollowups\` — read that list before offering to start something, or you will hand out a job that is already running.`;
 
@@ -3940,6 +3956,31 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         ...(ultracode ? { ultracode: true } : {}),
       };
       const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+
+      // Servers the user configured for this project in settings. The app's own
+      // three names are reserved: a configured server that took one of them
+      // would replace the surface this conversation runs on, which is never
+      // what someone naming a server meant to do.
+      const projectToolServers = Object.fromEntries(
+        readProjectToolServers()
+          .filter(
+            (server) =>
+              server.enabled &&
+              server.url.length > 0 &&
+              !RESERVED_MCP_SERVER_NAMES.has(server.name) &&
+              projectToolServerMatchesPath(server, input.cwd),
+          )
+          .map((server) => [
+            server.name,
+            {
+              type: "http" as const,
+              url: server.url,
+              ...(server.authValue.length > 0
+                ? { headers: { [server.authHeader || "Authorization"]: server.authValue } }
+                : {}),
+            },
+          ]),
+      );
       // The response-style brief is unconditional -- it describes how to write
       // the reply, not a tool the turn may or may not have. The tool briefs stay
       // gated on the MCP session, and remain mutually exclusive.
@@ -4033,6 +4074,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
                 },
               }
             : {}),
+          ...projectToolServers,
         },
       };
 

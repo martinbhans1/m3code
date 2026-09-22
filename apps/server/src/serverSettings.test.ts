@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   DatabaseConnectionId,
+  ProjectToolServerId,
   DEFAULT_SERVER_SETTINGS,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -529,6 +530,81 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         roundTripped.providerInstances[instanceId]?.environment?.[0]?.value,
         "sk-or-secret",
       );
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("stores a project tool server's credential outside settings.json", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsService;
+      const serverConfig = yield* ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverId = ProjectToolServerId.make("teamchat");
+      const token = "djchat-hunter2";
+
+      const next = yield* serverSettings.updateSettings({
+        projectToolServers: {
+          [serverId]: {
+            label: "Team chat",
+            name: "dj-chat",
+            projectPath: "/repo",
+            url: "https://example.test/mcp-chat",
+            authHeader: "Authorization",
+            authValue: token,
+            enabled: true,
+          },
+        },
+      });
+
+      // The server itself gets the real credential — it has to, it is about to
+      // put it in a header...
+      assert.equal(next.projectToolServers[serverId]?.authValue, token);
+
+      // ...and it never reaches settings.json, which is a plain file anyone
+      // syncing a machine would copy around.
+      const raw = yield* fileSystem.readFileString(serverConfig.settingsPath);
+      assert.notInclude(raw, "hunter2");
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      assert.equal(JSON.parse(raw).projectToolServers.teamchat.authValue, "");
+      // @effect-diagnostics-next-line preferSchemaOverJson:off
+      assert.equal(JSON.parse(raw).projectToolServers.teamchat.authValueRedacted, true);
+
+      // A client editing the label round-trips a credential it never saw; the
+      // stored one has to survive that rather than being wiped by the edit.
+      const relabelled = yield* serverSettings.updateSettings({
+        projectToolServers: {
+          [serverId]: {
+            label: "DealJourney team chat",
+            name: "dj-chat",
+            projectPath: "/repo",
+            url: "https://example.test/mcp-chat",
+            authHeader: "Authorization",
+            authValue: "",
+            authValueRedacted: true,
+            enabled: true,
+          },
+        },
+      });
+      assert.equal(relabelled.projectToolServers[serverId]?.label, "DealJourney team chat");
+      assert.equal(relabelled.projectToolServers[serverId]?.authValue, token);
+
+      // Removing the server drops its credential, so re-creating the same id
+      // cannot quietly resurrect it.
+      yield* serverSettings.updateSettings({ projectToolServers: {} });
+      const recreated = yield* serverSettings.updateSettings({
+        projectToolServers: {
+          [serverId]: {
+            label: "Team chat",
+            name: "dj-chat",
+            projectPath: "/repo",
+            url: "https://example.test/mcp-chat",
+            authHeader: "Authorization",
+            authValue: "",
+            authValueRedacted: true,
+            enabled: true,
+          },
+        },
+      });
+      assert.equal(recreated.projectToolServers[serverId]?.authValue, "");
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 

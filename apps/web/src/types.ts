@@ -158,6 +158,8 @@ export interface SidebarThreadSummary {
   createdAt: string;
   archivedAt: string | null;
   pinnedAt: string | null;
+  /** Set when the user stamped this thread settled; cleared when they return to it. */
+  doneAt: string | null;
   updatedAt?: string | undefined;
   latestTurn: OrchestrationLatestTurn | null;
   branch: string | null;

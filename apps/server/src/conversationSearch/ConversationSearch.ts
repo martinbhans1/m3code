@@ -1,4 +1,5 @@
 import {
+  MessageId,
   type OrchestrationSearchThreadsInput,
   type OrchestrationSearchThreadsResult,
   type OrchestrationThreadSearchResult,
@@ -103,6 +104,7 @@ interface ThreadMetadataRow {
 }
 
 interface ContentSearchRow extends Omit<ThreadMetadataRow, "metadataRank"> {
+  readonly messageId: string;
   readonly role: string;
   readonly text: string;
   readonly snippet: string | null;
@@ -110,6 +112,7 @@ interface ContentSearchRow extends Omit<ThreadMetadataRow, "metadataRank"> {
 }
 
 interface ExactSearchRow extends Omit<ThreadMetadataRow, "metadataRank"> {
+  readonly messageId: string;
   readonly role: string;
   readonly text: string;
   /** 1-based index of the match within `text`, as returned by `instr`. */
@@ -159,7 +162,10 @@ function messageRole(value: string): "user" | "assistant" | "system" | null {
 
 function toBaseResult(
   row: SemanticThreadMetadataRow,
-): Omit<OrchestrationThreadSearchResult, "matchKind" | "score" | "snippet" | "matchedRole"> {
+): Omit<
+  OrchestrationThreadSearchResult,
+  "matchKind" | "score" | "snippet" | "matchedRole" | "matchedMessageId"
+> {
   return {
     threadId: ThreadId.make(row.threadId),
     projectId: ProjectId.make(row.projectId),
@@ -504,6 +510,7 @@ const makeConversationSearch = Effect.gen(function* () {
         ...toBaseResult(row),
         snippet: null,
         matchedRole: null,
+        matchedMessageId: null,
         matchKind: "metadata",
         // Matching the thread's own title is a different claim from matching the
         // project it happens to live in, which every sibling thread matches too.
@@ -527,6 +534,7 @@ const makeConversationSearch = Effect.gen(function* () {
         thread.branch,
         thread.archived_at AS "archivedAt",
         thread.updated_at AS "updatedAt",
+        message.message_id AS "messageId",
         message.role,
         message.text,
         snippet(projection_thread_messages_fts, 0, '', '', '…', 28) AS snippet,
@@ -574,6 +582,7 @@ const makeConversationSearch = Effect.gen(function* () {
         ...toBaseResult(row),
         snippet: row.snippet,
         matchedRole: messageRole(row.role),
+        matchedMessageId: MessageId.make(row.messageId),
         matchKind: loose ? "content-loose" : "content",
         band: loose ? THREAD_SEARCH_BAND.loose : THREAD_SEARCH_BAND.content,
         score:
@@ -618,6 +627,7 @@ const makeConversationSearch = Effect.gen(function* () {
         thread.branch,
         thread.archived_at AS "archivedAt",
         thread.updated_at AS "updatedAt",
+        message.message_id AS "messageId",
         message.role,
         CASE
           WHEN ${caseSensitive ? 1 : 0} = 1 THEN instr(message.text, ${query})
@@ -654,6 +664,7 @@ const makeConversationSearch = Effect.gen(function* () {
         ...toBaseResult(row),
         snippet: exactSnippet(row.text, row.matchOffset),
         matchedRole: messageRole(row.role),
+        matchedMessageId: MessageId.make(row.messageId),
         matchKind: "exact",
         band: THREAD_SEARCH_BAND.exact,
         score: EXACT_BASE_SCORE - results.length,
@@ -706,6 +717,10 @@ const makeConversationSearch = Effect.gen(function* () {
         ...toBaseResult(metadata),
         snippet: semanticSnippet(entry.chunk.text),
         matchedRole: null,
+        // A chunk spans several messages, so there is no one message to point
+        // at. Reporting the first would be a guess, and the caller would read
+        // the wrong place with full confidence.
+        matchedMessageId: null,
         matchKind: "semantic",
         band: THREAD_SEARCH_BAND.semantic,
         score: entry.similarity * 500,

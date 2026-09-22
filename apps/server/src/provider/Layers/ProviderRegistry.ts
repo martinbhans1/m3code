@@ -52,6 +52,7 @@ import {
   writeProviderStatusCache,
 } from "../providerStatusCache.ts";
 import type { ProviderInstance } from "../ProviderDriver.ts";
+import { ProviderAuthenticationActionError } from "../Errors.ts";
 import { makeManualOnlyProviderMaintenanceCapabilities } from "../providerMaintenance.ts";
 import type { ProviderSnapshotSource } from "../builtInProviderCatalog.ts";
 
@@ -486,6 +487,23 @@ export const ProviderRegistryLive = Layer.effect(
       );
     });
 
+    const authenticateInstance = Effect.fn("authenticateInstance")(function* (
+      instanceId: ProviderInstanceId,
+    ) {
+      const instance = (yield* Ref.get(liveSubsRef)).get(instanceId);
+      if (!instance) {
+        return yield* new ProviderAuthenticationActionError({
+          detail: "The provider instance was not found.",
+        });
+      }
+      if (!instance.authenticate) {
+        return yield* new ProviderAuthenticationActionError({
+          detail: "This provider does not support sign-in through M3 Code.",
+        });
+      }
+      yield* instance.authenticate;
+    });
+
     /**
      * Diff the aggregator's live-source set against the current
      * `ProviderInstanceRegistry` and:
@@ -689,6 +707,7 @@ export const ProviderRegistryLive = Layer.effect(
       refreshInstance: (instanceId: ProviderInstanceId) =>
         refreshInstance(instanceId).pipe(Effect.catchCause(recoverRefreshFailure)),
       getProviderMaintenanceCapabilitiesForInstance,
+      authenticateInstance,
       setProviderMaintenanceActionState,
       get streamChanges() {
         return Stream.fromPubSub(changesPubSub);

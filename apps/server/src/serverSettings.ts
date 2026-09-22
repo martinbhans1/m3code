@@ -12,6 +12,7 @@
  */
 import {
   type DatabaseConnectionConfig,
+  type ProjectToolServerConfig,
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   DEFAULT_MODEL_BY_PROVIDER,
@@ -98,6 +99,23 @@ function databaseConnectionSecretName(connectionId: string): string {
   return `database-connection-${Buffer.from(connectionId, "utf8").toString("base64url")}`;
 }
 
+function projectToolServerSecretName(serverId: string): string {
+  return `project-tool-server-${Buffer.from(serverId, "utf8").toString("base64url")}`;
+}
+
+/**
+ * A tool server's credential is always sensitive for the same reason a
+ * connection string is: it is the whole of the authorisation, and anything that
+ * reaches a client reaches a browser.
+ */
+function redactProjectToolServer(server: ProjectToolServerConfig): ProjectToolServerConfig {
+  return {
+    ...server,
+    authValue: "",
+    ...(server.authValue.length > 0 || server.authValueRedacted ? { authValueRedacted: true } : {}),
+  };
+}
+
 /**
  * Connection strings are always sensitive — they carry the password inline —
  * so unlike provider env vars there is no non-sensitive branch here.
@@ -130,10 +148,17 @@ export function redactServerSettingsForClient(settings: ServerSettings): ServerS
       redactDatabaseConnection(connection),
     ]),
   );
+  const projectToolServers = Object.fromEntries(
+    Object.entries(settings.projectToolServers).map(([serverId, server]) => [
+      serverId,
+      redactProjectToolServer(server),
+    ]),
+  );
   return {
     ...settings,
     providerInstances,
     databaseConnections: databaseConnections as ServerSettings["databaseConnections"],
+    projectToolServers: projectToolServers as ServerSettings["projectToolServers"],
   };
 }
 
@@ -604,11 +629,132 @@ const makeServerSettings = Effect.gen(function* () {
       };
     });
 
+  const materializeProjectToolServerSecrets = (
+    settings: ServerSettings,
+  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
+    Effect.gen(function* () {
+      const projectToolServers: Record<string, ProjectToolServerConfig> = {
+        ...settings.projectToolServers,
+      };
+      for (const [serverId, server] of Object.entries(settings.projectToolServers)) {
+        if (!server.authValueRedacted) continue;
+        const secret = yield* secretStore
+          .get(projectToolServerSecretName(serverId))
+          .pipe(
+            Effect.mapError((cause) =>
+              toSettingsError(`failed to read the credential for ${server.label}`, cause),
+            ),
+          );
+        projectToolServers[serverId] = {
+          ...server,
+          authValue: secret ? textDecoder.decode(secret) : "",
+        };
+      }
+      return {
+        ...settings,
+        projectToolServers: projectToolServers as ServerSettings["projectToolServers"],
+      };
+    });
+
+  const persistProjectToolServerSecrets = (
+    current: ServerSettings,
+    next: ServerSettings,
+  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
+    Effect.gen(function* () {
+      const projectToolServers: Record<string, ProjectToolServerConfig> = {
+        ...next.projectToolServers,
+      };
+
+      for (const [serverId, server] of Object.entries(next.projectToolServers)) {
+        const secretName = projectToolServerSecretName(serverId);
+
+        // A redacted entry means the client round-tripped a value it never saw;
+        // the stored secret is already correct, so leave it alone.
+        if (server.authValueRedacted && server.authValue.length === 0) {
+          // Unless nothing is stored, because the entry was written into
+          // settings.json by hand. The plaintext about to be overwritten is the
+          // only copy, so adopt it rather than silently discarding it.
+          const currentServers = current.projectToolServers as Record<
+            string,
+            ProjectToolServerConfig | undefined
+          >;
+          const currentPlaintext = currentServers[serverId]?.authValue ?? "";
+          if (currentPlaintext.length > 0) {
+            const stored = yield* secretStore
+              .get(secretName)
+              .pipe(
+                Effect.mapError((cause) =>
+                  toSettingsError(`failed to read the credential for ${server.label}`, cause),
+                ),
+              );
+            if (stored === null) {
+              yield* secretStore
+                .set(secretName, textEncoder.encode(currentPlaintext))
+                .pipe(
+                  Effect.mapError((cause) =>
+                    toSettingsError(`failed to adopt the credential for ${server.label}`, cause),
+                  ),
+                );
+            }
+          }
+          projectToolServers[serverId] = redactProjectToolServer(server);
+          continue;
+        }
+
+        if (server.authValue.length > 0) {
+          yield* secretStore
+            .set(secretName, textEncoder.encode(server.authValue))
+            .pipe(
+              Effect.mapError((cause) =>
+                toSettingsError(`failed to persist the credential for ${server.label}`, cause),
+              ),
+            );
+          projectToolServers[serverId] = {
+            ...server,
+            authValue: "",
+            authValueRedacted: true,
+          };
+          continue;
+        }
+
+        // No credential is a legitimate configuration — a server on localhost
+        // that authenticates by other means — so this clears the secret rather
+        // than refusing the entry.
+        yield* secretStore
+          .remove(secretName)
+          .pipe(
+            Effect.mapError((cause) =>
+              toSettingsError(`failed to remove the credential for ${server.label}`, cause),
+            ),
+          );
+        const { authValueRedacted: _omit, ...rest } = server;
+        projectToolServers[serverId] = { ...rest, authValue: "" };
+      }
+
+      // Drop credentials for servers the patch removed.
+      for (const serverId of Object.keys(current.projectToolServers)) {
+        if (serverId in projectToolServers) continue;
+        yield* secretStore
+          .remove(projectToolServerSecretName(serverId))
+          .pipe(
+            Effect.mapError((cause) =>
+              toSettingsError(`failed to remove the stale credential ${serverId}`, cause),
+            ),
+          );
+      }
+
+      return {
+        ...next,
+        projectToolServers: projectToolServers as ServerSettings["projectToolServers"],
+      };
+    });
+
   const materializeSecrets = (
     settings: ServerSettings,
   ): Effect.Effect<ServerSettings, ServerSettingsError> =>
     materializeProviderEnvironmentSecrets(settings).pipe(
       Effect.flatMap(materializeDatabaseConnectionSecrets),
+      Effect.flatMap(materializeProjectToolServerSecrets),
     );
 
   const persistSecrets = (
@@ -618,6 +764,9 @@ const makeServerSettings = Effect.gen(function* () {
     persistProviderEnvironmentSecrets(current, next).pipe(
       Effect.flatMap((withProviderSecrets) =>
         persistDatabaseConnectionSecrets(current, withProviderSecrets),
+      ),
+      Effect.flatMap((withConnectionSecrets) =>
+        persistProjectToolServerSecrets(current, withConnectionSecrets),
       ),
     );
 

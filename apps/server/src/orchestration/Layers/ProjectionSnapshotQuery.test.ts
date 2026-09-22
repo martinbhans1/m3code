@@ -11,6 +11,7 @@ import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -310,6 +311,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           updatedAt: "2026-02-24T00:00:03.000Z",
           archivedAt: null,
           pinnedAt: null,
+          doneAt: null,
           deletedAt: null,
           messages: [
             {
@@ -424,6 +426,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           updatedAt: "2026-02-24T00:00:03.000Z",
           archivedAt: null,
           pinnedAt: null,
+          doneAt: null,
           session: {
             threadId: ThreadId.make("thread-1"),
             status: "running",
@@ -1439,6 +1442,153 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
       const shellSnapshot = yield* snapshotQuery.getShellSnapshot();
       assert.equal(shellSnapshot.projects.length, 0);
       assert.equal(shellSnapshot.threads.length, 0);
+    }),
+  );
+
+  it.effect("pages, maps and locates messages anywhere in a thread", () =>
+    Effect.gen(function* () {
+      const snapshotQuery = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+
+      yield* sql`DELETE FROM projection_thread_messages`;
+      yield* sql`DELETE FROM projection_thread_activities`;
+
+      // Nine messages, one of them long: enough to have a middle, and enough
+      // for a preview to be worth cutting.
+      for (let position = 0; position < 9; position += 1) {
+        const text = position === 4 ? `decision ${"y".repeat(5_000)}` : `message ${position}`;
+        yield* sql`
+          INSERT INTO projection_thread_messages (
+            message_id,
+            thread_id,
+            turn_id,
+            role,
+            text,
+            is_streaming,
+            created_at,
+            updated_at
+          )
+          VALUES (
+            ${`message-${position}`},
+            'thread-paged',
+            ${`turn-${Math.floor(position / 2)}`},
+            ${position % 2 === 0 ? "user" : "assistant"},
+            ${text},
+            0,
+            ${`2026-02-24T00:0${position}:00.000Z`},
+            ${`2026-02-24T00:0${position}:00.000Z`}
+          )
+        `;
+      }
+
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        VALUES
+          ('activity-1', 'thread-paged', 'turn-2', 'info', 'tool.completed', 'Bash', '{}', 1, '2026-02-24T00:04:00.000Z'),
+          ('activity-2', 'thread-paged', 'turn-2', 'info', 'tool.completed', 'Edit', '{}', 2, '2026-02-24T00:04:01.000Z'),
+          ('activity-3', 'thread-paged', 'turn-2', 'info', 'tool.started', 'Bash', '{}', 3, '2026-02-24T00:04:02.000Z')
+      `;
+
+      const threadId = ThreadId.make("thread-paged");
+      assert.equal(yield* snapshotQuery.countThreadMessages(threadId), 9);
+
+      // A window is a window: the middle, not the end that the tail query would
+      // have handed back for the same limit.
+      const window = yield* snapshotQuery.listThreadMessageWindow(threadId, {
+        offset: 3,
+        limit: 3,
+      });
+      assert.deepStrictEqual(
+        window.map((message) => message.id),
+        [asMessageId("message-3"), asMessageId("message-4"), asMessageId("message-5")],
+      );
+
+      // The outline carries the length of the whole message beside a cut
+      // preview, which is what makes a long message findable without reading it.
+      const outline = yield* snapshotQuery.listThreadMessageOutline(threadId, {
+        offset: 0,
+        limit: 9,
+        previewChars: 20,
+      });
+      assert.equal(outline.length, 9);
+      assert.equal(outline[4]?.charCount, 5_009);
+      assert.equal(outline[4]?.preview.length, 20);
+      assert.equal(outline[4]?.role, "user");
+      assert.equal(outline[0]?.preview, "message 0");
+
+      // Positions agree with that same ordering, so a message id from one query
+      // is somewhere to stand in another.
+      const position = yield* snapshotQuery.getThreadMessagePosition(
+        threadId,
+        asMessageId("message-4"),
+      );
+      assert.deepStrictEqual(position, Option.some(4));
+      assert.deepStrictEqual(
+        yield* snapshotQuery.getThreadMessagePosition(threadId, asMessageId("message-absent")),
+        Option.none(),
+      );
+
+      // Searching inside the thread: a hit comes back as a position plus a
+      // snippet, so the long message is found without being read.
+      const matches = yield* snapshotQuery.searchThreadMessages(threadId, {
+        query: "DECISION",
+        limit: 10,
+        snippetChars: 60,
+      });
+      assert.equal(matches.length, 1);
+      assert.equal(matches[0]?.index, 4);
+      assert.equal(matches[0]?.id, asMessageId("message-4"));
+      assert.equal(matches[0]?.matchOffset, 0);
+      assert.equal(matches[0]?.charCount, 5_009);
+      assert.equal(matches[0]?.snippet.length, 60);
+      assert.equal(yield* snapshotQuery.countThreadMessageMatches(threadId, "message"), 8);
+      assert.equal(yield* snapshotQuery.countThreadMessageMatches(threadId, "telavox"), 0);
+
+      // Only completed calls count, and only against their own turn.
+      const toolCalls = yield* snapshotQuery.countThreadToolCallsByTurn(threadId);
+      assert.equal(toolCalls.get("turn-2"), 2);
+      assert.equal(toolCalls.get("turn-1"), undefined);
+
+      // Reading what one turn did: the completed calls with their payloads, and
+      // not the `tool.started` row that carries the same call without a result.
+      const turnActivities = yield* snapshotQuery.listThreadTurnToolActivities(threadId, "turn-2", {
+        offset: 0,
+        limit: 10,
+      });
+      assert.deepStrictEqual(
+        turnActivities.map((activity) => activity.summary),
+        ["Bash", "Edit"],
+      );
+      assert.equal(yield* snapshotQuery.countThreadTurnToolActivities(threadId, "turn-2"), 2);
+      const paged = yield* snapshotQuery.listThreadTurnToolActivities(threadId, "turn-2", {
+        offset: 1,
+        limit: 10,
+      });
+      assert.deepStrictEqual(
+        paged.map((activity) => activity.summary),
+        ["Edit"],
+      );
+
+      // And the message that turn produced resolves back to it, so a caller
+      // holding a message never has to know turn ids exist.
+      assert.deepStrictEqual(
+        yield* snapshotQuery.getThreadMessageTurn(threadId, asMessageId("message-4")),
+        Option.some("turn-2"),
+      );
+      assert.deepStrictEqual(
+        yield* snapshotQuery.getThreadMessageTurn(threadId, asMessageId("message-absent")),
+        Option.none(),
+      );
     }),
   );
 });

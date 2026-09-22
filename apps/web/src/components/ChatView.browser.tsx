@@ -451,6 +451,7 @@ function createSnapshotForTargetUser(options: {
         updatedAt: NOW_ISO,
         archivedAt: null,
         pinnedAt: null,
+        doneAt: null,
         deletedAt: null,
         messages,
         activities: [],
@@ -520,6 +521,7 @@ function addThreadToSnapshot(
         updatedAt: NOW_ISO,
         archivedAt: null,
         pinnedAt: null,
+        doneAt: null,
         deletedAt: null,
         messages: [],
         activities: [],
@@ -872,6 +874,7 @@ function createSnapshotWithSecondaryProject(options?: {
           },
           archivedAt: null,
           pinnedAt: null,
+          doneAt: null,
         },
       ]
     : [];
@@ -907,6 +910,7 @@ function createSnapshotWithSecondaryProject(options?: {
           },
           archivedAt: isoAt(26),
           pinnedAt: null,
+          doneAt: null,
         },
       ]
     : [];
@@ -1873,6 +1877,34 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
 
       expect(findButtonByText("Local checkout")).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows the git counters beside the branch selector in the thread header", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-header-git-counts" as MessageId,
+        targetText: "header git counts",
+      }),
+    });
+
+    try {
+      // The mocked status is a clean repo on an up-to-date branch, so both
+      // counters read zero — the point of the assertion is that the readout is
+      // mounted in the header at all, and that it renders as digits.
+      const readout = await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(
+            '[aria-label="0 uncommitted files · 0 commits to push"]',
+          ),
+        "Unable to find the header git counts readout.",
+      );
+
+      expect(readout.textContent).toContain("0");
+      expect(readout.getBoundingClientRect().width).toBeGreaterThan(0);
     } finally {
       await mounted.cleanup();
     }

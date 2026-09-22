@@ -490,6 +490,10 @@ export const OrchestrationThread = Schema.Struct({
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   pinnedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  // When the user stamped this conversation settled. Cleared by the projection
+  // as soon as a newer user message arrives, so a thread you pick back up stops
+  // reading as done without anyone having to un-stamp it.
+  doneAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
@@ -541,6 +545,10 @@ export const OrchestrationThreadShell = Schema.Struct({
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   pinnedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  // When the user stamped this conversation settled. Cleared by the projection
+  // as soon as a newer user message arrives, so a thread you pick back up stops
+  // reading as done without anyone having to un-stamp it.
+  doneAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
@@ -679,6 +687,23 @@ const ThreadPinCommand = Schema.Struct({
 
 const ThreadUnpinCommand = Schema.Struct({
   type: Schema.Literal("thread.unpin"),
+  commandId: CommandId,
+  threadId: ThreadId,
+});
+
+/**
+ * The user stamping a conversation "settled": still in the list, still
+ * searchable, but flagged so they can skip past it. Distinct from archiving,
+ * which takes it out of the list entirely.
+ */
+const ThreadMarkDoneCommand = Schema.Struct({
+  type: Schema.Literal("thread.mark-done"),
+  commandId: CommandId,
+  threadId: ThreadId,
+});
+
+const ThreadUnmarkDoneCommand = Schema.Struct({
+  type: Schema.Literal("thread.unmark-done"),
   commandId: CommandId,
   threadId: ThreadId,
 });
@@ -851,6 +876,8 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadUnarchiveCommand,
   ThreadPinCommand,
   ThreadUnpinCommand,
+  ThreadMarkDoneCommand,
+  ThreadUnmarkDoneCommand,
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
@@ -876,6 +903,8 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadUnarchiveCommand,
   ThreadPinCommand,
   ThreadUnpinCommand,
+  ThreadMarkDoneCommand,
+  ThreadUnmarkDoneCommand,
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
@@ -982,6 +1011,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.unarchived",
   "thread.pinned",
   "thread.unpinned",
+  "thread.marked-done",
+  "thread.unmarked-done",
   "thread.meta-updated",
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
@@ -1068,6 +1099,17 @@ export const ThreadPinnedPayload = Schema.Struct({
 });
 
 export const ThreadUnpinnedPayload = Schema.Struct({
+  threadId: ThreadId,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadMarkedDonePayload = Schema.Struct({
+  threadId: ThreadId,
+  doneAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadUnmarkedDonePayload = Schema.Struct({
   threadId: ThreadId,
   updatedAt: IsoDateTime,
 });
@@ -1249,6 +1291,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.unpinned"),
     payload: ThreadUnpinnedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.marked-done"),
+    payload: ThreadMarkedDonePayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.unmarked-done"),
+    payload: ThreadUnmarkedDonePayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -1471,6 +1523,15 @@ export const OrchestrationThreadSearchResult = Schema.Struct({
   updatedAt: IsoDateTime,
   snippet: Schema.NullOr(Schema.String),
   matchedRole: Schema.NullOr(Schema.Literals(["user", "assistant", "system"])),
+  /**
+   * The message the hit landed on, when the match was to a specific one.
+   *
+   * Null for a title match and for a semantic one: semantic search matches a
+   * stretch of a conversation rather than a message, so there is no single
+   * place to point at. Where it is set, it turns "this conversation mentions
+   * it" into "read from here".
+   */
+  matchedMessageId: Schema.NullOr(MessageId),
   matchKind: OrchestrationThreadSearchMatchKind,
   score: Schema.Number,
 });

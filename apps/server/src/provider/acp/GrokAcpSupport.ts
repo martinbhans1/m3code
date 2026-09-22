@@ -28,8 +28,14 @@ const GROK_DRIVER_KIND = ProviderDriverKind.make("grok");
 /** Option id advertised in Grok model capabilities and read from modelSelection.options. */
 export const GROK_REASONING_EFFORT_OPTION_ID = "reasoningEffort";
 
-/** Values accepted by `grok agent --reasoning-effort` / the xAI API for grok-4.5. */
-export const GROK_REASONING_EFFORT_VALUES = ["low", "medium", "high"] as const;
+/**
+ * Values accepted by `grok agent --reasoning-effort` / the xAI API.
+ * `xhigh` is supported on grok-4.6+; older models treat it as `high`.
+ *
+ * Distinct from Cursor "Fast" / xAI Priority Processing (`service_tier: "priority"`),
+ * which controls inference scheduling priority and cost, not reasoning depth.
+ */
+export const GROK_REASONING_EFFORT_VALUES = ["low", "medium", "high", "xhigh"] as const;
 export type GrokReasoningEffort = (typeof GROK_REASONING_EFFORT_VALUES)[number];
 export const GROK_DEFAULT_REASONING_EFFORT: GrokReasoningEffort = "high";
 
@@ -52,7 +58,7 @@ interface GrokAcpRuntimeInput extends Omit<
 export function isGrokReasoningEffort(
   value: string | null | undefined,
 ): value is GrokReasoningEffort {
-  return value === "low" || value === "medium" || value === "high";
+  return value === "low" || value === "medium" || value === "high" || value === "xhigh";
 }
 
 /**

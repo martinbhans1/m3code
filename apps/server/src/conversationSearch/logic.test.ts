@@ -38,6 +38,7 @@ const result = (
   archivedAt: null,
   updatedAt,
   snippet: null,
+  matchedMessageId: null,
   matchedRole: null,
   matchKind,
   band: BAND_FOR_KIND[matchKind],

@@ -48,6 +48,7 @@ function makeThread(
     hasActionableProposedPlan: false,
     ...input,
     pinnedAt: input.pinnedAt ?? null,
+    doneAt: input.doneAt ?? null,
     hasPendingFollowups: input.hasPendingFollowups ?? false,
   };
 }

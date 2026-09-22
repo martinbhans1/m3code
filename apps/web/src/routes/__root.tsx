@@ -17,6 +17,8 @@ import { RelayClientInstallDialog } from "../components/cloud/RelayClientInstall
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
 import { QueuedTurnDrainer } from "../components/QueuedTurnDrainer";
+import { ProviderUsageNotifications } from "../components/ProviderUsageNotifications";
+import { ThreadAttentionNotifications } from "../components/ThreadAttentionNotifications";
 import {
   SlowRpcAckToastCoordinator,
   WebSocketConnectionCoordinator,
@@ -142,6 +144,8 @@ function RootRouteView() {
         <HostedStaticEnvironmentBootstrap />
         {primaryEnvironmentAuthenticated ? <EventRouter /> : null}
         {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
+        {primaryEnvironmentAuthenticated ? <ProviderUsageNotifications /> : null}
+        {primaryEnvironmentAuthenticated ? <ThreadAttentionNotifications /> : null}
         {primaryEnvironmentAuthenticated ? <QueuedTurnDrainer /> : null}
         {primaryEnvironmentAuthenticated ? <WebSocketConnectionCoordinator /> : null}
         {primaryEnvironmentAuthenticated ? <SlowRpcAckToastCoordinator /> : null}

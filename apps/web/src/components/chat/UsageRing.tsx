@@ -1,49 +1,69 @@
+/** One semantic layer in the composer's concentric budget gauge. */
+export interface UsageRingLayer {
+  /** `0`-`100`; null means the provider exposed the window but not its usage. */
+  readonly percent: number | null;
+  readonly color: string;
+}
+
+const RINGS = [
+  { key: "weekly", radius: 10.25, strokeWidth: 2 },
+  { key: "session", radius: 7, strokeWidth: 2 },
+  { key: "context", radius: 3.75, strokeWidth: 2 },
+] as const;
+
 /**
- * Compact circular gauge used by the composer's meters.
- *
- * Extracted from `ContextWindowMeter` when the provider plan-usage meter grew
- * the same dial. The two render in different corners of the composer, but
- * they mean the same thing — "how much of a budget is gone" — so they must
- * keep reading identically rather than drifting into two dialects of dial.
+ * One compact gauge with stable semantics from outside to inside:
+ * weekly plan limit, session plan limit, then conversation context window.
  */
 export function UsageRing(props: {
-  /** `0`–`100`. Clamped, so callers may pass raw provider percentages. */
-  percent: number;
-  /** Arc color. A CSS color or `var(--…)` reference. */
-  color: string;
+  readonly weekly?: UsageRingLayer | undefined;
+  readonly session?: UsageRingLayer | undefined;
+  readonly context?: UsageRingLayer | undefined;
 }) {
-  const radius = 9.75;
-  const circumference = 2 * Math.PI * radius;
-  const clampedPercent = Math.max(0, Math.min(100, props.percent));
-  const dashOffset = circumference - (clampedPercent / 100) * circumference;
-
   return (
-    <span className="relative flex size-4 items-center justify-center">
+    <span className="relative flex size-full items-center justify-center">
       <svg
         viewBox="0 0 24 24"
         className="-rotate-90 absolute inset-0 size-full transform-gpu"
         aria-hidden="true"
+        data-testid="concentric-usage-ring"
       >
-        <circle
-          cx="12"
-          cy="12"
-          r={radius}
-          fill="none"
-          stroke="color-mix(in oklab, var(--color-muted-foreground) 35%, transparent)"
-          strokeWidth="3"
-        />
-        <circle
-          cx="12"
-          cy="12"
-          r={radius}
-          fill="none"
-          stroke={props.color}
-          strokeWidth="3"
-          strokeLinecap="round"
-          strokeDasharray={circumference}
-          strokeDashoffset={dashOffset}
-          className="transition-[stroke-dashoffset] duration-500 ease-out motion-reduce:transition-none"
-        />
+        {RINGS.map(({ key, radius, strokeWidth }) => {
+          const layer = props[key];
+          if (!layer) return null;
+
+          const circumference = 2 * Math.PI * radius;
+          const clampedPercent = Math.max(0, Math.min(100, layer.percent ?? 0));
+          const dashOffset = circumference - (clampedPercent / 100) * circumference;
+
+          return (
+            <g key={key} data-usage-ring-layer={key}>
+              <circle
+                cx="12"
+                cy="12"
+                r={radius}
+                fill="none"
+                stroke="color-mix(in oklab, var(--color-muted-foreground) 35%, transparent)"
+                strokeWidth={strokeWidth}
+                strokeDasharray={layer.percent === null ? "1 2" : undefined}
+              />
+              {layer.percent !== null ? (
+                <circle
+                  cx="12"
+                  cy="12"
+                  r={radius}
+                  fill="none"
+                  stroke={layer.color}
+                  strokeWidth={strokeWidth}
+                  strokeLinecap="round"
+                  strokeDasharray={circumference}
+                  strokeDashoffset={dashOffset}
+                  className="transition-[stroke-dashoffset] duration-500 ease-out motion-reduce:transition-none"
+                />
+              ) : null}
+            </g>
+          );
+        })}
       </svg>
     </span>
   );

@@ -37,6 +37,7 @@ const baseThread: OrchestrationThread = {
   updatedAt: "2026-04-01T00:00:00.000Z",
   archivedAt: null,
   pinnedAt: null,
+  doneAt: null,
   deletedAt: null,
   messages: [],
   proposedPlans: [],

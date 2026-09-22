@@ -48,6 +48,7 @@ function makeThread(
     session: null,
     ...input,
     pinnedAt: input.pinnedAt ?? null,
+    doneAt: input.doneAt ?? null,
   };
 }
 

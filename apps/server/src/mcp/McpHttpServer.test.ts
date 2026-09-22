@@ -201,6 +201,10 @@ it.effect(
         const sharedTools = yield* listToolNames(McpSessionRegistry.MCP_PATH, ORDINARY_TOKEN);
         expect(sharedTools).toContain("preview_status");
         expect(sharedTools).toContain("suggest_followup");
+        // The in-thread half of the follow-up deck: a conversation can read back
+        // and close its own chips without seeing anyone else's.
+        expect(sharedTools).toContain("list_followups");
+        expect(sharedTools).toContain("resolve_followup");
         for (const name of [
           "list_threads",
           "search_threads",

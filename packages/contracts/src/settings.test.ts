@@ -2,11 +2,50 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import { ProviderInstanceId } from "./providerInstance.ts";
-import { DEFAULT_SERVER_SETTINGS, ServerSettings, ServerSettingsPatch } from "./settings.ts";
+import {
+  ClientSettingsSchema,
+  DEFAULT_PROVIDER_USAGE_ALERT_AUTO_DISMISS_SECONDS,
+  DEFAULT_PROVIDER_USAGE_ALERT_REPEAT_MINUTES,
+  DEFAULT_PROVIDER_USAGE_ALERT_THRESHOLDS,
+  DEFAULT_SERVER_SETTINGS,
+  ServerSettings,
+  ServerSettingsPatch,
+} from "./settings.ts";
+
+const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
 
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
+
+describe("ClientSettings.providerUsageAlertThresholds", () => {
+  it("enables useful alert defaults for legacy settings", () => {
+    expect(decodeClientSettings({}).providerUsageAlertThresholds).toEqual(
+      DEFAULT_PROVIDER_USAGE_ALERT_THRESHOLDS,
+    );
+  });
+
+  it("permits an empty list to disable plan usage alerts", () => {
+    expect(
+      decodeClientSettings({ providerUsageAlertThresholds: [] }).providerUsageAlertThresholds,
+    ).toEqual([]);
+  });
+
+  it("defaults to reporting a crossing once and dismissing the toast on its own", () => {
+    const decoded = decodeClientSettings({});
+    expect(decoded.providerUsageAlertRepeatMinutes).toBe(
+      DEFAULT_PROVIDER_USAGE_ALERT_REPEAT_MINUTES,
+    );
+    expect(decoded.providerUsageAlertAutoDismissSeconds).toBe(
+      DEFAULT_PROVIDER_USAGE_ALERT_AUTO_DISMISS_SECONDS,
+    );
+  });
+
+  it("keeps the repeat cadence and dismissal delay within range", () => {
+    expect(() => decodeClientSettings({ providerUsageAlertRepeatMinutes: 2000 })).toThrow();
+    expect(() => decodeClientSettings({ providerUsageAlertAutoDismissSeconds: -1 })).toThrow();
+  });
+});
 
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("defaults to an empty record so legacy configs without the key still decode", () => {

@@ -282,16 +282,44 @@ function stripNullDefaults(value: Schema.Json): Schema.Json {
 }
 
 function applyCompatibilityOverrides(name: string, value: Schema.Json): Schema.Json {
-  if (
-    name !== "V1InitializeResponse" ||
-    Array.isArray(value) ||
-    value === null ||
-    typeof value !== "object"
-  ) {
+  if (Array.isArray(value) || value === null || typeof value !== "object") {
     return value;
   }
 
   const objectValue = value as Record<string, Schema.Json>;
+  // Newer app-servers record completed sub-agent activity in thread history.
+  if (name.endsWith("SubAgentActivityKind") && Array.isArray(objectValue.enum)) {
+    return objectValue.enum.includes("completed")
+      ? value
+      : { ...objectValue, enum: [...objectValue.enum, "completed"] };
+  }
+
+  // Newer app-servers persist sleep calls in history and emit them as live items.
+  // Include the variant in every locally namespaced copy of ThreadItem.
+  if (name.endsWith("ThreadItem") && Array.isArray(objectValue.oneOf)) {
+    const sleepItem: Schema.Json = {
+      type: "object",
+      title: "SleepThreadItem",
+      properties: {
+        durationMs: { type: "integer", minimum: 0 },
+        id: { type: "string" },
+        type: { type: "string", const: "sleep", title: "SleepThreadItemType" },
+      },
+      required: ["durationMs", "id", "type"],
+    };
+    const hasSleep = objectValue.oneOf.some(
+      (variant) =>
+        variant !== null &&
+        typeof variant === "object" &&
+        !Array.isArray(variant) &&
+        variant.title === "SleepThreadItem",
+    );
+    return hasSleep ? value : { ...objectValue, oneOf: [...objectValue.oneOf, sleepItem] };
+  }
+
+  if (name !== "V1InitializeResponse") {
+    return value;
+  }
   const required = objectValue.required;
   if (!Array.isArray(required)) {
     return value;

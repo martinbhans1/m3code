@@ -34,7 +34,9 @@ export const decodeOptionalPayload = <A, I>(
     );
   }
 
-  return Schema.decodeUnknownEffect(schema)(raw).pipe(
+  // App-server adds fields independently of our generated protocol version.
+  // Preserve them so consumers can decode newer, optional capabilities.
+  return Schema.decodeUnknownEffect(schema, { onExcessProperty: "preserve" })(raw).pipe(
     Effect.mapError((error) =>
       CodexError.CodexAppServerRequestError.invalidParams(
         `Invalid ${method} payload: ${formatSchemaIssue(error.issue)}`,

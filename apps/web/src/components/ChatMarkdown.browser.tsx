@@ -661,13 +661,14 @@ describe("ChatMarkdown", () => {
     const longCell =
       "This service has been experiencing intermittent latency spikes during peak traffic hours and the on-call team is investigating.";
 
-    it("truncates cells by default and expands them from the footer toggle", async () => {
+    it("expands cells by default and supports collapsing them from the footer toggle", async () => {
       const source = ["| Name | Notes |", "| --- | --- |", `| api | ${longCell} |`].join("\n");
       const screen = await render(<ChatMarkdown text={source} cwd="/repo/project" />);
 
       try {
         const container = document.querySelector(".chat-markdown-table-container");
-        expect(container?.getAttribute("data-expanded")).toBe("false");
+        expect(container?.getAttribute("data-expanded")).toBe("true");
+        await page.getByRole("button", { name: "Collapse table cells" }).click();
 
         const noteCell = [...document.querySelectorAll(".chat-markdown td")].at(-1)!;
         expect(getComputedStyle(noteCell).whiteSpace).toBe("nowrap");
@@ -700,6 +701,29 @@ describe("ChatMarkdown", () => {
       }
     });
 
+    it("preserves the table toggle when streamed content updates", async () => {
+      const source = ["| Name | Notes |", "| --- | --- |", `| api | ${longCell} |`].join("\n");
+      const screen = await render(<ChatMarkdown text={source} cwd="/repo/project" />);
+      try {
+        await page.getByRole("button", { name: "Collapse table cells" }).click();
+        await screen.rerender(
+          <ChatMarkdown text={`${source}\n\nMore content`} cwd="/repo/project" />,
+        );
+        await expect
+          .element(page.getByRole("button", { name: "Expand table cells" }))
+          .toBeInTheDocument();
+        await page.getByRole("button", { name: "Expand table cells" }).click();
+        await screen.rerender(
+          <ChatMarkdown text={`${source}\n\nUpdated content`} cwd="/repo/project" />,
+        );
+        await expect
+          .element(page.getByRole("button", { name: "Collapse table cells" }))
+          .toBeInTheDocument();
+      } finally {
+        await screen.unmount();
+      }
+    });
+
     it("shows every cell in full when expanded", async () => {
       const source = [
         "| # | What we want | Where we stand today |",
@@ -712,11 +736,6 @@ describe("ChatMarkdown", () => {
         const viewport = document.querySelector(
           '.chat-markdown-table-container [data-slot="scroll-area-viewport"]',
         )!;
-        const noteCell = [...document.querySelectorAll(".chat-markdown td")].at(-1)!;
-        expect(noteCell.scrollWidth).toBeGreaterThan(noteCell.clientWidth);
-
-        await page.getByRole("button", { name: "Expand table cells" }).click();
-
         // Every cell wraps in full — nothing is ellipsised or clipped — and the
         // table fits the container, so no sideways scrolling is needed.
         [...document.querySelectorAll(".chat-markdown th, .chat-markdown td")].forEach((cell) => {
@@ -741,8 +760,6 @@ describe("ChatMarkdown", () => {
           '.chat-markdown-table-container [data-slot="scroll-area-viewport"]',
         )!;
         expect(viewport.scrollWidth).toBeGreaterThan(viewport.clientWidth);
-
-        await page.getByRole("button", { name: "Expand table cells" }).click();
 
         // Columns never collapse below their longest word, so the table stays
         // legible and the rest of it is reachable by scrolling right.

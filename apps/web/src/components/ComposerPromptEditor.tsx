@@ -1182,6 +1182,26 @@ function ComposerInlineTokenBackspacePlugin() {
           event?.preventDefault();
           return true;
         };
+        // Select-to-quote drops a newline after the card so the reply starts on
+        // its own line. That newline is part of the quote as far as the reader
+        // is concerned, so one Backspace from the line below takes both — two
+        // presses, the first of which changes nothing visible, reads as broken.
+        const removeQuoteWithTrailingLineBreak = (candidate: LexicalNode | null): boolean => {
+          if (!$isLineBreakNode(candidate)) {
+            return false;
+          }
+          const quote = candidate.getPreviousSibling();
+          if (!(quote instanceof ComposerQuoteNode)) {
+            return false;
+          }
+          const tokenStart = getAbsoluteOffsetForPoint(quote, 0);
+          candidate.remove();
+          quote.remove();
+          $setSelectionAtComposerOffset(tokenStart);
+          event?.preventDefault();
+          return true;
+        };
+
         if (removeInlineTokenNode(anchorNode)) {
           return true;
         }
@@ -1190,7 +1210,11 @@ function ComposerInlineTokenBackspacePlugin() {
           if (selection.anchor.offset > 0) {
             return false;
           }
-          if (removeInlineTokenNode(anchorNode.getPreviousSibling())) {
+          const previousSibling = anchorNode.getPreviousSibling();
+          if (
+            removeQuoteWithTrailingLineBreak(previousSibling) ||
+            removeInlineTokenNode(previousSibling)
+          ) {
             return true;
           }
           const parent = anchorNode.getParent();
@@ -1205,8 +1229,11 @@ function ComposerInlineTokenBackspacePlugin() {
 
         if ($isElementNode(anchorNode)) {
           const childIndex = selection.anchor.offset - 1;
-          if (childIndex >= 0 && removeInlineTokenNode(anchorNode.getChildAtIndex(childIndex))) {
-            return true;
+          if (childIndex >= 0) {
+            const child = anchorNode.getChildAtIndex(childIndex);
+            if (removeQuoteWithTrailingLineBreak(child) || removeInlineTokenNode(child)) {
+              return true;
+            }
           }
         }
 
@@ -1535,6 +1562,33 @@ function rectOfCharacter(text: Text, index: number): DOMRect | null {
 }
 
 /**
+ * Bottom of the line a `<br>` terminates. A `<br>` that follows a full-width box
+ * (the quote card) shares that box's line but reports only its own short glyph
+ * box, whose bottom is still *inside* the card. Taking it at face value paints
+ * the caret on top of the card instead of on the empty line below it, so widen
+ * to the tallest sibling sharing the line.
+ */
+function lineBottomForLineBreak(lineBreak: Node, lineBreakRect: DOMRect): number {
+  let bottom = lineBreakRect.bottom;
+  let sibling: ChildNode | null = lineBreak.previousSibling;
+  while (sibling) {
+    const rect = rectOfNode(sibling);
+    if (rect) {
+      // A sibling that ends above the break belongs to an earlier line, and so
+      // does everything before it.
+      if (rect.bottom <= lineBreakRect.top) {
+        break;
+      }
+      bottom = Math.max(bottom, rect.bottom);
+    }
+    // Unmeasurable siblings (empty spans) are skipped rather than treated as a
+    // line boundary — stopping there would fall back to the wrong line.
+    sibling = sibling.previousSibling;
+  }
+  return bottom;
+}
+
+/**
  * Caret boxes for positions the browser refuses to measure: an empty line (the
  * caret sits between two <br>s) and the boundary next to an atomic chip or
  * quote card both yield a zero-sized range rect. Falling back to "editor start"
@@ -1577,7 +1631,11 @@ function caretMetricsFromNeighbours(range: Range, root: HTMLElement): CaretMetri
       // A line break before the caret means the caret opens the next line.
       const rect = rectOfNode(previous);
       if (rect) {
-        return { left: composerContentLeft(root), top: rect.bottom, height: rect.height };
+        return {
+          left: composerContentLeft(root),
+          top: lineBottomForLineBreak(previous, rect),
+          height: rect.height,
+        };
       }
     } else {
       const rect = rectOfNode(previous);

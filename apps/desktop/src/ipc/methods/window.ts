@@ -124,6 +124,20 @@ export const showContextMenu = makeIpcMethod({
   }),
 });
 
+export const focusWindow = makeIpcMethod({
+  channel: IpcChannels.FOCUS_WINDOW_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.window.focusWindow")(function* () {
+    const electronWindow = yield* ElectronWindow.ElectronWindow;
+    const window = yield* electronWindow.currentMainOrFirst;
+    if (Option.isNone(window)) {
+      return;
+    }
+    yield* electronWindow.reveal(window.value);
+  }),
+});
+
 export const openExternal = makeIpcMethod({
   channel: IpcChannels.OPEN_EXTERNAL_CHANNEL,
   payload: Schema.String,

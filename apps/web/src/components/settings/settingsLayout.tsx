@@ -15,6 +15,51 @@ export function useRelativeTimeTick(intervalMs = 1_000) {
   return nowMs;
 }
 
+/**
+ * Horizontal category strip for a settings page whose content is too long to
+ * scan as one list. Selection is a plain string so callers can persist it.
+ */
+export function SettingsTabs<Id extends string>({
+  tabs,
+  value,
+  onValueChange,
+  label,
+}: {
+  tabs: ReadonlyArray<{ readonly id: Id; readonly label: string }>;
+  value: Id;
+  onValueChange: (id: Id) => void;
+  label: string;
+}) {
+  return (
+    <div
+      role="tablist"
+      aria-label={label}
+      className="-mx-1 flex snap-x gap-1 overflow-x-auto px-1 pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+    >
+      {tabs.map((tab) => {
+        const isActive = tab.id === value;
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            onClick={() => onValueChange(tab.id)}
+            className={cn(
+              "shrink-0 snap-start rounded-full border px-3 py-1.5 text-[12px] font-medium transition-colors",
+              isActive
+                ? "border-border bg-card text-foreground shadow-sm/4"
+                : "border-transparent text-muted-foreground/70 hover:bg-card/60 hover:text-foreground/80",
+            )}
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function SettingsSection({
   title,
   icon,

@@ -3,6 +3,7 @@ export const CONFIRM_CHANNEL = "desktop:confirm";
 export const SET_THEME_CHANNEL = "desktop:set-theme";
 export const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
 export const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
+export const FOCUS_WINDOW_CHANNEL = "desktop:focus-window";
 export const CREATE_CLOUD_AUTH_REQUEST_CHANNEL = "desktop:create-cloud-auth-request";
 export const GET_CLOUD_AUTH_TOKEN_CHANNEL = "desktop:get-cloud-auth-token";
 export const SET_CLOUD_AUTH_TOKEN_CHANNEL = "desktop:set-cloud-auth-token";

@@ -12,7 +12,6 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 import { ModelPickerContent } from "./ModelPickerContent";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
-import { ProviderUsageMeter } from "./ProviderUsageMeter";
 import {
   ModelEsque,
   getTriggerDisplayModelLabel,
@@ -37,12 +36,6 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   activeProviderIconClassName?: string;
   compact?: boolean;
   disabled?: boolean;
-  /**
-   * Render the active instance's plan-usage meter beside the trigger. Opt-in
-   * because only the composer wants it: the settings page renders this picker
-   * to choose a default model, where a live usage dial is off-topic.
-   */
-  showPlanUsage?: boolean;
   terminalOpen?: boolean;
   open?: boolean;
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"];
@@ -226,11 +219,6 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           />
         </PopoverPopup>
       </Popover>
-      {/* Sibling of the trigger, not a child: the trigger is a <button>, and
-          the meter needs its own focusable hover target. */}
-      {props.showPlanUsage && activeEntry ? (
-        <ProviderUsageMeter provider={activeEntry.snapshot} displayName={activeEntry.displayName} />
-      ) : null}
     </>
   );
 });

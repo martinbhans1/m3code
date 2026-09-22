@@ -307,9 +307,13 @@ function getHighlighterPromise(language: string): Promise<DiffsHighlighter> {
   return promise;
 }
 
-function MarkdownTable({ children, ...props }: React.ComponentProps<"table">) {
+function MarkdownTable({
+  children,
+  node: _node,
+  ...props
+}: ComponentProps<"table"> & { node?: unknown }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const expandLabel = expanded ? "Collapse table cells" : "Expand table cells";
@@ -1417,9 +1421,7 @@ function ChatMarkdown({
           />
         );
       },
-      table({ node: _node, ...props }) {
-        return <MarkdownTable {...props} />;
-      },
+      table: MarkdownTable,
       details({ node: _node, children, open: detailsOpen }) {
         return <MarkdownDetails open={detailsOpen}>{children}</MarkdownDetails>;
       },

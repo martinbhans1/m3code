@@ -40,7 +40,18 @@ const makeProjectionSnapshotQueryLayer = (project: OrchestrationProject) =>
     getThreadShellById: () => Effect.die("unused"),
     getThreadDetailById: () => Effect.die("unused"),
     getThreadMessagesTail: () => Effect.succeed([]),
+    listThreadMessageOutline: () => Effect.succeed([]),
+    listThreadMessageWindow: () => Effect.succeed([]),
+    countThreadMessages: () => Effect.succeed(0),
+    searchThreadMessages: () => Effect.succeed([]),
+    countThreadMessageMatches: () => Effect.succeed(0),
+    getThreadMessageTurn: () => Effect.succeed(Option.none()),
+    listThreadTurnToolActivities: () => Effect.succeed([]),
+    countThreadTurnToolActivities: () => Effect.succeed(0),
+    getThreadMessagePosition: () => Effect.succeed(Option.none()),
+    countThreadToolCallsByTurn: () => Effect.succeed(new Map()),
     listThreadActivitiesByKinds: () => Effect.succeed([]),
+    listFollowupToolCallActivities: () => Effect.succeed([]),
   });
 
 describe("ProjectSetupScriptRunner", () => {

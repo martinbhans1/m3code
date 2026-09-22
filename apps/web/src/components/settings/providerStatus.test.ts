@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { ServerProvider, ServerProviderUsage } from "@t3tools/contracts";
+import type {
+  ServerProvider,
+  ServerProviderUsage,
+  ServerProviderUsageWindow,
+} from "@t3tools/contracts";
 
 import {
   formatProviderUsageResetLabel,
   formatProviderUsageStaleLabel,
+  getProviderUsagePace,
   getProviderUsageSummary,
 } from "./providerStatus";
 
@@ -243,5 +248,103 @@ describe("getProviderUsageSummary", () => {
     expect(summary.kind).toBe("measured");
     if (summary.kind !== "measured") return;
     expect(summary.staleLabel).toBe("Updated 30m ago");
+  });
+});
+
+describe("getProviderUsagePace", () => {
+  const HOUR_MS = 60 * 60_000;
+
+  /** A five-hour window with `elapsedHours` already burned. */
+  function fiveHourWindow(input: { percent: number | null; elapsedHours: number }) {
+    return {
+      id: "five_hour",
+      label: "Session",
+      percent: input.percent,
+      resetsAt: isoAfter(NOW, (5 - input.elapsedHours) * HOUR_MS),
+      windowMinutes: 300,
+    } as ServerProviderUsageWindow;
+  }
+
+  it("projects the finishing utilization from the rate so far", () => {
+    // 20% burned in the first hour of five extrapolates to 100%... exactly at
+    // the limit, so nudge below: 15% in one hour -> 75% by reset.
+    const pace = getProviderUsagePace(fiveHourWindow({ percent: 15, elapsedHours: 1 }), NOW);
+
+    expect(pace).not.toBeNull();
+    expect(pace?.elapsedPercent).toBe(20);
+    expect(Math.round(pace?.projectedPercent ?? 0)).toBe(75);
+    expect(pace?.status).toBe("comfortable");
+    expect(pace?.label).toBe("On pace for ~75% by reset");
+  });
+
+  it("warns when the projection lands just under the limit", () => {
+    const pace = getProviderUsagePace(fiveHourWindow({ percent: 18, elapsedHours: 1 }), NOW);
+
+    expect(pace?.status).toBe("tight");
+  });
+
+  it("counts down to exhaustion when the rate overruns the window", () => {
+    // 50% in the first hour -> 10% per hour of window budget... i.e. the
+    // remaining 50% lasts another hour, well before the 4h reset.
+    const pace = getProviderUsagePace(fiveHourWindow({ percent: 50, elapsedHours: 1 }), NOW);
+
+    expect(pace?.status).toBe("exhausting");
+    expect(pace?.label).toBe("At this rate, you run out in 1h");
+  });
+
+  it("says the limit is reached rather than projecting past it", () => {
+    const pace = getProviderUsagePace(fiveHourWindow({ percent: 100, elapsedHours: 2 }), NOW);
+
+    expect(pace?.status).toBe("exhausting");
+    expect(pace?.label).toBe("Limit reached — waiting on the reset");
+  });
+
+  it("stays silent until enough of the window has elapsed to divide by", () => {
+    // Six minutes into five hours, one burst extrapolates to nonsense.
+    expect(getProviderUsagePace(fiveHourWindow({ percent: 4, elapsedHours: 0.1 }), NOW)).toBeNull();
+  });
+
+  it("stays silent without a percent, a reset time, or a declared window width", () => {
+    expect(
+      getProviderUsagePace(fiveHourWindow({ percent: null, elapsedHours: 2 }), NOW),
+    ).toBeNull();
+    expect(
+      getProviderUsagePace(
+        { id: "w", label: "Weekly", percent: 40, resetsAt: null, windowMinutes: 10_080 },
+        NOW,
+      ),
+    ).toBeNull();
+    expect(
+      getProviderUsagePace(
+        { id: "w", label: "Weekly", percent: 40, resetsAt: isoAfter(NOW, HOUR_MS) },
+        NOW,
+      ),
+    ).toBeNull();
+  });
+
+  it("is attached to every window the summary presents", () => {
+    const summary = getProviderUsageSummary(
+      providerWithUsage(
+        usage({
+          windows: [
+            {
+              id: "five_hour",
+              label: "Session",
+              percent: 15,
+              resetsAt: isoAfter(NOW, 4 * HOUR_MS),
+              windowMinutes: 300,
+            },
+            { id: "weekly", label: "Weekly", percent: 40, resetsAt: null },
+          ],
+        }),
+      ),
+      NOW,
+    );
+
+    expect(summary.kind).toBe("measured");
+    if (summary.kind !== "measured") return;
+    expect(summary.windows[0]?.pace?.label).toBe("On pace for ~75% by reset");
+    // No reset time, so no projection — and no invented one.
+    expect(summary.windows[1]?.pace).toBeNull();
   });
 });

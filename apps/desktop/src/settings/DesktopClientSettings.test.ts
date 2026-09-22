@@ -16,11 +16,16 @@ const clientSettings: ClientSettings = {
   confirmThreadArchive: true,
   confirmThreadDelete: false,
   dismissedProviderUpdateNotificationKeys: [],
+  providerUsageAlertThresholds: [50, 80],
+  providerUsageAlertRepeatMinutes: 0,
+  providerUsageAlertAutoDismissSeconds: 10,
   diffIgnoreWhitespace: true,
   diffWordWrap: true,
   favorites: [],
   providerModelPreferences: {},
   showThreadChangeRequestStatus: false,
+  showGitCounts: true,
+  gitCountsProjectOverrides: {},
   sidebarProjectGroupingMode: "repository_path",
   sidebarProjectGroupingOverrides: {
     "environment-1:/tmp/project-a": "separate",
@@ -29,6 +34,11 @@ const clientSettings: ClientSettings = {
   sidebarThreadSortOrder: "created_at",
   sidebarThreadPreviewCount: 6,
   sidebarThreadShowMoreIncrement: 5,
+  systemNotificationsEnabled: true,
+  systemNotifyOnTurnCompleted: true,
+  systemNotifyOnInputNeeded: true,
+  systemNotifyOnFailure: true,
+  systemNotificationsSuppressWhenFocused: false,
   timestampFormat: "24-hour",
 };
 

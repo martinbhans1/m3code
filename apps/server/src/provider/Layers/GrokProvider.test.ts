@@ -16,7 +16,7 @@ import { GROK_REASONING_EFFORT_OPTION_ID } from "../acp/GrokAcpSupport.ts";
 const decodeGrokSettings = Schema.decodeSync(GrokSettings);
 
 describe("buildGrokModelCapabilities", () => {
-  it("advertises reasoningEffort low/medium/high with high as default", () => {
+  it("advertises reasoningEffort low/medium/high/xhigh with high as default", () => {
     const capabilities = buildGrokModelCapabilities();
     const descriptors = capabilities.optionDescriptors ?? [];
     const reasoning = descriptors.find(
@@ -30,7 +30,7 @@ describe("buildGrokModelCapabilities", () => {
     });
     expect(
       reasoning?.type === "select" ? reasoning.options.map((option) => option.id) : [],
-    ).toEqual(["low", "medium", "high"]);
+    ).toEqual(["low", "medium", "high", "xhigh"]);
   });
 });
 

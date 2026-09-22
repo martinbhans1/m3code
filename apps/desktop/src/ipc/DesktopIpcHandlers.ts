@@ -41,6 +41,7 @@ import {
 } from "./methods/updates.ts";
 import {
   confirm,
+  focusWindow,
   getAppBranding,
   getLocalEnvironmentBootstrap,
   openExternal,
@@ -83,6 +84,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(confirm);
   yield* ipc.handle(setTheme);
   yield* ipc.handle(showContextMenu);
+  yield* ipc.handle(focusWindow);
   yield* ipc.handle(openExternal);
   yield* ipc.handle(createCloudAuthRequest);
   yield* ipc.handle(getCloudAuthToken);

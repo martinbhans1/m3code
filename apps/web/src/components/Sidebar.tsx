@@ -1,14 +1,16 @@
+import { SidebarSearchButton } from "./SidebarSearchButton";
 import {
   ArchiveIcon,
   ArrowUpDownIcon,
+  CheckCircle2Icon,
   ChevronRightIcon,
   CloudIcon,
   FolderPlusIcon,
   GitBranchIcon,
+  MoonIcon,
   Globe2Icon,
   LightbulbIcon,
   PinIcon,
-  SearchIcon,
   SettingsIcon,
   SquarePenIcon,
   TerminalIcon,
@@ -22,6 +24,7 @@ import {
   ThreadStatusLabel,
 } from "./ThreadStatusIndicators";
 import { ProjectFavicon } from "./ProjectFavicon";
+import { isThreadCold, threadQuietDays } from "@t3tools/shared/threadDisposition";
 import { autoAnimate } from "@formkit/auto-animate";
 import React, { useCallback, useEffect, memo, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -118,7 +121,6 @@ import {
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
-import { Kbd } from "./ui/kbd";
 import {
   getArm64IntelBuildWarningDescription,
   getDesktopUpdateActionError,
@@ -198,7 +200,6 @@ import { sortThreads } from "../lib/threadSort";
 import { SidebarUpdatePill } from "./sidebar/SidebarUpdatePill";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useIsMobile } from "~/hooks/useMediaQuery";
-import { CommandDialogTrigger } from "./ui/command";
 import { readEnvironmentApi } from "../environmentApi";
 import { useSettings, useUpdateSettings } from "~/hooks/useSettings";
 import { useServerKeybindings } from "../rpc/serverState";
@@ -206,6 +207,8 @@ import {
   derivePhysicalProjectKey,
   deriveProjectGroupingOverrideKey,
   getProjectOrderKey,
+  resolveGitCountsEnabled,
+  selectGitCountsSettings,
   selectProjectGroupingSettings,
 } from "../logicalProject";
 import {
@@ -221,6 +224,9 @@ import {
 } from "../sidebarProjectGrouping";
 import { SidebarProviderUpdatePill } from "./sidebar/SidebarProviderUpdatePill";
 import { openDiscoveredPort } from "./preview/openDiscoveredPort";
+
+type ProjectContextMenuAction = "rename" | "grouping" | "git-counts" | "copy-path" | "delete";
+
 const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
   created_at: "Created at",
@@ -614,6 +620,27 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
     [attemptArchiveThread, threadRef],
   );
   const rowButtonRender = useMemo(() => <div role="button" tabIndex={0} />, []);
+  // Coldness is read at render rather than off a ticking clock: the threshold is
+  // measured in days, so re-deriving it whenever the sidebar happens to redraw
+  // is accurate enough, and a per-row timer for a badge that changes twice a
+  // week would not be.
+  // Sidebar summaries only carry `updatedAt` once a thread has moved, so a
+  // never-touched one falls back to when it was created — which is exactly the
+  // moment it last did anything.
+  const lastMovedAt = thread.updatedAt ?? thread.createdAt;
+  const isCold = isThreadCold(
+    {
+      archivedAt: thread.archivedAt,
+      doneAt: thread.doneAt,
+      updatedAt: lastMovedAt,
+      hasPendingFollowups: thread.hasPendingFollowups,
+      hasPendingApprovals: thread.hasPendingApprovals,
+      hasPendingUserInput: thread.hasPendingUserInput,
+      isRunning: thread.latestTurn?.state === "running" || thread.session?.status === "running",
+    },
+    Date.now(),
+  );
+  const quietDays = isCold ? threadQuietDays(lastMovedAt, Date.now()) : null;
 
   return (
     <SidebarMenuSubItem
@@ -638,6 +665,40 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
         onContextMenu={handleRowContextMenu}
       >
         <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
+          {thread.doneAt !== null && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    aria-label="Marked done"
+                    className="inline-flex shrink-0 items-center justify-center text-emerald-600 dark:text-emerald-400/90"
+                  >
+                    <CheckCircle2Icon className="size-3" />
+                  </span>
+                }
+              />
+              <TooltipPopup side="top">Marked done</TooltipPopup>
+            </Tooltip>
+          )}
+          {isCold && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    aria-label="Gone quiet with work still open"
+                    className="inline-flex shrink-0 items-center justify-center text-sky-600 dark:text-sky-400/80"
+                  >
+                    <MoonIcon className="size-3" />
+                  </span>
+                }
+              />
+              <TooltipPopup side="top">
+                {quietDays === null
+                  ? "Gone quiet with work still open"
+                  : `Quiet for ${quietDays} days, with work still open`}
+              </TooltipPopup>
+            </Tooltip>
+          )}
           {thread.hasPendingFollowups && (
             <Tooltip>
               <TooltipTrigger
@@ -1045,6 +1106,7 @@ interface SidebarProjectItemProps {
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   setThreadPinned: ReturnType<typeof useThreadActions>["setThreadPinned"];
+  setThreadDone: ReturnType<typeof useThreadActions>["setThreadDone"];
   threadJumpLabelByKey: ReadonlyMap<string, string>;
   attachThreadListAutoAnimateRef: (node: HTMLElement | null) => void;
   expandThreadListForProject: (projectKey: string, totalThreadCount: number) => void;
@@ -1067,6 +1129,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     archiveThread,
     deleteThread,
     setThreadPinned,
+    setThreadDone,
     threadJumpLabelByKey,
     attachThreadListAutoAnimateRef,
     expandThreadListForProject,
@@ -1090,6 +1153,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     (settings) => settings.defaultThreadEnvMode,
   );
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
+  const gitCountsSettings = useSettings(selectGitCountsSettings);
   const orchestratorThreadAccess = useSettings((settings) => settings.orchestratorThreadAccess);
   const defaultOrchestratorThreadAccess = useSettings(
     (settings) => settings.defaultOrchestratorThreadAccess,
@@ -1418,6 +1482,36 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     [projectGroupingSettings.sidebarProjectGroupingOverrides],
   );
 
+  // Per-project switch for the header git counters. Writing the value that
+  // already matches the global default clears the override instead, so a
+  // project only carries an entry while it genuinely disagrees.
+  const toggleProjectGitCounts = useCallback(
+    (member: SidebarProjectGroupMember) => {
+      const nextEnabled = !resolveGitCountsEnabled(member, gitCountsSettings);
+      const overrideKey = derivePhysicalProjectKey(member);
+      const nextOverrides = { ...gitCountsSettings.gitCountsProjectOverrides };
+      if (nextEnabled === gitCountsSettings.showGitCounts) {
+        delete nextOverrides[overrideKey];
+      } else {
+        nextOverrides[overrideKey] = nextEnabled;
+      }
+      updateSettings({ gitCountsProjectOverrides: nextOverrides });
+    },
+    [gitCountsSettings, updateSettings],
+  );
+
+  // A grouped row can span several physical projects with different values, so
+  // only a single-project row states which way the toggle will go.
+  const gitCountsMenuLabel = useMemo(() => {
+    const singleMember = project.memberProjects.length === 1 ? project.memberProjects[0] : null;
+    if (!singleMember) {
+      return "Git counts in header";
+    }
+    return resolveGitCountsEnabled(singleMember, gitCountsSettings)
+      ? "Hide git counts in header"
+      : "Show git counts in header";
+  }, [gitCountsSettings, project.memberProjects]);
+
   const removeProject = useCallback(
     async (member: SidebarProjectGroupMember, options: { force?: boolean } = {}): Promise<void> => {
       const memberProjectRef = scopeProjectRef(member.environmentId, member.id);
@@ -1565,7 +1659,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
         const actionHandlers = new Map<string, () => Promise<void> | void>();
         const makeLeaf = (
-          action: "rename" | "grouping" | "copy-path" | "delete",
+          action: ProjectContextMenuAction,
           member: SidebarProjectGroupMember,
           options?: {
             destructive?: boolean;
@@ -1580,6 +1674,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
                 return;
               case "grouping":
                 openProjectGroupingDialog(member);
+                return;
+              case "git-counts":
+                toggleProjectGitCounts(member);
                 return;
               case "copy-path":
                 copyPathToClipboard(member.cwd, { path: member.cwd });
@@ -1598,7 +1695,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         };
 
         const buildTargetedItem = (
-          action: "rename" | "grouping" | "copy-path" | "delete",
+          action: ProjectContextMenuAction,
           label: string,
           options?: {
             destructive?: boolean;
@@ -1634,6 +1731,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           [
             buildTargetedItem("rename", "Rename"),
             buildTargetedItem("grouping", "Group into..."),
+            buildTargetedItem("git-counts", gitCountsMenuLabel),
             buildTargetedItem("copy-path", "Copy Path"),
             buildTargetedItem("delete", "Remove", {
               destructive: true,
@@ -1654,12 +1752,14 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     },
     [
       copyPathToClipboard,
+      gitCountsMenuLabel,
       handleRemoveProject,
       openProjectGroupingDialog,
       openProjectRenameDialog,
       project.groupedProjectCount,
       project.memberProjects,
       suppressProjectClickForContextMenuRef,
+      toggleProjectGitCounts,
     ],
   );
 
@@ -2055,6 +2155,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       const thread = sidebarThreadByKeyRef.current.get(threadKey) ?? null;
       if (!thread) return;
       const isPinned = pinnedThreadKeySet.has(threadKey);
+      const isDone = thread.doneAt !== null;
       const threadProject = memberProjectByScopedKey.get(
         scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
       );
@@ -2071,6 +2172,10 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         [
           { id: "rename", label: "Rename thread" },
           { id: isPinned ? "unpin" : "pin", label: isPinned ? "Unpin thread" : "Pin thread" },
+          {
+            id: isDone ? "unmark-done" : "mark-done",
+            label: isDone ? "Reopen thread" : "Mark done",
+          },
           // Hidden entirely until an orchestrator project exists: without one,
           // this names a feature the user has never turned on.
           ...(orchestratorProjectId === null
@@ -2107,6 +2212,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
       if (clicked === "pin" || clicked === "unpin") {
         void setThreadPinned(threadRef, clicked === "pin");
+        return;
+      }
+
+      if (clicked === "mark-done" || clicked === "unmark-done") {
+        void setThreadDone(threadRef, clicked === "mark-done");
         return;
       }
 
@@ -2176,6 +2286,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       orchestratorThreadAccess,
       pinnedThreadKeySet,
       project.cwd,
+      setThreadDone,
       setThreadPinned,
       startThreadRename,
       updateSettings,
@@ -3201,6 +3312,7 @@ interface SidebarProjectsContentProps {
   archiveThread: ReturnType<typeof useThreadActions>["archiveThread"];
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   setThreadPinned: ReturnType<typeof useThreadActions>["setThreadPinned"];
+  setThreadDone: ReturnType<typeof useThreadActions>["setThreadDone"];
   pinnedThreadGroups: readonly SidebarPinnedThreadGroup[];
   pinnedThreadKeySet: ReadonlySet<string>;
   onPinnedThreadUnpin: (threadKey: string) => void;
@@ -3248,6 +3360,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     archiveThread,
     deleteThread,
     setThreadPinned,
+    setThreadDone,
     pinnedThreadGroups,
     pinnedThreadKeySet,
     onPinnedThreadUnpin,
@@ -3305,23 +3418,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
       <SidebarGroup className="px-2 pt-2 pb-1">
         <SidebarMenu>
           <SidebarMenuItem>
-            <CommandDialogTrigger
-              render={
-                <SidebarMenuButton
-                  size="sm"
-                  className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground focus-visible:ring-0"
-                  data-testid="command-palette-trigger"
-                />
-              }
-            >
-              <SearchIcon className="size-3.5 text-muted-foreground/70" />
-              <span className="flex-1 truncate text-left text-xs">Search</span>
-              {commandPaletteShortcutLabel ? (
-                <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px]">
-                  {commandPaletteShortcutLabel}
-                </Kbd>
-              ) : null}
-            </CommandDialogTrigger>
+            <SidebarSearchButton shortcutLabel={commandPaletteShortcutLabel} />
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarGroup>
@@ -3425,6 +3522,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                         archiveThread={archiveThread}
                         deleteThread={deleteThread}
                         setThreadPinned={setThreadPinned}
+                        setThreadDone={setThreadDone}
                         threadJumpLabelByKey={threadJumpLabelByKey}
                         attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
                         expandThreadListForProject={expandThreadListForProject}
@@ -3459,6 +3557,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 archiveThread={archiveThread}
                 deleteThread={deleteThread}
                 setThreadPinned={setThreadPinned}
+                setThreadDone={setThreadDone}
                 threadJumpLabelByKey={threadJumpLabelByKey}
                 attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
                 expandThreadListForProject={expandThreadListForProject}
@@ -3512,7 +3611,7 @@ export default function Sidebar() {
   const sidebarThreadShowMoreIncrement = useSettings((s) => s.sidebarThreadShowMoreIncrement);
   const { updateSettings } = useUpdateSettings();
   const { handleNewThread } = useNewThreadHandler();
-  const { archiveThread, deleteThread, setThreadPinned } = useThreadActions();
+  const { archiveThread, deleteThread, setThreadPinned, setThreadDone } = useThreadActions();
   const { isMobile, setOpenMobile } = useSidebar();
   const routeThreadRef = useParams({
     strict: false,
@@ -4286,6 +4385,7 @@ export default function Sidebar() {
             archiveThread={archiveThread}
             deleteThread={deleteThread}
             setThreadPinned={setThreadPinned}
+            setThreadDone={setThreadDone}
             pinnedThreadGroups={pinnedThreadGroups}
             pinnedThreadKeySet={pinnedThreadKeySet}
             onPinnedThreadUnpin={handlePinnedThreadUnpin}

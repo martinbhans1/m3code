@@ -39,8 +39,9 @@ import {
   spawnAndCollect,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
-import { normalizeClaudeUsage } from "../ClaudeUsage.ts";
+import { CLAUDE_USAGE_METHOD, normalizeClaudeUsage } from "../ClaudeUsage.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { ProviderAuthenticationActionError } from "../Errors.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -573,8 +574,6 @@ type ClaudeCapabilitiesProbe = {
  * change or be removed in any release without notice… The method name will
  * change when the API is stabilized."
  */
-const CLAUDE_USAGE_METHOD = "usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET" as const;
-
 /**
  * Budget for the usage read, held *separately* from
  * `CAPABILITIES_PROBE_TIMEOUT_MS` rather than carved out of it.
@@ -797,6 +796,32 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
 });
 
+/**
+ * Run Claude Code's own browser-based sign-in flow in this instance's HOME.
+ * Claude remains the credential owner; M3 Code never reads or stores the
+ * resulting OAuth tokens.
+ */
+export const authenticateClaude = Effect.fn("authenticateClaude")(function* (
+  claudeSettings: ClaudeSettings,
+  environment?: NodeJS.ProcessEnv,
+) {
+  const result = yield* runClaudeCommand(claudeSettings, ["auth", "login"], environment).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ProviderAuthenticationActionError({
+          detail: cause.message,
+          cause,
+        }),
+    ),
+  );
+  if (result.code !== 0) {
+    const detail = detailFromResult(result);
+    return yield* new ProviderAuthenticationActionError({
+      detail: detail ? `Claude sign-in failed. ${detail}` : "Claude sign-in failed.",
+    });
+  }
+});
+
 export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(function* (
   claudeSettings: ClaudeSettings,
   resolveCapabilities?: (
@@ -928,7 +953,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       probe: {
         installed: true,
         version: parsedVersion,
-        status: "warning",
+        status: "ready",
         auth: { status: "unknown" },
         message: "Could not verify Claude authentication status from initialization result.",
       },

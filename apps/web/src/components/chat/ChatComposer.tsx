@@ -80,7 +80,7 @@ import {
   renderProviderTraitsMenuContent,
   renderProviderTraitsPicker,
 } from "./composerProviderState";
-import { ContextWindowMeter } from "./ContextWindowMeter";
+import { ComposerUsageMeter } from "./ComposerUsageMeter";
 import { buildExpandedImagePreview, type ExpandedImagePreview } from "./ExpandedImagePreview";
 import { basenameOfPath } from "../../pierre-icons";
 import { cn, randomUUID } from "~/lib/utils";
@@ -126,11 +126,17 @@ import {
 } from "../../lib/contextWindow";
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
 import { searchProviderSkills } from "../../providerSkillSearch";
+import { ensureLocalApi } from "../../localApi";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
+import {
+  useShowInteractionModeControl,
+  useShowRuntimeModeControl,
+} from "../../hooks/useComposerControlPrefs";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
 
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
 const FILE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_FILE_BYTES / (1024 * 1024))}MB`;
+const USAGE_POPOVER_REFRESH_THROTTLE_MS = 60_000;
 
 function formatAttachmentSize(sizeBytes: number): string {
   if (!Number.isFinite(sizeBytes) || sizeBytes <= 0) return "";
@@ -203,6 +209,7 @@ function isInsideComposerFloatingLayer(element: Element): boolean {
 
 const ComposerFooterModeControls = memo(function ComposerFooterModeControls(props: {
   showInteractionModeToggle: boolean;
+  showRuntimeModeControl: boolean;
   interactionMode: ProviderInteractionMode;
   runtimeMode: RuntimeMode;
   showPlanToggle: boolean;
@@ -257,7 +264,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
     </>
   ) : null;
 
-  return (
+  const runtimeModeControl = props.showRuntimeModeControl ? (
     <>
       <Separator orientation="vertical" className="mx-0.5 hidden h-4 sm:block" />
 
@@ -301,6 +308,12 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
         </Select>
         <TooltipPopup side="top">{runtimeModeOption.description}</TooltipPopup>
       </Tooltip>
+    </>
+  ) : null;
+
+  return (
+    <>
+      {runtimeModeControl}
 
       {interactionModeToggle}
 
@@ -340,8 +353,6 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
 
 const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(props: {
   compact: boolean;
-  activeContextWindow: ReturnType<typeof deriveLatestContextWindowSnapshot>;
-  activeThreadProviderDisplayName: string | null;
   isPreparingWorktree: boolean;
   pendingAction: {
     questionIndex: number;
@@ -365,12 +376,6 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
 }) {
   return (
     <>
-      {props.activeContextWindow ? (
-        <ContextWindowMeter
-          usage={props.activeContextWindow}
-          providerDisplayName={props.activeThreadProviderDisplayName}
-        />
-      ) : null}
       {props.isPreparingWorktree ? (
         <span className="text-muted-foreground/70 text-xs">Preparing worktree...</span>
       ) : null}
@@ -826,14 +831,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
   const selectedPromptEffort = composerProviderState.promptEffort;
   const selectedModelOptionsForDispatch = composerProviderState.modelOptionsForDispatch;
+  // Two gates on the mode controls: the provider decides whether plan mode
+  // exists at all, the user decides whether the footer spends width on it.
+  const [showInteractionModePref] = useShowInteractionModeControl();
+  const [showRuntimeModeControl] = useShowRuntimeModeControl();
   const composerProviderControls = useMemo(
     () => ({
-      showInteractionModeToggle: getProviderInteractionModeToggle(
-        providerStatuses,
-        selectedProvider,
-      ),
+      showInteractionModeToggle:
+        showInteractionModePref &&
+        getProviderInteractionModeToggle(providerStatuses, selectedProvider),
     }),
-    [providerStatuses, selectedProvider],
+    [providerStatuses, selectedProvider, showInteractionModePref],
   );
   const selectedModelSelection = useMemo<ModelSelection>(
     () => createModelSelection(selectedInstanceId, selectedModel, selectedModelOptionsForDispatch),
@@ -911,12 +919,35 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerSelectLockRef = useRef(false);
   const composerMenuOpenRef = useRef(false);
   const composerMenuItemsRef = useRef<ComposerCommandItem[]>([]);
+  const lastUsageRefreshAtRef = useRef(0);
+  const usageRefreshInFlightRef = useRef(false);
   const activeComposerMenuItemRef = useRef<ComposerCommandItem | null>(null);
   const composerBlurFrameRef = useRef<number | null>(null);
   const mobileComposerExpandFrameRef = useRef<number | null>(null);
   const mobileComposerExpandReleaseFrameRef = useRef<number | null>(null);
   const mobileComposerExpandInFlightRef = useRef(false);
   const dragDepthRef = useRef(0);
+
+  const refreshProviderUsage = useCallback(() => {
+    const now = Date.now();
+    if (
+      usageRefreshInFlightRef.current ||
+      now - lastUsageRefreshAtRef.current < USAGE_POPOVER_REFRESH_THROTTLE_MS
+    ) {
+      return;
+    }
+
+    lastUsageRefreshAtRef.current = now;
+    usageRefreshInFlightRef.current = true;
+    void ensureLocalApi()
+      .server.refreshProviders()
+      .catch((error: unknown) => {
+        console.warn("Failed to refresh provider usage", error);
+      })
+      .finally(() => {
+        usageRefreshInFlightRef.current = false;
+      });
+  }, []);
 
   // ------------------------------------------------------------------
   // Derived: composer send state
@@ -2346,11 +2377,26 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
 
           <div
             className={cn(
-              "relative px-3 pb-2 sm:px-4",
+              "composer-input-area relative px-3 pb-2 sm:px-4",
               hasComposerHeader ? "pt-2.5 sm:pt-3" : "pt-3.5 sm:pt-4",
               isComposerCollapsedMobile && "hidden",
             )}
           >
+            {/* Anchored to the whole input area, not to the editor: attachment
+                thumbnails and context chips are siblings *above* the editor, so
+                hanging the gauge off the editor pushed it down the card every
+                time one appeared. This wrapper starts under the header banners
+                and keeps its top edge wherever the card's content begins. The
+                gauge is a circle, so this inset still clears the 20px corner
+                radius. */}
+            <ComposerUsageMeter
+              className="absolute right-1.5 top-1.5 z-10"
+              contextWindow={activeContextWindow ?? null}
+              contextProviderDisplayName={activeThreadProviderDisplayName}
+              instanceEntries={providerInstanceEntries}
+              activeInstanceId={selectedInstanceId}
+              onRequestRefresh={refreshProviderUsage}
+            />
             {composerMenuOpen && !isComposerApprovalState && (
               <div className="absolute inset-x-0 bottom-full z-20 mb-2">
                 <ComposerCommandMenu
@@ -2666,7 +2712,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 </Tooltip>
                 <ProviderModelPicker
                   compact={isComposerFooterCompact}
-                  showPlanUsage
                   activeInstanceId={selectedInstanceId}
                   model={selectedModelForPickerWithCustomFallback}
                   lockedProvider={lockedProvider}
@@ -2696,6 +2741,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     planSidebarOpen={planSidebarOpen}
                     runtimeMode={runtimeMode}
                     showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
+                    showRuntimeModeControl={showRuntimeModeControl}
                     traitsMenuContent={providerTraitsMenuContent}
                     orchestratorAccessThreadId={orchestratorAccessThreadId}
                     isOrchestratorThread={isOrchestratorThread}
@@ -2713,6 +2759,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     ) : null}
                     <ComposerFooterModeControls
                       showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
+                      showRuntimeModeControl={showRuntimeModeControl}
                       interactionMode={interactionMode}
                       runtimeMode={runtimeMode}
                       showPlanToggle={showPlanSidebarToggle}
@@ -2768,8 +2815,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
               >
                 <ComposerFooterPrimaryActions
                   compact={isComposerPrimaryActionsCompact}
-                  activeContextWindow={activeContextWindow}
-                  activeThreadProviderDisplayName={activeThreadProviderDisplayName}
                   pendingAction={pendingPrimaryAction}
                   isRunning={phase === "running"}
                   showPlanFollowUpPrompt={pendingUserInputs.length === 0 && showPlanFollowUpPrompt}

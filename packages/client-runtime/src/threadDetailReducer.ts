@@ -92,6 +92,7 @@ export function applyThreadDetailEvent(
           updatedAt: event.payload.updatedAt,
           archivedAt: null,
           pinnedAt: null,
+          doneAt: null,
           deletedAt: null,
           messages: [],
           proposedPlans: [],
@@ -122,6 +123,22 @@ export function applyThreadDetailEvent(
       return {
         kind: "updated",
         thread: { ...thread, archivedAt: null, updatedAt: event.payload.updatedAt },
+      };
+
+    case "thread.marked-done":
+      return {
+        kind: "updated",
+        thread: {
+          ...thread,
+          doneAt: event.payload.doneAt,
+          updatedAt: event.payload.updatedAt,
+        },
+      };
+
+    case "thread.unmarked-done":
+      return {
+        kind: "updated",
+        thread: { ...thread, doneAt: null, updatedAt: event.payload.updatedAt },
       };
 
     // ── Thread metadata ─────────────────────────────────────────────

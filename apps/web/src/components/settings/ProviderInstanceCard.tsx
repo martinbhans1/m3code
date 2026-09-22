@@ -5,6 +5,7 @@ import {
   ChevronDownIcon,
   CopyIcon,
   DownloadIcon,
+  LogInIcon,
   LoaderIcon,
   PlusIcon,
   Trash2Icon,
@@ -353,6 +354,8 @@ interface ProviderInstanceCardProps {
   readonly onModelOrderChange: (next: ReadonlyArray<string>) => void;
   readonly onRunUpdate?: (() => void) | undefined;
   readonly isUpdating?: boolean | undefined;
+  readonly onAuthenticate?: (() => void) | undefined;
+  readonly isAuthenticating?: boolean | undefined;
 }
 
 /**
@@ -397,6 +400,8 @@ export function ProviderInstanceCard({
   onModelOrderChange,
   onRunUpdate,
   isUpdating = false,
+  onAuthenticate,
+  isAuthenticating = false,
 }: ProviderInstanceCardProps) {
   const enabled = instance.enabled ?? true;
   // The server-reported status wins when present; otherwise fall back to
@@ -711,6 +716,37 @@ export function ProviderInstanceCard({
             {authRowNode}
           </div>
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
+            {onAuthenticate ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={liveProvider?.auth.status === "authenticated" ? "ghost" : "outline"}
+                      className="h-7 px-2 text-xs"
+                      disabled={isAuthenticating || !enabled}
+                      onClick={onAuthenticate}
+                      aria-label={`Sign in to ${displayName}`}
+                    >
+                      {isAuthenticating ? (
+                        <LoaderIcon className="size-3 animate-spin" />
+                      ) : (
+                        <LogInIcon className="size-3" />
+                      )}
+                      {isAuthenticating
+                        ? "Signing in"
+                        : liveProvider?.auth.status === "authenticated"
+                          ? "Re-authenticate"
+                          : "Sign in"}
+                    </Button>
+                  }
+                />
+                <TooltipPopup side="top">
+                  Opens Claude Code's secure browser sign-in for this account
+                </TooltipPopup>
+              </Tooltip>
+            ) : null}
             <Button
               size="sm"
               variant="ghost"

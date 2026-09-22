@@ -52,6 +52,7 @@ function buildThread(title: string): SidebarThreadSummary {
     createdAt: "2024-01-01T00:00:00.000Z",
     archivedAt: null,
     pinnedAt: null,
+    doneAt: null,
     updatedAt: undefined,
     latestTurn: null,
     branch: null,

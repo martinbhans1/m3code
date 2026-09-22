@@ -156,6 +156,18 @@ export class ProviderDriverError extends Schema.TaggedErrorClass<ProviderDriverE
   }
 }
 
+export class ProviderAuthenticationActionError extends Schema.TaggedErrorClass<ProviderAuthenticationActionError>()(
+  "ProviderAuthenticationActionError",
+  {
+    detail: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 /**
  * ProviderSessionNotFoundError - Provider-facing session not found.
  */

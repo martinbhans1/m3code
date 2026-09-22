@@ -104,6 +104,12 @@ export function applyServerSettingsPatch(
     ...(patch.databaseConnections !== undefined
       ? { databaseConnections: patch.databaseConnections }
       : {}),
+    // Same wholesale replacement, and for a sharper reason: a merged map can
+    // never lose a key, so removing a tool server would leave its entry — and
+    // its credential — in place while the UI showed it gone.
+    ...(patch.projectToolServers !== undefined
+      ? { projectToolServers: patch.projectToolServers }
+      : {}),
     // Replaced wholesale: `deepMerge` would union arrays index-wise and make
     // removing a model impossible.
     ...(patch.orchestratorModelChoices !== undefined

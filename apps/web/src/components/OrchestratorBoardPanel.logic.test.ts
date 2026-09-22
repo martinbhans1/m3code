@@ -20,6 +20,7 @@ function thread(overrides: Partial<SidebarThreadSummary> = {}): SidebarThreadSum
     createdAt: new Date(Date.now() - 4 * HOUR_MS).toISOString(),
     archivedAt: null,
     pinnedAt: null,
+    doneAt: null,
     updatedAt: new Date().toISOString(),
     latestTurn: null,
     branch: null,

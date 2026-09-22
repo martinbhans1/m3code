@@ -132,10 +132,10 @@ export function getProviderVersionAdvisoryPresentation(
  * own — Codex never does, and Claude only starts once it is already warning.
  *
  * Deliberately inclusive (`>=`): a window reported at exactly 90% is at the
- * cutoff, not below it. This is a hair stricter than `ContextWindowMeter`'s
- * `> 90`, which the two meters can afford to disagree about — a context
- * window is a soft budget that compaction reclaims, a plan window is a hard
- * limit that stops the session.
+ * cutoff, not below it. This is a hair stricter than the context layer in
+ * `ComposerUsageMeter`, which uses `> 90`: context is a soft budget that
+ * compaction reclaims, while a plan window is a hard limit that stops the
+ * session.
  */
 const USAGE_WARNING_PERCENT = 75;
 const USAGE_CRITICAL_PERCENT = 90;
@@ -153,6 +153,36 @@ const USAGE_SEVERITY_RANK: Record<ServerProviderUsageSeverity, number> = {
   critical: 2,
 };
 
+/**
+ * Whether the current burn rate lands inside the window or blows through it.
+ *
+ * Three tiers rather than two because "will finish at 96%" and "will run out
+ * with two hours to spare" call for different reactions, and a single
+ * over/under flag collapses them.
+ */
+export type ProviderUsagePaceStatus = "comfortable" | "tight" | "exhausting";
+
+/**
+ * Burn-rate projection for one window: where the clock is, versus where the
+ * usage is.
+ *
+ * Providers report only `resetsAt`, never a window's start, so this exists
+ * only for windows that also declare `windowMinutes` — the two together give
+ * the elapsed fraction. Extrapolation is deliberately naive (assume the
+ * average rate so far continues), which is the only honest thing to do with a
+ * single utilization sample and is what the user is estimating in their head
+ * anyway.
+ */
+export interface ProviderUsagePacePresentation {
+  /** How far through the window the clock is, `0`–`100`. */
+  readonly elapsedPercent: number;
+  /** Utilization at reset if the average rate so far holds. Uncapped view is clamped to 999. */
+  readonly projectedPercent: number;
+  readonly status: ProviderUsagePaceStatus;
+  /** One-line verdict, e.g. `On pace for ~68% by reset`. */
+  readonly label: string;
+}
+
 /** One plan window, formatted for display. */
 export interface ProviderUsageWindowPresentation {
   readonly id: string;
@@ -162,6 +192,8 @@ export interface ProviderUsageWindowPresentation {
   readonly percentLabel: string | null;
   readonly resetLabel: string | null;
   readonly severity: ServerProviderUsageSeverity;
+  /** `null` when the window is too young, or lacks the data, to project. */
+  readonly pace: ProviderUsagePacePresentation | null;
 }
 
 /**
@@ -261,6 +293,83 @@ export function formatProviderUsageStaleLabel(capturedAt: string, now: number): 
   return `Updated ${formatCompactDuration(ageMs)} ago`;
 }
 
+/**
+ * Fraction of a window that must have elapsed before a projection is worth
+ * showing. Two minutes into a five-hour window, one burst of usage
+ * extrapolates to "you will run out ten times over" — technically the average
+ * rate, but useless as advice. Waiting until the window is 8% old keeps the
+ * first projection from being nonsense.
+ */
+const PACE_MIN_ELAPSED_FRACTION = 0.08;
+
+/** Projections above this are capped: the exact number stops meaning anything. */
+const PACE_MAX_PROJECTED_PERCENT = 999;
+
+/** Projected utilization at reset that counts as cutting it close. */
+const PACE_TIGHT_PROJECTED_PERCENT = 85;
+
+/**
+ * Project a window's finishing utilization from the rate so far.
+ *
+ * Returns `null` whenever the projection would be guesswork rather than
+ * information: no utilization reported, no reset time, no declared window
+ * width, or too little of the window elapsed to divide by.
+ */
+export function getProviderUsagePace(
+  window: ServerProviderUsageWindow,
+  now: number,
+): ProviderUsagePacePresentation | null {
+  const percent = window.percent;
+  const windowMinutes = window.windowMinutes;
+  if (percent === null || windowMinutes === undefined || window.resetsAt === null) {
+    return null;
+  }
+
+  const resetsAtMs = parseTimestamp(window.resetsAt);
+  if (resetsAtMs === null) {
+    return null;
+  }
+
+  const windowMs = windowMinutes * 60_000;
+  const elapsedMs = Math.min(windowMs, windowMs - (resetsAtMs - now));
+  const elapsedFraction = elapsedMs / windowMs;
+  if (!Number.isFinite(elapsedFraction) || elapsedFraction < PACE_MIN_ELAPSED_FRACTION) {
+    return null;
+  }
+
+  const projectedPercent = Math.min(PACE_MAX_PROJECTED_PERCENT, percent / elapsedFraction);
+  const elapsedPercent = Math.min(100, Math.max(0, elapsedFraction * 100));
+
+  // Already spent: the projection is moot, the window is the ceiling.
+  if (percent >= 100) {
+    return {
+      elapsedPercent,
+      projectedPercent,
+      status: "exhausting",
+      label: "Limit reached — waiting on the reset",
+    };
+  }
+
+  if (projectedPercent >= 100) {
+    // Time from now until utilization would hit 100% at the observed rate.
+    const ratePerMs = percent / elapsedMs;
+    const msToLimit = ratePerMs > 0 ? (100 - percent) / ratePerMs : Number.POSITIVE_INFINITY;
+    const label = Number.isFinite(msToLimit)
+      ? msToLimit < 60_000
+        ? "At this rate, you run out within the minute"
+        : `At this rate, you run out in ${formatCompactDuration(msToLimit)}`
+      : "At this rate, you run out before the reset";
+    return { elapsedPercent, projectedPercent, status: "exhausting", label };
+  }
+
+  return {
+    elapsedPercent,
+    projectedPercent,
+    status: projectedPercent >= PACE_TIGHT_PROJECTED_PERCENT ? "tight" : "comfortable",
+    label: `On pace for ~${Math.round(projectedPercent)}% by reset`,
+  };
+}
+
 function severityFromPercent(percent: number | null): ServerProviderUsageSeverity {
   if (percent === null) {
     return "normal";
@@ -287,6 +396,7 @@ function presentUsageWindow(
     // Prefer the provider's own severity: it knows plan-specific cutoffs we
     // cannot infer from a percentage alone.
     severity: window.severity ?? severityFromPercent(window.percent),
+    pace: getProviderUsagePace(window, now),
   };
 }
 

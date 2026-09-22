@@ -17,7 +17,9 @@ import {
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
+import * as TestClock from "effect/testing/TestClock";
 import { McpSchema, McpServer } from "effect/unstable/ai";
 
 import { CheckpointDiffQuery } from "../../../checkpointing/Services/CheckpointDiffQuery.ts";
@@ -43,6 +45,8 @@ const blockedThreadId = ThreadId.make("thread-blocked");
 const questionThreadId = ThreadId.make("thread-question");
 const interruptedThreadId = ThreadId.make("thread-interrupted");
 const archivedThreadId = ThreadId.make("thread-archived");
+const doneThreadId = ThreadId.make("thread-done");
+const longThreadId = ThreadId.make("thread-dashboard-rewrite");
 const siblingMetaThreadId = ThreadId.make("thread-meta-sibling");
 
 const client = McpSchema.McpServerClient.of({
@@ -86,6 +90,7 @@ const makeShell = (
     updatedAt: "2026-08-05T09:04:00.000Z",
     archivedAt: null,
     pinnedAt: null,
+    doneAt: null,
     session: null,
     latestUserMessageAt: "2026-08-05T09:00:00.000Z",
     hasPendingApprovals: false,
@@ -171,6 +176,27 @@ const archivedThread = makeShell({
   updatedAt: "2026-08-04T09:47:00.000Z",
   archivedAt: "2026-08-04T10:00:00.000Z",
 });
+
+// Settled by the user, and otherwise identical to a thread that would be cold:
+// quiet for a month with a follow-up still open. The stamp is the only thing
+// keeping it out of both the sweep and the cold list.
+const doneThread = makeShell({
+  id: doneThreadId,
+  title: "Dashboard query batching",
+  updatedAt: "2026-08-03T11:00:00.000Z",
+  doneAt: "2026-08-03T12:00:00.000Z",
+  hasPendingFollowups: true,
+});
+
+/**
+ * `it.effect` starts its clock at the epoch, so every fixture timestamp is three
+ * decades in the future and nothing measured against "now" behaves as it would
+ * in production. Anything asserting on coldness has to move the clock past the
+ * fixtures first.
+ */
+const advanceClockPastFixtures = TestClock.adjust(
+  Duration.millis(Date.parse("2026-09-08T12:00:00.000Z")),
+);
 
 const projects: ReadonlyArray<OrchestrationProjectShell> = [
   {
@@ -464,8 +490,118 @@ const questionThreadDetail = {
   checkpoints: [],
 } as unknown as OrchestrationThread;
 
+/**
+ * A conversation with a middle: long enough that its tail is not its story, and
+ * carrying one message far longer than any read budget. Everything about paging,
+ * mapping and reading on from a cut is asserted against this one.
+ */
+const longThread = makeShell({
+  id: longThreadId,
+  title: "Dashboard rewrite",
+  updatedAt: "2026-08-05T09:30:00.000Z",
+});
+
+const longThreadMessages = Array.from({ length: 24 }, (_, position) => ({
+  id: `long-message-${position}`,
+  role: position % 2 === 0 ? "user" : "assistant",
+  // The tenth message is the one worth finding: the argument in the middle,
+  // written out at length, and long past any single-read budget.
+  text:
+    position === 10 ? `decision ${"y".repeat(80_000)}` : `message ${position} about the dashboard`,
+  turnId: `long-turn-${Math.floor(position / 2)}`,
+  streaming: false,
+  createdAt: `2026-08-05T08:${String(position).padStart(2, "0")}:00.000Z`,
+  updatedAt: `2026-08-05T08:${String(position).padStart(2, "0")}:00.000Z`,
+}));
+
+const longThreadDetail = {
+  ...longThread,
+  messages: longThreadMessages,
+  proposedPlans: [],
+  // Shaped exactly like the provider writes them: the command under
+  // `data.input`, what it printed under `data.result`. The failing one is the
+  // point of the whole view — a turn that says it ran the tests, and a test run
+  // that exited non-zero, are the same prose and different facts.
+  activities: [
+    {
+      id: "long-activity-1",
+      tone: "tool",
+      kind: "tool.completed",
+      summary: "Command run",
+      payload: {
+        itemType: "command_execution",
+        detail: "Bash: pnpm test",
+        data: {
+          toolName: "Bash",
+          input: {
+            command: "pnpm test --filter dashboard",
+            description: "Run the dashboard tests",
+          },
+          result: { tool_use_id: "toolu_1", type: "tool_result", content: "12 passed, 0 failed" },
+        },
+      },
+      turnId: "long-turn-5",
+      createdAt: "2026-08-05T08:11:00.000Z",
+    },
+    {
+      id: "long-activity-2",
+      tone: "tool",
+      kind: "tool.completed",
+      summary: "Command run",
+      payload: {
+        itemType: "command_execution",
+        detail: "Bash: pnpm build",
+        data: {
+          toolName: "Bash",
+          input: { command: "pnpm build" },
+          result: {
+            tool_use_id: "toolu_2",
+            type: "tool_result",
+            is_error: true,
+            content: "error TS2304: Cannot find name 'Dashboard'. ".repeat(200),
+          },
+        },
+      },
+      turnId: "long-turn-5",
+      createdAt: "2026-08-05T08:11:30.000Z",
+    },
+    {
+      id: "long-activity-3",
+      tone: "tool",
+      kind: "tool.completed",
+      summary: "File edited",
+      payload: {
+        itemType: "file_change",
+        data: {
+          toolName: "Edit",
+          input: { file_path: "src/dashboard/Panel.tsx" },
+          result: { content: [{ type: "text", text: "Applied 1 edit" }] },
+        },
+      },
+      turnId: "long-turn-5",
+      createdAt: "2026-08-05T08:11:45.000Z",
+    },
+    {
+      // Another turn entirely, so a turn read that leaked into its neighbours
+      // would fail rather than quietly over-report.
+      id: "long-activity-4",
+      tone: "tool",
+      kind: "tool.completed",
+      summary: "Command run",
+      payload: {
+        itemType: "command_execution",
+        data: { toolName: "Bash", input: { command: "git status" }, result: { content: "clean" } },
+      },
+      turnId: "long-turn-2",
+      createdAt: "2026-08-05T08:05:00.000Z",
+    },
+  ],
+  checkpoints: [],
+} as unknown as OrchestrationThread;
+
 const shellsById = new Map<string, OrchestrationThreadShell>([
   [idleThreadId, idleThread],
+  [longThreadId, longThread],
   [questionThreadId, questionThread],
   [busyThreadId, busyThread],
   [metaThreadId, metaThread],
@@ -475,6 +611,28 @@ const shellsById = new Map<string, OrchestrationThreadShell>([
   // Archived threads are absent from the active shell lookups, exactly as the
   // real query filters them.
 ]);
+
+/**
+ * The one place a stub decides which fixture a thread id belongs to. The
+ * message queries all page over the same list, so they have to agree on its
+ * order — a stub that sorted differently per query would make paging look
+ * correct here and skip messages in the real thing.
+ */
+const detailFor = (threadId: ThreadId) =>
+  threadId === idleThreadId
+    ? threadDetail
+    : threadId === questionThreadId
+      ? questionThreadDetail
+      : threadId === blockedThreadId
+        ? blockedThreadDetail
+        : threadId === longThreadId
+          ? longThreadDetail
+          : null;
+
+const orderedMessagesFor = (threadId: ThreadId) =>
+  (
+    (detailFor(threadId)?.messages ?? []) as ReadonlyArray<(typeof longThreadMessages)[number]>
+  ).toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
 
 const dispatched: OrchestrationCommand[] = [];
 /** Every input the toolkit handed to conversation search, for passthrough assertions. */
@@ -512,11 +670,13 @@ const resetAccess = () => {
     [metaThreadId]: "control",
     [siblingMetaThreadId]: "control",
     [idleThreadId]: "control",
+    [longThreadId]: "control",
     [busyThreadId]: "control",
     [blockedThreadId]: "control",
     [questionThreadId]: "control",
     [interruptedThreadId]: "control",
     [archivedThreadId]: "control",
+    [doneThreadId]: "control",
   };
 };
 resetAccess();
@@ -617,6 +777,7 @@ const TestServicesLive = Layer.mergeAll(
             blockedThread,
             questionThread,
             interruptedThread,
+            doneThread,
           ],
           updatedAt: "2026-08-05T09:20:00.000Z",
         }),
@@ -660,26 +821,131 @@ const TestServicesLive = Layer.mergeAll(
       },
       // Mirrors the real narrow query: newest `limit` messages, handed back in
       // reading order.
-      getThreadMessagesTail: (threadId: ThreadId, limit: number) => {
-        const detail =
-          threadId === idleThreadId
-            ? threadDetail
-            : threadId === questionThreadId
-              ? questionThreadDetail
-              : threadId === blockedThreadId
-                ? blockedThreadDetail
-                : null;
-        const ordered = (detail?.messages ?? [])
-          .toSorted((left: { createdAt: string }, right: { createdAt: string }) =>
-            left.createdAt.localeCompare(right.createdAt),
-          )
-          .slice(-limit);
-        return Effect.succeed(ordered);
+      getThreadMessagesTail: (threadId: ThreadId, limit: number) =>
+        Effect.succeed(orderedMessagesFor(threadId).slice(-limit)),
+      // Mirrors the real window query: a page anywhere in the thread, in
+      // reading order. Slicing here rather than tailing is the whole difference
+      // between reading the middle of a conversation and only its end.
+      listThreadMessageWindow: (threadId: ThreadId, options: { offset: number; limit: number }) =>
+        Effect.succeed(
+          orderedMessagesFor(threadId).slice(options.offset, options.offset + options.limit),
+        ),
+      // Mirrors the real outline query: previews cut in SQL, with the length of
+      // the text they were cut from.
+      listThreadMessageOutline: (
+        threadId: ThreadId,
+        options: { offset: number; limit: number; previewChars: number },
+      ) =>
+        Effect.succeed(
+          orderedMessagesFor(threadId)
+            .slice(options.offset, options.offset + options.limit)
+            .map((message: (typeof longThreadMessages)[number]) => ({
+              id: message.id,
+              role: message.role,
+              turnId: message.turnId,
+              preview: message.text.slice(0, options.previewChars),
+              charCount: message.text.length,
+              streaming: message.streaming,
+              createdAt: message.createdAt,
+            })),
+        ),
+      countThreadMessages: (threadId: ThreadId) =>
+        Effect.succeed(orderedMessagesFor(threadId).length),
+      // Mirrors the real search: literal, case-insensitive, first occurrence
+      // per message, with the position of the message in the thread.
+      searchThreadMessages: (
+        threadId: ThreadId,
+        options: { query: string; limit: number; snippetChars: number },
+      ) =>
+        Effect.succeed(
+          orderedMessagesFor(threadId)
+            .map((message, index: number) => ({ message, index }))
+            .filter(({ message }) =>
+              message.text.toLowerCase().includes(options.query.toLowerCase()),
+            )
+            .slice(0, options.limit)
+            .map(({ message, index }) => {
+              const matchOffset = message.text.toLowerCase().indexOf(options.query.toLowerCase());
+              const lead = Math.floor(options.snippetChars / 3);
+              return {
+                id: message.id,
+                role: message.role,
+                index,
+                matchOffset,
+                charCount: message.text.length,
+                snippet: message.text.slice(
+                  Math.max(0, matchOffset - lead),
+                  Math.max(0, matchOffset - lead) + options.snippetChars,
+                ),
+                createdAt: message.createdAt,
+              };
+            }),
+        ),
+      getThreadMessageTurn: (threadId: ThreadId, messageId: string) => {
+        const message = orderedMessagesFor(threadId).find(
+          (candidate: { id: string }) => candidate.id === messageId,
+        );
+        return Effect.succeed(Option.fromNullishOr(message?.turnId));
+      },
+      // Mirrors the real query: completed and denied tool calls of one turn, in
+      // order, paged.
+      listThreadTurnToolActivities: (
+        threadId: ThreadId,
+        turnId: string,
+        options: { offset: number; limit: number },
+      ) =>
+        Effect.succeed(
+          (detailFor(threadId)?.activities ?? [])
+            .filter(
+              (activity: { kind: string; turnId: string | null }) =>
+                activity.turnId === turnId &&
+                (activity.kind === "tool.completed" || activity.kind === "tool.denied"),
+            )
+            .slice(options.offset, options.offset + options.limit),
+        ),
+      countThreadTurnToolActivities: (threadId: ThreadId, turnId: string) =>
+        Effect.succeed(
+          (detailFor(threadId)?.activities ?? []).filter(
+            (activity: { kind: string; turnId: string | null }) =>
+              activity.turnId === turnId &&
+              (activity.kind === "tool.completed" || activity.kind === "tool.denied"),
+          ).length,
+        ),
+      countThreadMessageMatches: (threadId: ThreadId, query: string) =>
+        Effect.succeed(
+          orderedMessagesFor(threadId).filter((message: { text: string }) =>
+            message.text.toLowerCase().includes(query.toLowerCase()),
+          ).length,
+        ),
+      getThreadMessagePosition: (threadId: ThreadId, messageId: string) => {
+        const position = orderedMessagesFor(threadId).findIndex(
+          (message: { id: string }) => message.id === messageId,
+        );
+        return Effect.succeed(position === -1 ? Option.none() : Option.some(position));
+      },
+      countThreadToolCallsByTurn: (threadId: ThreadId) => {
+        const counts = new Map<string, number>();
+        for (const activity of detailFor(threadId)?.activities ?? []) {
+          if (activity.kind !== "tool.completed" || activity.turnId === null) continue;
+          counts.set(activity.turnId, (counts.get(activity.turnId) ?? 0) + 1);
+        }
+        return Effect.succeed(counts);
       },
       // Mirrors the real narrow query: same rows the detail carries, filtered
       // to the requested kinds. Returning everything here would let a handler
       // that forgot to ask for a kind still pass.
       listThreadActivitiesByKinds: (threadId: ThreadId, kinds: ReadonlyArray<string>) => {
+        const detail = detailFor(threadId);
+        return Effect.succeed(
+          (detail?.activities ?? []).filter((activity: { kind: string }) =>
+            kinds.includes(activity.kind),
+          ),
+        );
+      },
+      // The repair read for follow-ups recorded without a detail of their own.
+      // Mirrors the real query: the thread's `suggest_followup` calls, nothing
+      // else.
+      listFollowupToolCallActivities: (threadId: ThreadId) => {
         const detail =
           threadId === idleThreadId
             ? threadDetail
@@ -689,8 +955,10 @@ const TestServicesLive = Layer.mergeAll(
                 ? blockedThreadDetail
                 : null;
         return Effect.succeed(
-          (detail?.activities ?? []).filter((activity: { kind: string }) =>
-            kinds.includes(activity.kind),
+          (detail?.activities ?? []).filter(
+            (activity: { kind: string; payload?: unknown }) =>
+              activity.kind === "tool.completed" &&
+              JSON.stringify(activity.payload ?? {}).includes("suggest_followup"),
           ),
         );
       },
@@ -716,6 +984,7 @@ const TestServicesLive = Layer.mergeAll(
                 updatedAt: "2026-08-05T09:04:00.000Z",
                 snippet: "merge fields",
                 matchedRole: "assistant",
+                matchedMessageId: "message-2",
                 matchKind: "hybrid",
                 score: 0.8,
               },
@@ -938,6 +1207,77 @@ it.effect("lists threads with derived phases and filters to those needing attent
   ).pipe(Effect.provide(TestLayer)),
 );
 
+it.effect("hides settled conversations from a sweep, and surfaces the ones nobody ruled on", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* advanceClockPastFixtures;
+
+      // A settled thread is not archived and not deleted, but it is not live
+      // work either. Sweeps skip it unless asked for it by name.
+      const swept = yield* callTool("list_threads", {});
+      const sweptIds = (
+        swept.structuredContent as { threads: ReadonlyArray<Record<string, unknown>> }
+      ).threads.map((thread) => thread.threadId);
+      expect(sweptIds).not.toContain(doneThreadId);
+
+      const withDone = yield* callTool("list_threads", { includeDone: true });
+      const withDoneThreads = (
+        withDone.structuredContent as { threads: ReadonlyArray<Record<string, unknown>> }
+      ).threads;
+      expect(withDoneThreads.map((thread) => thread.threadId)).toContain(doneThreadId);
+      // Stamped, and therefore never cold: the user has already ruled on it, so
+      // putting it back in front of them would be noise.
+      expect(withDoneThreads.find((thread) => thread.threadId === doneThreadId)).toMatchObject({
+        done: true,
+        cold: false,
+      });
+
+      // The cold list is the "what am I losing track of?" answer: quiet, not
+      // running, not blocking on the user, with follow-ups its own agent left.
+      const cold = yield* callTool("list_threads", { onlyCold: true });
+      const coldIds = (
+        cold.structuredContent as { threads: ReadonlyArray<Record<string, unknown>> }
+      ).threads.map((thread) => thread.threadId);
+      expect(coldIds).toContain(idleThreadId);
+      expect(coldIds).not.toContain(busyThreadId);
+      expect(coldIds).not.toContain(blockedThreadId);
+      expect(coldIds).not.toContain(questionThreadId);
+      expect(coldIds).not.toContain(doneThreadId);
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("reports cold conversations as their own section of what is waiting", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* advanceClockPastFixtures;
+      const result = yield* callTool("list_pending", { sections: ["cold"] });
+      expect(result.isError).toBe(false);
+      const payload = result.structuredContent as {
+        cold: ReadonlyArray<Record<string, unknown>>;
+        counts: { cold: number | null; awaitingApproval: number };
+        sections: ReadonlyArray<string>;
+      };
+      expect(payload.sections).toContain("cold");
+      expect(payload.cold.map((thread) => thread.threadId)).toContain(idleThreadId);
+      expect(payload.counts.cold).toBe(payload.cold.length);
+      // Counts for the sections that were not asked for are still true totals,
+      // so a caller working one section is never told a zero it would misread.
+      expect(payload.counts.awaitingApproval).toBeGreaterThan(0);
+
+      // Left out of `sections`, the cold total is null rather than zero: unknown
+      // is honest where a zero would be a lie.
+      const withoutCold = yield* callTool("list_pending", { sections: ["approvals"] });
+      const withoutColdPayload = withoutCold.structuredContent as {
+        cold: ReadonlyArray<unknown>;
+        counts: { cold: number | null };
+      };
+      expect(withoutColdPayload.cold).toEqual([]);
+      expect(withoutColdPayload.counts.cold).toBe(null);
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
 it.effect("reads a thread's tail, truncating long messages and surfacing open follow-ups", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1089,7 +1429,11 @@ it.effect("hands back a long message in full when asked, within a total budget",
         }
       ).messages;
       const clippedLong = clippedMessages.find((message) => message.truncated);
-      expect(clippedLong?.text).toHaveLength(1_001);
+      // Exactly the budget, with no ellipsis added: the text has to be a
+      // verbatim slice of the message, or `textFrom` could not name where to
+      // read on from without being a character out.
+      expect(clippedLong?.text).toHaveLength(1_000);
+      expect(clippedLong?.text.endsWith("…")).toBe(false);
 
       // Raising the budget returns the rest, so a decision written out in one
       // long message stops being unreadable from here.
@@ -1109,6 +1453,368 @@ it.effect("hands back a long message in full when asked, within a total budget",
       // Still oldest-first, so raising the budget does not reorder the reading.
       const timestamps = fullMessages.map((message) => message.createdAt);
       expect(timestamps).toEqual(timestamps.toSorted());
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("maps a whole conversation cheaply, marking where the substance is", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const result = yield* callTool("read_thread", {
+        threadId: longThreadId,
+        view: "outline",
+      });
+      expect(result.isError).toBe(false);
+      const payload = result.structuredContent as {
+        messages: ReadonlyArray<unknown>;
+        outline: ReadonlyArray<{
+          index: number;
+          messageId: string;
+          preview: string;
+          charCount: number;
+          truncated: boolean;
+          toolCalls: number;
+        }>;
+        window: { messageCount: number; olderRemaining: number; newerRemaining: number };
+        pendingQuestions: unknown;
+      };
+
+      // Every message is on the map, and the map is nothing like the cost of
+      // the conversation: the 80k message contributes a preview, not itself.
+      expect(payload.outline).toHaveLength(24);
+      expect(payload.window.messageCount).toBe(24);
+      expect(payload.window.olderRemaining).toBe(0);
+      expect(payload.window.newerRemaining).toBe(0);
+      const mapped = payload.outline.map((entry) => entry.preview).join("").length;
+      expect(mapped).toBeLessThan(5_000);
+
+      // The long message is findable *as* the long one without being read.
+      const substantial = payload.outline.find((entry) => entry.charCount > 10_000);
+      expect(substantial?.index).toBe(10);
+      expect(substantial?.truncated).toBe(true);
+
+      // Tool calls hang on the assistant message that closed the turn, so the
+      // turn where work happened stands out from the turn where talking did.
+      expect(payload.outline.find((entry) => entry.index === 11)?.toolCalls).toBe(3);
+      expect(payload.outline.find((entry) => entry.index === 10)?.toolCalls).toBe(0);
+
+      // A read view, not the orientation one: what the thread is blocked on is
+      // reported as unread rather than as nothing.
+      expect(payload.messages).toHaveLength(0);
+      expect(payload.pendingQuestions).toBeNull();
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("reads the middle of a conversation, by index and around a message", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const byIndex = yield* callTool("read_thread", {
+        threadId: longThreadId,
+        view: "window",
+        fromIndex: 4,
+        messageLimit: 3,
+      });
+      const indexPayload = byIndex.structuredContent as {
+        messages: ReadonlyArray<{ index: number; text: string; messageId: string }>;
+        window: {
+          firstIndex: number;
+          lastIndex: number;
+          olderRemaining: number;
+          newerRemaining: number;
+        };
+      };
+      expect(indexPayload.messages.map((message) => message.index)).toEqual([4, 5, 6]);
+      expect(indexPayload.window).toMatchObject({
+        firstIndex: 4,
+        lastIndex: 6,
+        olderRemaining: 4,
+        newerRemaining: 17,
+      });
+
+      // A message id — the shape a search hit hands back — reads as a place to
+      // stand, with what led up to it as well as what followed.
+      const around = yield* callTool("read_thread", {
+        threadId: longThreadId,
+        view: "window",
+        aroundMessageId: "long-message-15",
+        messageLimit: 5,
+      });
+      const aroundPayload = around.structuredContent as {
+        messages: ReadonlyArray<{ index: number }>;
+      };
+      expect(aroundPayload.messages.map((message) => message.index)).toEqual([13, 14, 15, 16, 17]);
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("never cuts a message off for good: a truncated one can be read on from", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const first = yield* callTool("read_thread", {
+        threadId: longThreadId,
+        view: "window",
+        aroundMessageId: "long-message-10",
+        messageLimit: 1,
+        messageChars: 20_000,
+      });
+      const firstMessage = (
+        first.structuredContent as {
+          messages: ReadonlyArray<{
+            index: number;
+            text: string;
+            charCount: number;
+            textStart: number;
+            truncated: boolean;
+          }>;
+        }
+      ).messages[0];
+      expect(firstMessage?.index).toBe(10);
+      expect(firstMessage?.charCount).toBe(80_009);
+      expect(firstMessage?.text).toHaveLength(20_000);
+      expect(firstMessage?.truncated).toBe(true);
+
+      // The continuation: same message, carrying on from exactly where the cut
+      // fell, so nothing between the two reads is skipped.
+      const next = yield* callTool("read_thread", {
+        threadId: longThreadId,
+        view: "window",
+        aroundMessageId: "long-message-10",
+        messageLimit: 1,
+        messageChars: 20_000,
+        textFrom: 20_000,
+      });
+      const nextMessage = (
+        next.structuredContent as {
+          messages: ReadonlyArray<{ text: string; textStart: number; truncated: boolean }>;
+        }
+      ).messages[0];
+      expect(nextMessage?.textStart).toBe(20_000);
+      expect(nextMessage?.text.startsWith("y")).toBe(true);
+      expect(nextMessage?.truncated).toBe(true);
+
+      // And it refuses the ambiguous form rather than quietly beheading a page
+      // of messages.
+      const misused = yield* callTool("read_thread", {
+        threadId: longThreadId,
+        view: "window",
+        fromIndex: 10,
+        messageLimit: 3,
+        textFrom: 500,
+      });
+      expect(misused.isError).toBe(true);
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("finds a phrase inside one conversation and says where it is", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const result = yield* callTool("read_thread", {
+        threadId: longThreadId,
+        view: "search",
+        query: "decision",
+      });
+      expect(result.isError).toBe(false);
+      const payload = result.structuredContent as {
+        matches: ReadonlyArray<{
+          index: number;
+          messageId: string;
+          matchOffset: number;
+          charCount: number;
+          snippet: string;
+        }>;
+        matchCount: number;
+        messages: ReadonlyArray<unknown>;
+        window: { messageCount: number };
+      };
+
+      // A hit is a position, not just text: this is what turns "it is in there
+      // somewhere" into a window read of the part that matters.
+      expect(payload.matchCount).toBe(1);
+      expect(payload.matches[0]?.index).toBe(10);
+      expect(payload.matches[0]?.messageId).toBe("long-message-10");
+      expect(payload.matches[0]?.matchOffset).toBe(0);
+      // Found without being read: the match sits in an 80k message and the
+      // snippet is a fraction of it.
+      expect(payload.matches[0]?.charCount).toBe(80_009);
+      expect(payload.matches[0]?.snippet.length).toBeLessThan(300);
+      expect(payload.messages).toHaveLength(0);
+      expect(payload.window.messageCount).toBe(24);
+
+      // Case-insensitive and literal, so a quoted phrase behaves like a grep.
+      const cased = yield* callTool("read_thread", {
+        threadId: longThreadId,
+        view: "search",
+        query: "MESSAGE 7 ABOUT",
+      });
+      expect(
+        (cased.structuredContent as { matches: ReadonlyArray<{ index: number }> }).matches.map(
+          (match) => match.index,
+        ),
+      ).toEqual([7]);
+
+      // An empty result is a real answer here, not a failure to find the words.
+      const absent = yield* callTool("read_thread", {
+        threadId: longThreadId,
+        view: "search",
+        query: "telavox",
+      });
+      expect((absent.structuredContent as { matchCount: number }).matchCount).toBe(0);
+
+      // And it refuses to search for nothing rather than returning the thread.
+      const unqueried = yield* callTool("read_thread", {
+        threadId: longThreadId,
+        view: "search",
+      });
+      expect(unqueried.isError).toBe(true);
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("reads what a turn actually did, not what it said it did", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const result = yield* callTool("read_thread", {
+        threadId: longThreadId,
+        view: "activity",
+        turnId: "long-turn-5",
+      });
+      expect(result.isError).toBe(false);
+      const payload = result.structuredContent as {
+        activity: ReadonlyArray<{
+          index: number;
+          tool: string;
+          input: string;
+          output: string;
+          outputChars: number;
+          truncated: boolean;
+          failed: boolean;
+        }>;
+        turn: { turnId: string; activityCount: number; failedOnPage: number; remaining: number };
+        messages: ReadonlyArray<unknown>;
+        pendingQuestions: unknown;
+      };
+
+      // The commands themselves, in the order they ran, with what they printed.
+      expect(payload.activity.map((entry) => entry.tool)).toEqual(["Bash", "Bash", "Edit"]);
+      expect(payload.activity[0]?.input).toContain("pnpm test --filter dashboard");
+      expect(payload.activity[0]?.output).toBe("12 passed, 0 failed");
+
+      // The failing build is flagged as failing. This is the whole point: a
+      // turn can read as finished in prose while its own commands did not pass.
+      expect(payload.activity[1]?.failed).toBe(true);
+      expect(payload.activity[1]?.output).toContain("error TS2304");
+      expect(payload.activity[1]?.truncated).toBe(true);
+      expect(payload.activity[1]?.outputChars).toBeGreaterThan(5_000);
+      expect(payload.turn.failedOnPage).toBe(1);
+
+      // Content blocks are unwrapped rather than handed back as JSON.
+      expect(payload.activity[2]?.input).toContain("src/dashboard/Panel.tsx");
+      expect(payload.activity[2]?.output).toBe("Applied 1 edit");
+
+      // Scoped to the turn asked for, and the other views stay unread.
+      expect(payload.turn.activityCount).toBe(3);
+      expect(payload.turn.remaining).toBe(0);
+      expect(payload.messages).toHaveLength(0);
+      expect(payload.pendingQuestions).toBeNull();
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("finds a turn from the message it produced, and pages its calls", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      // Message 11 belongs to turn 5, so the caller can go from an outline line
+      // straight to what that turn ran without knowing turn ids at all.
+      const byMessage = yield* callTool("read_thread", {
+        threadId: longThreadId,
+        view: "activity",
+        aroundMessageId: "long-message-11",
+        messageLimit: 2,
+      });
+      const payload = byMessage.structuredContent as {
+        activity: ReadonlyArray<{ index: number }>;
+        turn: { turnId: string; activityCount: number; remaining: number; lastIndex: number };
+      };
+      expect(payload.turn.turnId).toBe("long-turn-5");
+      expect(payload.activity.map((entry) => entry.index)).toEqual([0, 1]);
+      // A page that stops short says so, rather than reading as the whole turn.
+      expect(payload.turn.remaining).toBe(1);
+
+      const rest = yield* callTool("read_thread", {
+        threadId: longThreadId,
+        view: "activity",
+        turnId: "long-turn-5",
+        fromIndex: 2,
+      });
+      const restPayload = rest.structuredContent as {
+        activity: ReadonlyArray<{ index: number; tool: string }>;
+        turn: { remaining: number };
+      };
+      expect(restPayload.activity.map((entry) => entry.index)).toEqual([2]);
+      expect(restPayload.activity[0]?.tool).toBe("Edit");
+      expect(restPayload.turn.remaining).toBe(0);
+
+      // Asked for nothing in particular, it says which identifier it needs
+      // instead of guessing a turn.
+      const unaddressed = yield* callTool("read_thread", {
+        threadId: longThreadId,
+        view: "activity",
+      });
+      expect(unaddressed.isError).toBe(true);
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("hands back where a cross-conversation hit landed", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const result = yield* callTool("search_threads", { query: "merge fields" });
+      expect(result.isError).toBe(false);
+      // The id is what makes find-then-read one motion: it goes straight back
+      // in as `aroundMessageId`.
+      expect(result.structuredContent).toMatchObject({
+        results: [{ threadId: idleThreadId, matchedMessageId: "message-2" }],
+      });
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("says how much of a conversation it did not show", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      // The default read is still the tail, and now it admits to being one.
+      const tail = yield* callTool("read_thread", { threadId: longThreadId });
+      const tailPayload = tail.structuredContent as {
+        messages: ReadonlyArray<{ index: number }>;
+        window: {
+          messageCount: number;
+          firstIndex: number;
+          lastIndex: number;
+          olderRemaining: number;
+        };
+      };
+      expect(tailPayload.window.messageCount).toBe(24);
+      expect(tailPayload.window.lastIndex).toBe(23);
+      expect(tailPayload.window.olderRemaining).toBe(12);
+
+      // A budget spent on one enormous message is reported as messages dropped,
+      // not as messages that said nothing.
+      const greedy = yield* callTool("read_thread", {
+        threadId: longThreadId,
+        view: "window",
+        fromIndex: 9,
+        messageLimit: 6,
+        messageChars: 60_000,
+      });
+      const greedyPayload = greedy.structuredContent as {
+        messages: ReadonlyArray<{ index: number; text: string }>;
+        window: { droppedToBudget: number; newerRemaining: number };
+      };
+      expect(greedyPayload.messages.map((message) => message.index)).toEqual([9, 10]);
+      expect(greedyPayload.window.droppedToBudget).toBe(4);
+      expect(greedyPayload.window.newerRemaining).toBe(13);
     }),
   ).pipe(Effect.provide(TestLayer)),
 );
@@ -1263,7 +1969,13 @@ it.effect("caps each pending section independently and counts what it left out",
         sections: ReadonlyArray<string>;
         nextOffset: number | null;
       };
-      expect(allPayload.sections).toEqual(["approvals", "questions", "failed", "followups"]);
+      expect(allPayload.sections).toEqual([
+        "approvals",
+        "questions",
+        "failed",
+        "followups",
+        "cold",
+      ]);
       expect(allPayload.counts.awaitingApproval).toBeGreaterThan(0);
       expect(allPayload.counts.awaitingUserInput).toBeGreaterThan(0);
       // Nothing overflowed the default cap, so there is no next page to offer.

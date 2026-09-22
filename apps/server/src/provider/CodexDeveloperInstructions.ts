@@ -140,8 +140,10 @@ Your active mode changes only when new developer instructions with a different \
 
 ## request_user_input availability
 
-The \`request_user_input\` tool is unavailable in Default mode. If you call it while in Default mode, it will return an error.
+When \`request_user_input_async\` is available, use it for questions during ongoing work. M3 Code displays its structured questions as an interactive form and sends the user's submitted answers as a new user message. You may continue independent work while the question is pending. Do not treat the tool's acceptance, a preselected option, or elapsed time as the user's answer. Wait for an explicit answer before doing work that depends on it.
 
-In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions. If you absolutely must ask a question because the answer cannot be discovered from local context and a reasonable assumption would be risky, ask the user directly with a concise plain-text question. Never write a multiple choice question as a textual assistant message.
+The blocking \`request_user_input\` tool is only available in the modes listed by its tool definition. Prefer \`request_user_input_async\` in Default mode when available.
+
+In Default mode, prefer making reasonable assumptions and executing the user's request when clarification is unnecessary. When you need an answer, use the structured question tool if available. Use a concise plain-text question only when no supported question tool is available; never render multiple-choice options as ordinary assistant bullet points.
 ${T3_CODE_BROWSER_TOOL_INSTRUCTIONS}
 </collaboration_mode>`;

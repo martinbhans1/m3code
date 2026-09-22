@@ -118,6 +118,7 @@ const rpcClientMock = {
   server: {
     getConfig: vi.fn(),
     refreshProviders: vi.fn(),
+    authenticateProvider: vi.fn(),
     updateProvider: vi.fn(),
     upsertKeybinding: vi.fn(),
     getSettings: vi.fn(),
@@ -259,6 +260,7 @@ function makeDesktopBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
     setTheme: async () => undefined,
     showContextMenu: async () => null,
     openExternal: async () => true,
+    focusWindow: async () => undefined,
     createCloudAuthRequest: async () => "t3code-dev://auth/callback?t3_state=test",
     getCloudAuthToken: async () => null,
     setCloudAuthToken: async () => true,
@@ -581,6 +583,12 @@ describe("wsApi", () => {
 
     await expect(api.server.refreshProviders()).resolves.toEqual({ providers: nextProviders });
     expect(rpcClientMock.server.refreshProviders).toHaveBeenCalledWith();
+
+    const instanceId = ProviderInstanceId.make("claude_work");
+    await expect(api.server.refreshProviders({ instanceId })).resolves.toEqual({
+      providers: nextProviders,
+    });
+    expect(rpcClientMock.server.refreshProviders).toHaveBeenLastCalledWith({ instanceId });
   });
 
   it("forwards provider updates directly to the RPC client", async () => {
@@ -609,6 +617,19 @@ describe("wsApi", () => {
     expect(rpcClientMock.server.updateProvider).toHaveBeenCalledWith({
       provider: ProviderDriverKind.make("codex"),
     });
+  });
+
+  it("forwards provider authentication directly to the RPC client", async () => {
+    const instanceId = ProviderInstanceId.make("claude_personal");
+    rpcClientMock.server.authenticateProvider.mockResolvedValue({ providers: defaultProviders });
+    const { createLocalApi } = await import("./localApi");
+
+    const api = createLocalApi(rpcClientMock as never);
+
+    await expect(api.server.authenticateProvider({ instanceId })).resolves.toEqual({
+      providers: defaultProviders,
+    });
+    expect(rpcClientMock.server.authenticateProvider).toHaveBeenCalledWith({ instanceId });
   });
 
   it("forwards server settings updates directly to the RPC client", async () => {
@@ -671,11 +692,16 @@ describe("wsApi", () => {
       confirmThreadArchive: true,
       confirmThreadDelete: false,
       dismissedProviderUpdateNotificationKeys: [],
+      providerUsageAlertThresholds: [50, 80],
+      providerUsageAlertRepeatMinutes: 0,
+      providerUsageAlertAutoDismissSeconds: 10,
       diffIgnoreWhitespace: true,
       diffWordWrap: true,
       favorites: [],
       providerModelPreferences: {},
       showThreadChangeRequestStatus: false,
+      showGitCounts: true,
+      gitCountsProjectOverrides: {},
       sidebarProjectGroupingMode: "repository_path" as const,
       sidebarProjectGroupingOverrides: {
         "environment-local:/tmp/project": "separate" as const,
@@ -684,6 +710,11 @@ describe("wsApi", () => {
       sidebarThreadSortOrder: "created_at" as const,
       sidebarThreadPreviewCount: 6,
       sidebarThreadShowMoreIncrement: 5,
+      systemNotificationsEnabled: true,
+      systemNotifyOnTurnCompleted: true,
+      systemNotifyOnInputNeeded: true,
+      systemNotifyOnFailure: true,
+      systemNotificationsSuppressWhenFocused: false,
       timestampFormat: "24-hour" as const,
     };
     const getClientSettings = vi.fn().mockResolvedValue({
@@ -736,11 +767,16 @@ describe("wsApi", () => {
       confirmThreadArchive: true,
       confirmThreadDelete: false,
       dismissedProviderUpdateNotificationKeys: [],
+      providerUsageAlertThresholds: [50, 80],
+      providerUsageAlertRepeatMinutes: 0,
+      providerUsageAlertAutoDismissSeconds: 10,
       diffIgnoreWhitespace: true,
       diffWordWrap: true,
       favorites: [],
       providerModelPreferences: {},
       showThreadChangeRequestStatus: false,
+      showGitCounts: true,
+      gitCountsProjectOverrides: {},
       sidebarProjectGroupingMode: "repository_path" as const,
       sidebarProjectGroupingOverrides: {
         "environment-local:/tmp/project": "separate" as const,
@@ -749,6 +785,11 @@ describe("wsApi", () => {
       sidebarThreadSortOrder: "created_at" as const,
       sidebarThreadPreviewCount: 6,
       sidebarThreadShowMoreIncrement: 5,
+      systemNotificationsEnabled: true,
+      systemNotifyOnTurnCompleted: true,
+      systemNotifyOnInputNeeded: true,
+      systemNotifyOnFailure: true,
+      systemNotificationsSuppressWhenFocused: false,
       timestampFormat: "24-hour" as const,
     };
 

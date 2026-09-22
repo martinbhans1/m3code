@@ -53,15 +53,23 @@ const REASONING_EFFORT_LABELS: Readonly<
   low: "Low",
   medium: "Medium",
   high: "High",
+  xhigh: "Extra High",
 };
 
-/** Grok 4.5 reasoning depth — applied via `grok agent --reasoning-effort` at spawn. */
+/**
+ * Grok reasoning depth — applied via `grok agent --reasoning-effort` at spawn.
+ *
+ * This is independent of Cursor-style "Fast" / xAI Priority Processing
+ * (`service_tier: "priority"`). The Grok Build CLI does not currently expose a
+ * Fast/priority control over ACP, so m3code cannot advertise one here yet.
+ */
 export function buildGrokModelCapabilities(): ModelCapabilities {
   return createModelCapabilities({
     optionDescriptors: [
       buildSelectOptionDescriptor({
         id: GROK_REASONING_EFFORT_OPTION_ID,
         label: "Reasoning",
+        description: "How much the model thinks before answering (not inference speed / Fast).",
         options: GROK_REASONING_EFFORT_VALUES.map((value) => ({
           value,
           label: REASONING_EFFORT_LABELS[value],

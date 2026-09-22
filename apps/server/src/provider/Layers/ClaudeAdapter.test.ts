@@ -37,8 +37,10 @@ import { attachmentRelativePath } from "../../attachmentStore.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { CLAUDE_USAGE_METHOD } from "../ClaudeUsage.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
+import { clearProjectToolServers, setProjectToolServers } from "../ProjectToolServerRegistry.ts";
 import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -60,6 +62,8 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   public readonly setModelCalls: Array<string | undefined> = [];
   public readonly setPermissionModeCalls: Array<string> = [];
   public readonly setMaxThinkingTokensCalls: Array<number | null> = [];
+  public usageResponse: unknown = undefined;
+  public usageCalls = 0;
   public closeCalls = 0;
 
   emit(message: SDKMessage): void {
@@ -110,6 +114,11 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly setMaxThinkingTokens = async (maxThinkingTokens: number | null): Promise<void> => {
     this.setMaxThinkingTokensCalls.push(maxThinkingTokens);
+  };
+
+  readonly [CLAUDE_USAGE_METHOD] = async (): Promise<unknown> => {
+    this.usageCalls += 1;
+    return this.usageResponse;
   };
 
   readonly close = (): void => {
@@ -473,6 +482,109 @@ describe("ClaudeAdapterLive", () => {
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("mounts the tool servers configured for the conversation's project", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      setProjectToolServers([
+        {
+          label: "Team chat",
+          name: "dj-chat",
+          projectPath: "C:/work/dealjourney",
+          url: "https://example.test/mcp-chat",
+          authHeader: "Authorization",
+          authValue: "Bearer token-123",
+          enabled: true,
+        },
+        {
+          label: "Parked",
+          name: "parked",
+          projectPath: "C:/work/dealjourney",
+          url: "https://example.test/parked",
+          authHeader: "Authorization",
+          authValue: "",
+          enabled: false,
+        },
+        {
+          label: "Someone else's project",
+          name: "elsewhere",
+          projectPath: "C:/work/other",
+          url: "https://example.test/elsewhere",
+          authHeader: "Authorization",
+          authValue: "",
+          enabled: true,
+        },
+        {
+          // Naming a server after one the app mounts itself must not replace
+          // the surface the conversation actually runs on.
+          label: "Impostor",
+          name: "t3-code",
+          projectPath: "C:/work/dealjourney",
+          url: "https://example.test/impostor",
+          authHeader: "Authorization",
+          authValue: "",
+          enabled: true,
+        },
+      ]);
+
+      const adapter = yield* ClaudeAdapter;
+      // A worktree under the project, not the project root: a conversation
+      // working in one is no less that project's conversation.
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "approval-required",
+        cwd: "C:\\work\\dealjourney\\.worktrees\\feature",
+      });
+
+      const mcpServers = harness.getLastCreateQueryInput()?.options.mcpServers as
+        | Record<string, { url?: string; headers?: Record<string, string> }>
+        | undefined;
+      assert.equal(mcpServers?.["dj-chat"]?.url, "https://example.test/mcp-chat");
+      assert.equal(mcpServers?.["dj-chat"]?.headers?.Authorization, "Bearer token-123");
+      assert.equal(mcpServers?.parked, undefined);
+      assert.equal(mcpServers?.elsewhere, undefined);
+      assert.notEqual(mcpServers?.["t3-code"]?.url, "https://example.test/impostor");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+      Effect.ensuring(Effect.sync(clearProjectToolServers)),
+    );
+  });
+
+  it.effect("leaves a conversation in another project without those tools", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      setProjectToolServers([
+        {
+          label: "Team chat",
+          name: "dj-chat",
+          projectPath: "C:/work/dealjourney",
+          url: "https://example.test/mcp-chat",
+          authHeader: "Authorization",
+          authValue: "Bearer token-123",
+          enabled: true,
+        },
+      ]);
+
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "approval-required",
+        cwd: "C:/work/unrelated",
+      });
+
+      const mcpServers = harness.getLastCreateQueryInput()?.options.mcpServers as
+        | Record<string, unknown>
+        | undefined;
+      assert.equal(mcpServers?.["dj-chat"], undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+      Effect.ensuring(Effect.sync(clearProjectToolServers)),
     );
   });
 
@@ -967,10 +1079,18 @@ describe("ClaudeAdapterLive", () => {
 
   it.effect("maps Claude stream/runtime messages to canonical provider runtime events", () => {
     const harness = makeHarness();
+    harness.query.usageResponse = {
+      subscription_type: "max",
+      rate_limits_available: true,
+      rate_limits: {
+        five_hour: { utilization: 52, resets_at: null },
+        seven_day: { utilization: 24, resets_at: null },
+      },
+    };
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
 
-      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 10).pipe(
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 11).pipe(
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -1094,10 +1214,20 @@ describe("ClaudeAdapterLive", () => {
           "content.delta",
           "item.completed",
           "item.started",
+          "account.rate-limits.updated",
           "item.completed",
           "turn.completed",
         ],
       );
+
+      const usageEvent = runtimeEvents.find(
+        (event) => event.type === "account.rate-limits.updated",
+      );
+      assert.equal(usageEvent?.type, "account.rate-limits.updated");
+      if (usageEvent?.type === "account.rate-limits.updated") {
+        assert.deepEqual(usageEvent.payload.rateLimits, harness.query.usageResponse);
+      }
+      assert.equal(harness.query.usageCalls, 1);
 
       const turnStarted = runtimeEvents[3];
       assert.equal(turnStarted?.type, "turn.started");
@@ -3759,6 +3889,159 @@ describe("ClaudeAdapterLive", () => {
         followupEvent.value.payload.detail,
         "Codex/Cursor go through ACP and never hit canUseTool.",
       );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps a suggest_followup body sent under a misnamed field", () => {
+    // Regression: the model routinely puts the body under `description` (or
+    // `body`/`details`/`prompt`) instead of `detail`. The MCP tool only requires
+    // `title`, so those calls succeeded with the body dropped — the chip showed
+    // a bare headline while the agent believed it had written a description.
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "do the thing",
+        attachments: [],
+      });
+      yield* Stream.take(adapter.streamEvents, 1).pipe(Stream.runDrain);
+
+      const followupEventFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.followup.suggested",
+      ).pipe(Stream.runHead, Effect.forkChild);
+
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-followup-alias",
+        uuid: "assistant-followup-alias",
+        parent_tool_use_id: null,
+        message: {
+          model: "claude-opus-4-6",
+          id: "msg-followup-alias",
+          type: "message",
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-followup-alias-1",
+              name: "mcp__t3-code__suggest_followup",
+              input: {
+                title: "Fix team chat realtime",
+                description: "Dead channels stay silent forever.",
+                why: "Christine cannot see replies.",
+              },
+            },
+          ],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: {},
+        },
+      } as unknown as SDKMessage);
+
+      const followupEvent = yield* Fiber.join(followupEventFiber);
+      assert.equal(followupEvent._tag, "Some");
+      if (followupEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(followupEvent.value.type, "turn.followup.suggested");
+      if (followupEvent.value.type !== "turn.followup.suggested") {
+        return;
+      }
+      assert.equal(followupEvent.value.payload.title, "Fix team chat realtime");
+      assert.equal(followupEvent.value.payload.detail, "Dead channels stay silent forever.");
+      assert.equal(followupEvent.value.payload.rationale, "Christine cannot see replies.");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("ignores a suggest_followup call with no title, leaving the retry to win", () => {
+    // A call without `title` fails the tool's own schema, so the agent sees an
+    // error and calls again properly. Synthesizing a title from the body here
+    // would turn that one follow-up into two chips.
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "do the thing",
+        attachments: [],
+      });
+      yield* Stream.take(adapter.streamEvents, 1).pipe(Stream.runDrain);
+
+      const followupEventFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.followup.suggested",
+      ).pipe(Stream.runHead, Effect.forkChild);
+
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-followup-untitled",
+        uuid: "assistant-followup-untitled",
+        parent_tool_use_id: null,
+        message: {
+          model: "claude-opus-4-6",
+          id: "msg-followup-untitled",
+          type: "message",
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "tool-followup-untitled-1",
+              name: "mcp__t3-code__suggest_followup",
+              input: { description: "Dead channels stay silent forever." },
+            },
+            {
+              type: "tool_use",
+              id: "tool-followup-untitled-2",
+              name: "mcp__t3-code__suggest_followup",
+              input: {
+                title: "Fix team chat realtime",
+                description: "Dead channels stay silent forever.",
+              },
+            },
+          ],
+          stop_reason: null,
+          stop_sequence: null,
+          usage: {},
+        },
+      } as unknown as SDKMessage);
+
+      const followupEvent = yield* Fiber.join(followupEventFiber);
+      assert.equal(followupEvent._tag, "Some");
+      if (followupEvent._tag !== "Some") {
+        return;
+      }
+      if (followupEvent.value.type !== "turn.followup.suggested") {
+        return;
+      }
+      // The untitled call produced nothing; the retry is the first chip.
+      assert.equal(followupEvent.value.payload.followupId, "tool-followup-untitled-2");
+      assert.equal(followupEvent.value.payload.detail, "Dead channels stay silent forever.");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

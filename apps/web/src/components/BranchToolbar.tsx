@@ -22,9 +22,12 @@ import {
   resolveEffectiveEnvMode,
   resolveLockedWorkspaceLabel,
 } from "./BranchToolbar.logic";
+import { resolveGitCountsEnabled, selectGitCountsSettings } from "../logicalProject";
+import { useSettings } from "../hooks/useSettings";
 import { BranchToolbarBranchSelector } from "./BranchToolbarBranchSelector";
 import { BranchToolbarEnvironmentSelector } from "./BranchToolbarEnvironmentSelector";
 import { BranchToolbarEnvModeSelector } from "./BranchToolbarEnvModeSelector";
+import { BranchToolbarGitCounts } from "./BranchToolbarGitCounts";
 import { Button } from "./ui/button";
 import { SidebarTrigger } from "./ui/sidebar";
 import {
@@ -237,6 +240,14 @@ export const BranchToolbar = memo(function BranchToolbar({
     });
   const envModeLocked = envLocked || (serverThread !== undefined && activeWorktreePath !== null);
 
+  // Counters read the same status stream the branch selector already watches,
+  // scoped to the worktree when the thread runs in one.
+  const gitCountsSettings = useSettings(selectGitCountsSettings);
+  const gitCountsCwd = activeWorktreePath ?? activeProject?.cwd ?? null;
+  const showGitCounts = activeProject
+    ? resolveGitCountsEnabled(activeProject, gitCountsSettings)
+    : false;
+
   const showEnvironmentPicker = Boolean(
     availableEnvironments && availableEnvironments.length > 1 && onEnvironmentChange,
   );
@@ -296,6 +307,14 @@ export const BranchToolbar = memo(function BranchToolbar({
             onEnvModeChange={onEnvModeChange}
           />
         </div>
+      )}
+
+      {showGitCounts && (
+        <BranchToolbarGitCounts
+          className="order-last ml-1"
+          environmentId={environmentId}
+          cwd={gitCountsCwd}
+        />
       )}
 
       <BranchToolbarBranchSelector

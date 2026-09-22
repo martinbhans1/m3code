@@ -376,6 +376,7 @@ const createDesktopBridgeStub = (overrides?: {
 
   return {
     getAppBranding: vi.fn().mockReturnValue(null),
+    focusWindow: vi.fn().mockResolvedValue(undefined),
     getLocalEnvironmentBootstrap: () => ({
       label: "Local environment",
       httpBaseUrl: "http://127.0.0.1:3773",
@@ -768,6 +769,28 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByText("http://127.0.0.1:3773/").first()).toBeInTheDocument();
   });
 
+  it("splits the general page into categories", async () => {
+    setServerConfigSnapshot(createBaseServerConfig());
+
+    mounted = await renderWithTestRouter(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page.getByRole("tab", { name: "Appearance" }).click();
+    await expect.element(page.getByRole("heading", { name: "Theme" })).toBeInTheDocument();
+
+    await page.getByRole("tab", { name: "Notifications" }).click();
+    await expect
+      .element(page.getByRole("heading", { name: "Repeat reminders" }))
+      .toBeInTheDocument();
+    await expect
+      .element(page.getByRole("heading", { name: "Dismiss automatically" }))
+      .toBeInTheDocument();
+    await expect.element(page.getByRole("heading", { name: "Theme" })).not.toBeInTheDocument();
+  });
+
   it("shows diagnostics inside About with a diagnostics link", async () => {
     setServerConfigSnapshot(createBaseServerConfig());
 
@@ -777,7 +800,8 @@ describe("GeneralSettingsPanel observability", () => {
       </AppAtomRegistryProvider>,
     );
 
-    await expect.element(page.getByText("About")).toBeInTheDocument();
+    await page.getByRole("tab", { name: "About" }).click();
+
     await expect
       .element(page.getByRole("heading", { name: "Diagnostics", exact: true }))
       .toBeInTheDocument();
@@ -1268,6 +1292,48 @@ describe("GeneralSettingsPanel observability", () => {
       provider: ProviderDriverKind.make("codex"),
       instanceId: ProviderInstanceId.make("codex"),
     });
+  });
+
+  it("starts authentication for the selected Claude instance", async () => {
+    const instanceId = ProviderInstanceId.make("claudeAgent");
+    const authenticateProvider = vi
+      .fn<LocalApi["server"]["authenticateProvider"]>()
+      .mockResolvedValue({ providers: [] });
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: { authenticateProvider },
+    } as unknown as LocalApi;
+
+    setServerConfigSnapshot({
+      ...createBaseServerConfig(),
+      providers: [
+        {
+          instanceId,
+          driver: ProviderDriverKind.make("claudeAgent"),
+          enabled: true,
+          installed: true,
+          version: "2.1.251",
+          status: "error",
+          auth: { status: "unauthenticated" },
+          checkedAt: "2026-08-31T08:00:00.000Z",
+          models: [],
+          slashCommands: [],
+          skills: [],
+        },
+      ],
+    });
+
+    mounted = await render(
+      <AppAtomRegistryProvider>
+        <ProviderSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+
+    await page.getByRole("button", { name: "Sign in to Claude" }).click();
+    expect(authenticateProvider).toHaveBeenCalledWith({ instanceId });
   });
 
   it("keeps long provider update commands inside the fixed-width popover", async () => {

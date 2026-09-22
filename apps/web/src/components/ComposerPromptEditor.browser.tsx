@@ -6,7 +6,12 @@ import { page, userEvent } from "vite-plus/test/browser";
 import { render } from "vitest-browser-react";
 
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./ComposerPromptEditor";
-import { clampCollapsedComposerCursor } from "~/composer-logic";
+import {
+  clampCollapsedComposerCursor,
+  collapseExpandedComposerCursor,
+  replaceTextRange,
+} from "~/composer-logic";
+import { buildQuoteInsertion } from "~/quoteSelection";
 
 const QUOTE_SOURCE = "<quote>\nquoted line\n</quote>";
 const QUOTED_PROMPT = `${QUOTE_SOURCE}\n`;
@@ -43,6 +48,64 @@ function QuoteEditorHarness(props: { initialValue: string; focusCursor: number }
       />
       <pre data-testid="prompt-value">{JSON.stringify(state.value)}</pre>
     </div>
+  );
+}
+
+/**
+ * Mirrors the select-to-quote path end to end: ChatView builds the insertion,
+ * ChatComposer appends it at the end of the prompt and refocuses the editor at
+ * the resulting cursor. Quoting twice in one draft goes through this same path.
+ */
+function QuoteInsertHarness() {
+  const [state, setState] = useState({ value: "", cursor: 0 });
+  const promptRef = useRef("");
+  const editorRef = useRef<ComposerPromptEditorHandle>(null);
+
+  const insertQuote = (text: string) => {
+    const insertion = buildQuoteInsertion(promptRef.current, text);
+    if (!insertion) return;
+    const end = promptRef.current.length;
+    const next = replaceTextRange(promptRef.current, end, end, insertion);
+    const nextCursor = collapseExpandedComposerCursor(next.text, next.cursor);
+    promptRef.current = next.text;
+    setState({ value: next.text, cursor: nextCursor });
+    window.requestAnimationFrame(() => editorRef.current?.focusAt(nextCursor));
+  };
+
+  return (
+    <div>
+      <button type="button" onClick={() => insertQuote("first quoted line")}>
+        quote one
+      </button>
+      <button type="button" onClick={() => insertQuote("second quoted line")}>
+        quote two
+      </button>
+      <ComposerPromptEditor
+        value={state.value}
+        cursor={state.cursor}
+        terminalContexts={[]}
+        skills={[]}
+        disabled={false}
+        placeholder="Ask anything"
+        onRemoveTerminalContext={() => {}}
+        onChange={(nextValue, nextCursor) => {
+          promptRef.current = nextValue;
+          setState({
+            value: nextValue,
+            cursor: clampCollapsedComposerCursor(nextValue, nextCursor),
+          });
+        }}
+        onPaste={() => {}}
+        editorRef={editorRef}
+      />
+      <pre data-testid="prompt-value">{JSON.stringify(state.value)}</pre>
+    </div>
+  );
+}
+
+function quoteCards(): HTMLElement[] {
+  return Array.from(
+    page.getByTestId("composer-editor").element().querySelectorAll("[data-composer-quote-block]"),
   );
 }
 
@@ -208,6 +271,104 @@ describe("ComposerPromptEditor quote blocks", () => {
     await focusComposer();
     await userEvent.keyboard("hi ");
     await expect.poll(promptValue).toBe("hi [AGENTS.md](AGENTS.md) tail");
+
+    await screen.unmount();
+  });
+
+  it("drops the caret onto an empty line under a freshly inserted quote", async () => {
+    localStorage.setItem("t3code:smooth-caret", "on");
+    try {
+      const screen = await render(<QuoteInsertHarness />);
+      await userEvent.click(page.getByRole("button", { name: "quote one" }));
+      await expect.poll(promptValue).toBe("<quote>\nfirst quoted line\n</quote>\n");
+
+      const caret = document.querySelector(".composer-smooth-caret") as HTMLElement;
+      await expect.poll(() => caret.dataset.visible).toBe("true");
+      // The caret opens the line *below* the card — not painted on top of it,
+      // which reads as "the quote swallowed my cursor".
+      await expect
+        .poll(
+          () =>
+            caret.getBoundingClientRect().top > quoteCards()[0]!.getBoundingClientRect().bottom - 1,
+        )
+        .toBe(true);
+
+      // …and typing lands there, on its own line under the card.
+      await userEvent.keyboard("what about this?");
+      await expect.poll(promptValue).toBe("<quote>\nfirst quoted line\n</quote>\nwhat about this?");
+
+      await screen.unmount();
+    } finally {
+      localStorage.removeItem("t3code:smooth-caret");
+    }
+  });
+
+  it("stacks a second quote under the first with its own reply line", async () => {
+    const screen = await render(<QuoteInsertHarness />);
+
+    await userEvent.click(page.getByRole("button", { name: "quote one" }));
+    await expect.poll(promptValue).toContain("first quoted line");
+    await userEvent.keyboard("what about this?");
+
+    await userEvent.click(page.getByRole("button", { name: "quote two" }));
+    await expect.poll(promptValue).toContain("second quoted line");
+    // The caret escapes the second card the same way it escapes the first.
+    await userEvent.keyboard("and this?");
+
+    await expect
+      .poll(promptValue)
+      .toBe(
+        "<quote>\nfirst quoted line\n</quote>\nwhat about this?\n" +
+          "<quote>\nsecond quoted line\n</quote>\nand this?",
+      );
+    expect(quoteCards()).toHaveLength(2);
+
+    await screen.unmount();
+  });
+
+  it("removes the quote and the line break it inserted in one Backspace", async () => {
+    const screen = await render(<QuoteInsertHarness />);
+
+    await userEvent.click(page.getByRole("button", { name: "quote one" }));
+    await expect.poll(promptValue).toBe("<quote>\nfirst quoted line\n</quote>\n");
+
+    // From the empty line under the card, one press takes the whole quote —
+    // eating the invisible line break first reads as Backspace doing nothing.
+    await userEvent.keyboard("{Backspace}");
+    await expect.poll(promptValue).toBe("");
+    expect(quoteCards()).toHaveLength(0);
+
+    await screen.unmount();
+  });
+
+  it("removes the quote when backspacing from the start of the line below it", async () => {
+    const screen = await render(<QuoteInsertHarness />);
+
+    await userEvent.click(page.getByRole("button", { name: "quote one" }));
+    await expect.poll(promptValue).toBe("<quote>\nfirst quoted line\n</quote>\n");
+    await userEvent.keyboard("reply");
+    await userEvent.keyboard("{ArrowLeft}".repeat(5));
+
+    await userEvent.keyboard("{Backspace}");
+    await expect.poll(promptValue).toBe("reply");
+    expect(quoteCards()).toHaveLength(0);
+
+    await screen.unmount();
+  });
+
+  it("leaves the line break alone when backspacing under a mention chip", async () => {
+    // Only quote cards swallow their trailing break — a chip followed by one
+    // still takes two presses, the first of which joins the lines.
+    const screen = await render(
+      <QuoteEditorHarness initialValue={"@AGENTS.md\n"} focusCursor={Number.POSITIVE_INFINITY} />,
+    );
+
+    await focusComposer();
+    await userEvent.keyboard("{Backspace}");
+    await expect.poll(promptValue).toBe("[AGENTS.md](AGENTS.md)");
+
+    await userEvent.keyboard("{Backspace}");
+    await expect.poll(promptValue).toBe("");
 
     await screen.unmount();
   });

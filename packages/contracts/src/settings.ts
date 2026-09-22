@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { ProjectId, ThreadId, TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { DatabaseConnectionConfig, DatabaseConnectionId } from "./database.ts";
+import { ProjectToolServerConfig, ProjectToolServerId } from "./projectToolServers.ts";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model.ts";
 import { ModelSelection } from "./orchestration.ts";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.ts";
@@ -13,6 +14,41 @@ import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance.t
 export const TimestampFormat = Schema.Literals(["locale", "12-hour", "24-hour"]);
 export type TimestampFormat = typeof TimestampFormat.Type;
 export const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
+
+export const ProviderUsageAlertThreshold = Schema.Int.check(
+  Schema.isBetween({ minimum: 1, maximum: 100 }),
+);
+export type ProviderUsageAlertThreshold = typeof ProviderUsageAlertThreshold.Type;
+export const DEFAULT_PROVIDER_USAGE_ALERT_THRESHOLDS = [
+  50, 80,
+] as const satisfies ReadonlyArray<ProviderUsageAlertThreshold>;
+
+// How long an alert stays silent for a window that is still above a threshold
+// it already reported. `0` means "report a crossing once and never repeat it"
+// — the alert only re-arms after usage falls back below the threshold.
+export const MIN_PROVIDER_USAGE_ALERT_REPEAT_MINUTES = 0;
+export const MAX_PROVIDER_USAGE_ALERT_REPEAT_MINUTES = 1440;
+export const ProviderUsageAlertRepeatMinutes = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_PROVIDER_USAGE_ALERT_REPEAT_MINUTES,
+    maximum: MAX_PROVIDER_USAGE_ALERT_REPEAT_MINUTES,
+  }),
+);
+export type ProviderUsageAlertRepeatMinutes = typeof ProviderUsageAlertRepeatMinutes.Type;
+export const DEFAULT_PROVIDER_USAGE_ALERT_REPEAT_MINUTES: ProviderUsageAlertRepeatMinutes = 0;
+
+// Seconds before a usage toast dismisses itself. `0` keeps it on screen until
+// it is dismissed by hand.
+export const MIN_PROVIDER_USAGE_ALERT_AUTO_DISMISS_SECONDS = 0;
+export const MAX_PROVIDER_USAGE_ALERT_AUTO_DISMISS_SECONDS = 600;
+export const ProviderUsageAlertAutoDismissSeconds = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_PROVIDER_USAGE_ALERT_AUTO_DISMISS_SECONDS,
+    maximum: MAX_PROVIDER_USAGE_ALERT_AUTO_DISMISS_SECONDS,
+  }),
+);
+export type ProviderUsageAlertAutoDismissSeconds = typeof ProviderUsageAlertAutoDismissSeconds.Type;
+export const DEFAULT_PROVIDER_USAGE_ALERT_AUTO_DISMISS_SECONDS: ProviderUsageAlertAutoDismissSeconds = 10;
 
 export const SidebarProjectSortOrder = Schema.Literals(["updated_at", "created_at", "manual"]);
 export type SidebarProjectSortOrder = typeof SidebarProjectSortOrder.Type;
@@ -55,12 +91,36 @@ export const SidebarThreadShowMoreIncrement = Schema.Int.check(
 export type SidebarThreadShowMoreIncrement = typeof SidebarThreadShowMoreIncrement.Type;
 export const DEFAULT_SIDEBAR_THREAD_SHOW_MORE_INCREMENT: SidebarThreadShowMoreIncrement = 5;
 
+// System notifications are the OS-level toasts (Windows Action Center, macOS
+// Notification Center), as opposed to the in-app toasts. They exist for the
+// case the app cannot cover on its own: an agent that finished, failed, or is
+// blocked on an answer while its window is behind everything else. Defaulted
+// on, because a thread nobody notices is the exact failure this prevents —
+// each category can be switched off individually if it turns out to be noise.
+export const DEFAULT_SYSTEM_NOTIFICATIONS_ENABLED = true;
+export const DEFAULT_SYSTEM_NOTIFY_ON_TURN_COMPLETED = true;
+export const DEFAULT_SYSTEM_NOTIFY_ON_INPUT_NEEDED = true;
+export const DEFAULT_SYSTEM_NOTIFY_ON_FAILURE = true;
+// Off by default: a thread finishing in a project you are not looking at is
+// still worth a toast even while the app has focus. The one thread that never
+// notifies is the one already open in front of you, which is not a setting.
+export const DEFAULT_SYSTEM_NOTIFICATIONS_SUPPRESS_WHEN_FOCUSED = false;
+
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   dismissedProviderUpdateNotificationKeys: Schema.Array(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  providerUsageAlertThresholds: Schema.Array(ProviderUsageAlertThreshold).pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_USAGE_ALERT_THRESHOLDS)),
+  ),
+  providerUsageAlertRepeatMinutes: ProviderUsageAlertRepeatMinutes.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_USAGE_ALERT_REPEAT_MINUTES)),
+  ),
+  providerUsageAlertAutoDismissSeconds: ProviderUsageAlertAutoDismissSeconds.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_USAGE_ALERT_AUTO_DISMISS_SECONDS)),
   ),
   diffIgnoreWhitespace: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffWordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
@@ -95,6 +155,16 @@ export const ClientSettingsSchema = Schema.Struct({
   showThreadChangeRequestStatus: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
+  // Whether the thread header shows the working-tree/unpushed counters for the
+  // active repository. On by default — the numbers come from the git status we
+  // already stream, so there is no extra cost to displaying them.
+  showGitCounts: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // Per-project opt-out (or opt-in) for the header counters, keyed by the same
+  // physical project key the sidebar grouping overrides use. Absent key means
+  // "inherit `showGitCounts`".
+  gitCountsProjectOverrides: Schema.Record(TrimmedNonEmptyString, Schema.Boolean).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE)),
   ),
@@ -113,6 +183,21 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   sidebarThreadShowMoreIncrement: SidebarThreadShowMoreIncrement.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_THREAD_SHOW_MORE_INCREMENT)),
+  ),
+  systemNotificationsEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SYSTEM_NOTIFICATIONS_ENABLED)),
+  ),
+  systemNotifyOnTurnCompleted: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SYSTEM_NOTIFY_ON_TURN_COMPLETED)),
+  ),
+  systemNotifyOnInputNeeded: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SYSTEM_NOTIFY_ON_INPUT_NEEDED)),
+  ),
+  systemNotifyOnFailure: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SYSTEM_NOTIFY_ON_FAILURE)),
+  ),
+  systemNotificationsSuppressWhenFocused: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_SYSTEM_NOTIFICATIONS_SUPPRESS_WHEN_FOCUSED)),
   ),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
@@ -533,6 +618,13 @@ export const ServerSettings = Schema.Struct({
   databaseConnections: Schema.Record(DatabaseConnectionId, DatabaseConnectionConfig).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
+  // Extra MCP servers mounted for the conversations of one project — a team
+  // chat, a tracker, anything a project's work needs that the app does not
+  // ship. Keyed by `ProjectToolServerId`; the credential is held in the secret
+  // store, not here. See projectToolServers.ts.
+  projectToolServers: Schema.Record(ProjectToolServerId, ProjectToolServerConfig).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -663,6 +755,11 @@ export const ServerSettingsPatch = Schema.Struct({
   databaseConnections: Schema.optionalKey(
     Schema.Record(DatabaseConnectionId, DatabaseConnectionConfig),
   ),
+  // Whole-map replacement, same rationale again: a partial patch could strand a
+  // credential in the secret store with no settings entry pointing at it.
+  projectToolServers: Schema.optionalKey(
+    Schema.Record(ProjectToolServerId, ProjectToolServerConfig),
+  ),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
@@ -671,6 +768,10 @@ export const ClientSettingsPatch = Schema.Struct({
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   showThreadChangeRequestStatus: Schema.optionalKey(Schema.Boolean),
+  showGitCounts: Schema.optionalKey(Schema.Boolean),
+  gitCountsProjectOverrides: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, Schema.Boolean),
+  ),
   diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
   diffWordWrap: Schema.optionalKey(Schema.Boolean),
   favorites: Schema.optionalKey(
@@ -694,6 +795,9 @@ export const ClientSettingsPatch = Schema.Struct({
       }),
     ),
   ),
+  providerUsageAlertThresholds: Schema.optionalKey(Schema.Array(ProviderUsageAlertThreshold)),
+  providerUsageAlertRepeatMinutes: Schema.optionalKey(ProviderUsageAlertRepeatMinutes),
+  providerUsageAlertAutoDismissSeconds: Schema.optionalKey(ProviderUsageAlertAutoDismissSeconds),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),

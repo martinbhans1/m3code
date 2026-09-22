@@ -25,10 +25,11 @@ describe("resolveGrokReasoningEffort", () => {
     expect(resolveGrokReasoningEffort([{ id: "effort", value: "low" }])).toBe("high");
   });
 
-  it("accepts low, medium, and high (case-insensitive)", () => {
+  it("accepts low, medium, high, and xhigh (case-insensitive)", () => {
     expect(resolveGrokReasoningEffort([{ id: "reasoningEffort", value: "low" }])).toBe("low");
     expect(resolveGrokReasoningEffort([{ id: "reasoningEffort", value: "medium" }])).toBe("medium");
     expect(resolveGrokReasoningEffort([{ id: "reasoningEffort", value: "HIGH" }])).toBe("high");
+    expect(resolveGrokReasoningEffort([{ id: "reasoningEffort", value: "xhigh" }])).toBe("xhigh");
   });
 });
 

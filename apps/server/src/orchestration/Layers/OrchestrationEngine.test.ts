@@ -149,6 +149,7 @@ describe("OrchestrationEngine", () => {
           updatedAt: "2026-03-03T00:00:03.000Z",
           archivedAt: null,
           pinnedAt: null,
+          doneAt: null,
           deletedAt: null,
           messages: [],
           proposedPlans: [],
@@ -206,7 +207,18 @@ describe("OrchestrationEngine", () => {
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadMessagesTail: () => Effect.succeed([]),
+          listThreadMessageOutline: () => Effect.succeed([]),
+          listThreadMessageWindow: () => Effect.succeed([]),
+          countThreadMessages: () => Effect.succeed(0),
+          searchThreadMessages: () => Effect.succeed([]),
+          countThreadMessageMatches: () => Effect.succeed(0),
+          getThreadMessageTurn: () => Effect.succeed(Option.none()),
+          listThreadTurnToolActivities: () => Effect.succeed([]),
+          countThreadTurnToolActivities: () => Effect.succeed(0),
+          getThreadMessagePosition: () => Effect.succeed(Option.none()),
+          countThreadToolCallsByTurn: () => Effect.succeed(new Map()),
           listThreadActivitiesByKinds: () => Effect.succeed([]),
+          listFollowupToolCallActivities: () => Effect.succeed([]),
         }),
       ),
       Layer.provide(
@@ -286,6 +298,7 @@ describe("OrchestrationEngine", () => {
       updatedAt: "2026-03-03T00:00:03.000Z",
       archivedAt: null,
       pinnedAt: null,
+      doneAt: null,
       deletedAt: null,
       messages: [],
       proposedPlans: [],
@@ -352,7 +365,18 @@ describe("OrchestrationEngine", () => {
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadMessagesTail: () => Effect.succeed([]),
+          listThreadMessageOutline: () => Effect.succeed([]),
+          listThreadMessageWindow: () => Effect.succeed([]),
+          countThreadMessages: () => Effect.succeed(0),
+          searchThreadMessages: () => Effect.succeed([]),
+          countThreadMessageMatches: () => Effect.succeed(0),
+          getThreadMessageTurn: () => Effect.succeed(Option.none()),
+          listThreadTurnToolActivities: () => Effect.succeed([]),
+          countThreadTurnToolActivities: () => Effect.succeed(0),
+          getThreadMessagePosition: () => Effect.succeed(Option.none()),
+          countThreadToolCallsByTurn: () => Effect.succeed(new Map()),
           listThreadActivitiesByKinds: () => Effect.succeed([]),
+          listFollowupToolCallActivities: () => Effect.succeed([]),
         }),
       ),
       Layer.provide(
@@ -545,6 +569,109 @@ describe("OrchestrationEngine", () => {
       (await system.readModel()).threads.find((thread) => thread.id === "thread-archive")
         ?.archivedAt,
     ).toBeNull();
+
+    await system.dispose();
+  });
+
+  it("stamps a thread done, and lifts the stamp when the user writes into it again", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+    const threadId = ThreadId.make("thread-done");
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.make("cmd-project-done-create"),
+        projectId: asProjectId("project-done"),
+        title: "Project Done",
+        workspaceRoot: "/tmp/project-done",
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("cmd-thread-done-create"),
+        threadId,
+        projectId: asProjectId("project-done"),
+        title: "Settle me",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+
+    const doneAt = () =>
+      system
+        .readModel()
+        .then((model) => model.threads.find((thread) => thread.id === threadId)?.doneAt);
+
+    expect(await doneAt()).toBeNull();
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.mark-done",
+        commandId: CommandId.make("cmd-thread-mark-done"),
+        threadId,
+      }),
+    );
+    expect(await doneAt()).not.toBeNull();
+
+    // The stamp is the user's, but it expires against the conversation: sending
+    // into a settled thread is the clearest signal it is not settled any more,
+    // so nobody has to remember to lift it by hand.
+    //
+    // Dated past the stamp on purpose. `now()` here is a fixed 2026-01-01, while
+    // the stamp is written off the real clock, so a message at `now()` is older
+    // than the stamp it is supposed to supersede — and would correctly leave it
+    // standing. Only a message the user sent *after* settling the thread reopens
+    // it.
+    await system.run(
+      engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-thread-done-reopen"),
+        threadId,
+        message: {
+          messageId: asMessageId("msg-done-reopen"),
+          role: "user",
+          text: "actually, one more thing",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "full-access",
+        createdAt: "2099-01-01T00:00:00.000Z",
+      }),
+    );
+    expect(await doneAt()).toBeNull();
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.mark-done",
+        commandId: CommandId.make("cmd-thread-mark-done-again"),
+        threadId,
+      }),
+    );
+    expect(await doneAt()).not.toBeNull();
+
+    await system.run(
+      engine.dispatch({
+        type: "thread.unmark-done",
+        commandId: CommandId.make("cmd-thread-unmark-done"),
+        threadId,
+      }),
+    );
+    expect(await doneAt()).toBeNull();
 
     await system.dispose();
   });

@@ -13,12 +13,6 @@ Common reasons:
 
 Use the default provider.
 
-Log in with Claude Code normally:
-
-```bash
-claude auth login
-```
-
 In T3 Code Settings, your Claude provider can stay like this:
 
 ```text
@@ -28,6 +22,11 @@ Claude HOME path: empty
 ```
 
 An empty `Claude HOME path` means T3 Code uses your normal home directory.
+
+Click **Sign in** on the provider card. T3 Code starts Claude Code's own secure
+browser login under this provider's configured home, then refreshes the account
+status. Use **Re-authenticate** in the same place whenever the token expires.
+T3 Code does not read or store the resulting Anthropic credentials.
 
 ## I Want Work And Personal Claude Accounts
 
@@ -42,12 +41,6 @@ default home                 work account
 
 ### Set Up The First Account
 
-Log in normally:
-
-```bash
-claude auth login
-```
-
 In T3 Code Settings:
 
 ```text
@@ -56,14 +49,9 @@ Binary path: claude
 Claude HOME path: empty
 ```
 
+Click **Sign in** on the Claude Work card.
+
 ### Set Up The Second Account
-
-Log in with a separate home:
-
-```bash
-mkdir -p ~/.claude_personal_home
-HOME=~/.claude_personal_home claude auth login
-```
 
 Then add another Claude provider in T3 Code:
 
@@ -72,6 +60,9 @@ Display name: Claude Personal
 Binary path: claude
 Claude HOME path: ~/.claude_personal_home
 ```
+
+Click **Sign in** on the Claude Personal card. M3 Code applies that card's
+`Claude HOME path` automatically, so the two accounts stay isolated.
 
 Use the email shown in Settings to confirm each provider is using the intended account. Emails are
 blurred by default; click the blurred email to reveal it.

@@ -5,6 +5,7 @@ import {
   OrchestrationSession,
   OrchestrationThread,
 } from "@t3tools/contracts";
+import { isDoneStampSuperseded } from "@t3tools/shared/threadDisposition";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -23,7 +24,9 @@ import {
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
   ThreadUnarchivedPayload,
+  ThreadMarkedDonePayload,
   ThreadPinnedPayload,
+  ThreadUnmarkedDonePayload,
   ThreadUnpinnedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
@@ -289,6 +292,7 @@ export function projectEvent(
             updatedAt: payload.updatedAt,
             archivedAt: null,
             pinnedAt: null,
+            doneAt: null,
             deletedAt: null,
             messages: [],
             activities: [],
@@ -357,6 +361,28 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             pinnedAt: null,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.marked-done":
+      return decodeForEvent(ThreadMarkedDonePayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            doneAt: payload.doneAt,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.unmarked-done":
+      return decodeForEvent(ThreadUnmarkedDonePayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            doneAt: null,
             updatedAt: payload.updatedAt,
           }),
         })),
@@ -458,10 +484,19 @@ export function projectEvent(
           : [...thread.messages, message];
         const cappedMessages = messages.slice(-MAX_THREAD_MESSAGES);
 
+        // A user message into a settled thread un-settles it, so the stamp
+        // never has to be lifted by hand. Mirrored in the SQL projection's
+        // refreshThreadShellSummary; both defer to isDoneStampSuperseded.
+        const doneAt =
+          message.role === "user" && isDoneStampSuperseded(thread.doneAt, message.createdAt)
+            ? null
+            : thread.doneAt;
+
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: cappedMessages,
+            doneAt,
             updatedAt: event.occurredAt,
           }),
         };
