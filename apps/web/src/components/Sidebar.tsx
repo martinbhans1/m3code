@@ -96,6 +96,7 @@ import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../termina
 import { useThreadRunningTerminalIds } from "../terminalSessionState";
 import { useThreadDiscoveredPorts } from "../portDiscoveryState";
 import { useUiStateStore } from "../uiStateStore";
+import { deriveThreadTags, resolveThreadTag, useThreadTagFilterStore } from "../threadTagFilter";
 import {
   resolveShortcutCommand,
   shortcutLabelForCommand,
@@ -1118,6 +1119,8 @@ interface SidebarProjectItemProps {
   dragHandleProps: SortableProjectHandleProps | null;
 }
 
+const EMPTY_HIDDEN_THREAD_TAGS: readonly string[] = [];
+
 const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjectItemProps) {
   const {
     project,
@@ -1335,26 +1338,49 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     [lastVisitedAtByThreadKey],
   );
 
-  const { projectStatus, visibleProjectThreads, orderedProjectThreadKeys } = useMemo(() => {
-    const visibleProjectThreads = sortThreads(
-      projectThreads.filter(
+  const hiddenThreadTags = useThreadTagFilterStore(
+    (state) => state.hiddenTagsByProject[project.projectKey] ?? EMPTY_HIDDEN_THREAD_TAGS,
+  );
+  const toggleThreadTag = useThreadTagFilterStore((state) => state.toggleTag);
+  const { projectStatus, visibleProjectThreads, orderedProjectThreadKeys, threadTags } =
+    useMemo(() => {
+      const unpinnedThreads = projectThreads.filter(
         (thread) =>
           thread.archivedAt === null &&
           !pinnedThreadKeySet.has(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
-      ),
+      );
+      const threadTags = deriveThreadTags(unpinnedThreads.map((thread) => thread.title));
+      // The open conversation stays listed even when its tag is switched off.
+      const visibleProjectThreads = sortThreads(
+        threadTags.length === 0 || hiddenThreadTags.length === 0
+          ? unpinnedThreads
+          : unpinnedThreads.filter(
+              (thread) =>
+                !hiddenThreadTags.includes(resolveThreadTag(thread.title, threadTags)) ||
+                scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) ===
+                  activeRouteThreadKey,
+            ),
+        threadSortOrder,
+      );
+      const projectStatus = resolveProjectStatusIndicator(
+        visibleProjectThreads.map((thread) => resolveProjectThreadStatus(thread)),
+      );
+      return {
+        orderedProjectThreadKeys: visibleProjectThreads.map((thread) =>
+          scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+        ),
+        projectStatus,
+        threadTags,
+        visibleProjectThreads,
+      };
+    }, [
+      activeRouteThreadKey,
+      hiddenThreadTags,
+      pinnedThreadKeySet,
+      projectThreads,
+      resolveProjectThreadStatus,
       threadSortOrder,
-    );
-    const projectStatus = resolveProjectStatusIndicator(
-      visibleProjectThreads.map((thread) => resolveProjectThreadStatus(thread)),
-    );
-    return {
-      orderedProjectThreadKeys: visibleProjectThreads.map((thread) =>
-        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-      ),
-      projectStatus,
-      visibleProjectThreads,
-    };
-  }, [pinnedThreadKeySet, projectThreads, resolveProjectThreadStatus, threadSortOrder]);
+    ]);
 
   const {
     hasMoreToShow,
@@ -2345,6 +2371,39 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
             {project.groupedProjectCount > 1 ? (
               <span className="shrink-0 text-[10px] text-muted-foreground/60">
                 {project.groupedProjectCount} projects
+              </span>
+            ) : null}
+            {threadTags.length > 0 ? (
+              <span className="flex min-w-0 shrink items-center gap-1 overflow-hidden">
+                {threadTags.map((tag) => {
+                  const hidden = hiddenThreadTags.includes(tag.key);
+                  const toggle = (event: React.SyntheticEvent) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    toggleThreadTag(project.projectKey, tag.key);
+                  };
+                  return (
+                    <span
+                      key={tag.key}
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={!hidden}
+                      title={`${hidden ? "Show" : "Hide"} ${tag.label} (${tag.count})`}
+                      className={`shrink-0 cursor-pointer rounded-full border px-1.5 py-px text-[10px] leading-tight transition-colors ${
+                        hidden
+                          ? "border-border/60 text-muted-foreground/50 line-through"
+                          : "border-primary/40 bg-primary/15 text-foreground/85"
+                      }`}
+                      onPointerDownCapture={(event) => event.stopPropagation()}
+                      onClick={toggle}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") toggle(event);
+                      }}
+                    >
+                      {tag.label}
+                    </span>
+                  );
+                })}
               </span>
             ) : null}
           </span>
