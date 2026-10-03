@@ -438,6 +438,87 @@ export function useChromeTint() {
   return { chromeTint, setChromeTint } as const;
 }
 
+// ── User message tint ──────────────────────────────────────────────────────
+// Optional hue for the user's own chat bubbles so they stand out when scrolling
+// a long conversation. Same storage shape as the chrome tint (`#rrggbb` or
+// null for the theme default). Applied as `--user-message-tint` + a
+// `data-user-message-tint="on"` flag — see the [data-user-message-tint] blocks
+// in themes.css.
+
+const USER_MESSAGE_TINT_STORAGE_KEY = "t3code:user-message-tint";
+
+let userMessageTintListeners: Array<() => void> = [];
+
+function emitUserMessageTintChange() {
+  for (const listener of userMessageTintListeners) listener();
+}
+
+function getStoredUserMessageTint(): string | null {
+  if (!hasThemeStorage()) return null;
+  return normalizeChromeTint(localStorage.getItem(USER_MESSAGE_TINT_STORAGE_KEY));
+}
+
+function applyUserMessageTint(tint: string | null) {
+  if (typeof document === "undefined") return;
+  const root = document.documentElement;
+  if (tint) {
+    root.dataset.userMessageTint = "on";
+    root.style.setProperty("--user-message-tint", tint);
+  } else {
+    delete root.dataset.userMessageTint;
+    root.style.removeProperty("--user-message-tint");
+  }
+}
+
+// Apply immediately on module load so bubbles paint in the right color.
+if (typeof document !== "undefined" && hasThemeStorage()) {
+  applyUserMessageTint(getStoredUserMessageTint());
+}
+
+function subscribeUserMessageTint(listener: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  userMessageTintListeners.push(listener);
+
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key === USER_MESSAGE_TINT_STORAGE_KEY) {
+      applyUserMessageTint(getStoredUserMessageTint());
+      emitUserMessageTintChange();
+    }
+  };
+  window.addEventListener("storage", handleStorage);
+
+  return () => {
+    userMessageTintListeners = userMessageTintListeners.filter((l) => l !== listener);
+    window.removeEventListener("storage", handleStorage);
+  };
+}
+
+function getUserMessageTintServerSnapshot(): string | null {
+  return null;
+}
+
+export function useUserMessageTint() {
+  const userMessageTint = useSyncExternalStore(
+    subscribeUserMessageTint,
+    getStoredUserMessageTint,
+    getUserMessageTintServerSnapshot,
+  );
+
+  const setUserMessageTint = useCallback((next: string | null) => {
+    if (!hasThemeStorage()) return;
+    const normalized = normalizeChromeTint(next);
+    if (normalized) {
+      localStorage.setItem(USER_MESSAGE_TINT_STORAGE_KEY, normalized);
+    } else {
+      localStorage.removeItem(USER_MESSAGE_TINT_STORAGE_KEY);
+    }
+    applyUserMessageTint(normalized);
+    emitUserMessageTintChange();
+  }, []);
+
+  return { userMessageTint, setUserMessageTint } as const;
+}
+
 // ── Smooth caret ───────────────────────────────────────────────────────────
 // Optional preference that swaps the native text caret in the chat composer
 // for a custom overlay that glides between positions. Purely client-side and

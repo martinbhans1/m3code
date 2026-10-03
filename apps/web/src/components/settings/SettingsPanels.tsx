@@ -53,6 +53,7 @@ import {
   useEnvironment,
   useSmoothCaret,
   useTheme,
+  useUserMessageTint,
   type Theme,
 } from "../../hooks/useTheme";
 import {
@@ -665,6 +666,7 @@ export function GeneralSettingsPanel() {
   const { theme, setTheme } = useTheme();
   const { environment, setEnvironment, definitions: environmentDefinitions } = useEnvironment();
   const { chromeTint, setChromeTint } = useChromeTint();
+  const { userMessageTint, setUserMessageTint } = useUserMessageTint();
   const { smoothCaret, setSmoothCaret } = useSmoothCaret();
   const { caretThickness, setCaretThickness } = useCaretThickness();
   const [showInteractionModeControl, setShowInteractionModeControl] =
@@ -804,6 +806,18 @@ export function GeneralSettingsPanel() {
             title="Sidebar & header tint"
             description="Tint the sidebar and header (and the ambient glow) toward a hue you pick. Auto follows the theme."
             control={<SidebarTintControl value={chromeTint} onChange={setChromeTint} />}
+          />
+
+          <SettingsRow
+            title="Your message color"
+            description="Color your own chat messages so they are easy to spot when scrolling. Auto uses the plain bubble."
+            control={
+              <SidebarTintControl
+                value={userMessageTint}
+                onChange={setUserMessageTint}
+                subject="your messages"
+              />
+            }
           />
 
           <SettingsRow

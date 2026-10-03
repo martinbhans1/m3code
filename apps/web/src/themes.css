@@ -483,3 +483,20 @@
   --sidebar: var(--app-chrome-background);
   --environment-background: var(--app-chrome-background);
 }
+
+/* ===========================================================================
+ * CUSTOM USER MESSAGE TINT
+ *
+ * Optional user-picked hue for the user's own chat bubbles (the timeline's
+ * .user-message-bubble) so they are easy to spot while scrolling. Mixed into
+ * the palette's --secondary rather than used raw, so text stays readable on
+ * every palette in both light and dark mode. Unset = the plain bubble.
+ * ======================================================================== */
+:root[data-user-message-tint="on"] .user-message-bubble {
+  background-color: color-mix(in oklab, var(--user-message-tint) 16%, var(--secondary));
+  border-color: color-mix(in oklab, var(--user-message-tint) 55%, var(--border));
+}
+
+:root.dark[data-user-message-tint="on"] .user-message-bubble {
+  background-color: color-mix(in oklab, var(--user-message-tint) 24%, var(--secondary));
+}

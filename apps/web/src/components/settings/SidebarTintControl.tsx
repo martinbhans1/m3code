@@ -27,8 +27,10 @@ function selectedRing(color: string): CSSProperties {
 export function SidebarTintControl(props: {
   readonly value: string | null;
   readonly onChange: (value: string | null) => void;
+  /** What the swatches color, for screen-reader labels. */
+  readonly subject?: string;
 }) {
-  const { onChange, value } = props;
+  const { onChange, value, subject = "the sidebar and header" } = props;
   const normalized = value?.toLowerCase() ?? null;
   const isPreset = Boolean(
     normalized && CHROME_TINT_PRESETS.some((preset) => preset.value === normalized),
@@ -45,7 +47,7 @@ export function SidebarTintControl(props: {
           !normalized && "border-ring text-foreground",
         )}
         aria-pressed={!normalized}
-        aria-label="Use the theme's default chrome color"
+        aria-label={`Use the theme's default color for ${subject}`}
       >
         Auto
       </button>
@@ -61,7 +63,7 @@ export function SidebarTintControl(props: {
             ...(normalized === preset.value ? selectedRing(preset.value) : {}),
           }}
           aria-pressed={normalized === preset.value}
-          aria-label={`Tint the sidebar and header ${preset.label.toLowerCase()}`}
+          aria-label={`Tint ${subject} ${preset.label.toLowerCase()}`}
         />
       ))}
 
@@ -75,7 +77,7 @@ export function SidebarTintControl(props: {
                 backgroundColor: isCustom ? (normalized as string) : "var(--muted)",
                 ...(isCustom ? selectedRing(normalized as string) : {}),
               }}
-              aria-label="Pick a custom sidebar and header tint"
+              aria-label={`Pick a custom tint for ${subject}`}
             >
               <PipetteIcon
                 className={cn("size-3", isCustom ? "text-white/70" : "text-foreground/40")}
