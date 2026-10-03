@@ -23,6 +23,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, vi } from "@effect/vitest";
 
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -153,7 +154,7 @@ class FakeCodexRuntime implements CodexSessionRuntimeShape {
     return Stream.fromQueue(this.eventQueue);
   }
 
-  close = Effect.promise(() => this.closeImpl());
+  close: Effect.Effect<void> = Effect.promise(() => this.closeImpl());
 
   emit(event: ProviderEvent) {
     return Queue.offer(this.eventQueue, event).pipe(Effect.asVoid);
@@ -1152,6 +1153,100 @@ const scopedLifecycleLayer = it.layer(
 );
 
 scopedLifecycleLayer("CodexAdapterLive scoped lifecycle", (it) => {
+  for (const stopAll of [false, true]) {
+    it.effect(
+      `waits for ${stopAll ? "stopAll" : "stopSession"} to release the writer before resuming`,
+      () =>
+        Effect.gen(function* () {
+          const adapter = yield* CodexAdapter;
+          const input = {
+            threadId: asThreadId(`thread-shutdown-race-${stopAll}`),
+            runtimeMode: "full-access" as const,
+            resumeCursor: { threadId: "existing-provider-thread" },
+          };
+          yield* adapter.startSession(input);
+          const runtime = scopedLifecycleRuntimeFactory.lastRuntime!;
+          const closing = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          runtime.close = Deferred.succeed(closing, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+          );
+          const stop = yield* (
+            stopAll ? adapter.stopAll() : adapter.stopSession(input.threadId)
+          ).pipe(Effect.forkChild);
+          yield* Deferred.await(closing);
+          const count = scopedLifecycleRuntimeFactory.factory.mock.calls.length;
+          const start = yield* adapter.startSession(input).pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          assert.equal(scopedLifecycleRuntimeFactory.factory.mock.calls.length, count);
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(stop);
+          const resumed = yield* Fiber.join(start);
+          assert.equal(resumed.threadId, input.threadId);
+          assert.equal(scopedLifecycleRuntimeFactory.factory.mock.calls.length, count + 1);
+          assert.ok(scopedLifecycleRuntimeFactory.releasedThreadIds.includes(input.threadId));
+        }),
+    );
+  }
+
+  it.effect("serializes concurrent starts for the same thread", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const input = {
+        threadId: asThreadId("concurrent-start"),
+        runtimeMode: "full-access" as const,
+      };
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const original = scopedLifecycleRuntimeFactory.factory.getMockImplementation()!;
+      scopedLifecycleRuntimeFactory.factory.mockImplementationOnce((options) =>
+        original(options).pipe(
+          Effect.tap(() => Deferred.succeed(entered, undefined)),
+          Effect.tap(() => Deferred.await(release)),
+        ),
+      );
+      const first = yield* adapter.startSession(input).pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      const oldRuntime = scopedLifecycleRuntimeFactory.lastRuntime!;
+      const count = scopedLifecycleRuntimeFactory.factory.mock.calls.length;
+      const second = yield* adapter.startSession(input).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      assert.equal(scopedLifecycleRuntimeFactory.factory.mock.calls.length, count);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(first);
+      yield* Fiber.join(second);
+      assert.equal(oldRuntime.closeImpl.mock.calls.length, 1);
+    }),
+  );
+
+  it.effect("finishes shutdown even when its caller is interrupted", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const input = {
+        threadId: asThreadId("interrupted-stop"),
+        runtimeMode: "full-access" as const,
+      };
+      yield* adapter.startSession(input);
+      const runtime = scopedLifecycleRuntimeFactory.lastRuntime!;
+      const closing = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      runtime.close = Deferred.succeed(closing, undefined).pipe(
+        Effect.andThen(Deferred.await(release)),
+      );
+      const stop = yield* adapter.stopSession(input.threadId).pipe(Effect.forkChild);
+      yield* Deferred.await(closing);
+      const interrupt = yield* Fiber.interrupt(stop).pipe(Effect.forkChild);
+      const count = scopedLifecycleRuntimeFactory.factory.mock.calls.length;
+      const start = yield* adapter.startSession(input).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      assert.equal(scopedLifecycleRuntimeFactory.factory.mock.calls.length, count);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(interrupt);
+      yield* Fiber.join(start);
+      assert.ok(scopedLifecycleRuntimeFactory.releasedThreadIds.includes(input.threadId));
+    }),
+  );
+
   it.effect("closes the externally owned session scope on stopSession", () =>
     Effect.gen(function* () {
       scopedLifecycleRuntimeFactory.releasedThreadIds.length = 0;

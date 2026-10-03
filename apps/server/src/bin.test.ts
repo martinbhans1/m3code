@@ -24,6 +24,7 @@ import { deriveServerPaths, ServerConfig, type ServerConfigShape } from "./confi
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationLayerLive } from "./orchestration/runtimeLayer.ts";
 import { orchestrationHttpApiLayer } from "./orchestration/http.ts";
+import { ServerSettingsService } from "./serverSettings.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { RepositoryIdentityResolverLive } from "./project/Layers/RepositoryIdentityResolver.ts";
 import {
@@ -119,6 +120,7 @@ const withLiveProjectCliServer = <A, E, R>(baseDir: string, run: () => Effect.Ef
       disableListenLog: true,
       disableLogger: true,
     }).pipe(
+      Layer.provide(ServerSettingsService.layerTest()),
       Layer.provideMerge(
         EnvironmentAuth.layer.pipe(
           Layer.provideMerge(SqlitePersistenceLayerLive),

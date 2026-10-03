@@ -475,6 +475,7 @@ const makeConversationSearch = Effect.gen(function* () {
     query: string,
     includeArchived: boolean,
     candidateLimit: number,
+    updatedSince: string | null,
   ) {
     const rows = yield* sql<ThreadMetadataRow>`
       SELECT
@@ -497,6 +498,7 @@ const makeConversationSearch = Effect.gen(function* () {
       WHERE thread.deleted_at IS NULL
         AND project.deleted_at IS NULL
         AND (${includeArchived ? 1 : 0} = 1 OR thread.archived_at IS NULL)
+        AND (${updatedSince} IS NULL OR thread.updated_at >= ${updatedSince})
         AND (
           instr(lower(thread.title), lower(${query})) > 0
           OR instr(lower(project.title), lower(${query})) > 0
@@ -524,6 +526,7 @@ const makeConversationSearch = Effect.gen(function* () {
     ftsQuery: string,
     includeArchived: boolean,
     candidateLimit: number,
+    updatedSince: string | null,
   ) {
     return yield* sql<ContentSearchRow>`
       SELECT
@@ -548,6 +551,7 @@ const makeConversationSearch = Effect.gen(function* () {
         AND thread.deleted_at IS NULL
         AND project.deleted_at IS NULL
         AND (${includeArchived ? 1 : 0} = 1 OR thread.archived_at IS NULL)
+        AND (${updatedSince} IS NULL OR thread.updated_at >= ${updatedSince})
       ORDER BY "ftsRank" ASC, message.created_at DESC
       LIMIT ${candidateLimit}
     `;
@@ -557,10 +561,11 @@ const makeConversationSearch = Effect.gen(function* () {
     query: string,
     includeArchived: boolean,
     candidateLimit: number,
+    updatedSince: string | null,
   ) {
     const ftsQuery = buildFtsQuery(query);
     if (!ftsQuery) return [];
-    let rows = yield* runContentQuery(ftsQuery, includeArchived, candidateLimit);
+    let rows = yield* runContentQuery(ftsQuery, includeArchived, candidateLimit, updatedSince);
     let loose = false;
     if (rows.length === 0) {
       // Nothing matched every term. Rather than report the conversation as
@@ -568,7 +573,7 @@ const makeConversationSearch = Effect.gen(function* () {
       // for threads matching any of them, ranked by how many they hit.
       const relaxed = relaxFtsQuery(ftsQuery);
       if (relaxed !== null) {
-        rows = yield* runContentQuery(relaxed, includeArchived, candidateLimit);
+        rows = yield* runContentQuery(relaxed, includeArchived, candidateLimit, updatedSince);
         loose = rows.length > 0;
       }
     }
@@ -609,6 +614,7 @@ const makeConversationSearch = Effect.gen(function* () {
     query: string,
     includeArchived: boolean,
     limit: number,
+    updatedSince: string | null,
   ) {
     // Smart case, as in ripgrep: an all-lowercase query is a casual one and
     // matches either way, while any capital is taken as deliberate. Searching
@@ -642,6 +648,7 @@ const makeConversationSearch = Effect.gen(function* () {
         AND thread.deleted_at IS NULL
         AND project.deleted_at IS NULL
         AND (${includeArchived ? 1 : 0} = 1 OR thread.archived_at IS NULL)
+        AND (${updatedSince} IS NULL OR thread.updated_at >= ${updatedSince})
         AND (
           ${useTrigram ? 1 : 0} = 0
           OR message.rowid IN (
@@ -677,10 +684,9 @@ const makeConversationSearch = Effect.gen(function* () {
     query: string,
     includeArchived: boolean,
     candidateLimit: number,
+    updatedSince: string | null,
   ) {
     if (semanticStatus !== "ready" || semanticChunks.length === 0) return [];
-    const [queryEmbedding] = yield* embedTexts([query], "query");
-    if (!queryEmbedding) return [];
     const threadRows = yield* sql<SemanticThreadMetadataRow>`
       SELECT
         thread.thread_id AS "threadId",
@@ -695,9 +701,14 @@ const makeConversationSearch = Effect.gen(function* () {
       WHERE thread.deleted_at IS NULL
         AND project.deleted_at IS NULL
         AND (${includeArchived ? 1 : 0} = 1 OR thread.archived_at IS NULL)
+        AND (${updatedSince} IS NULL OR thread.updated_at >= ${updatedSince})
     `;
+    if (threadRows.length === 0) return [];
+    const [queryEmbedding] = yield* embedTexts([query], "query");
+    if (!queryEmbedding) return [];
     const metadataByThreadId = new Map(threadRows.map((row) => [row.threadId, row] as const));
     const scoredChunks = semanticChunks
+      .filter((chunk) => metadataByThreadId.has(chunk.threadId))
       .map((chunk) => ({ chunk, similarity: dotProduct(queryEmbedding, chunk.embedding) }))
       .toSorted((left, right) => right.similarity - left.similarity);
     // Scored before it is filtered: the cut-off is a fraction of the best match
@@ -735,13 +746,16 @@ const makeConversationSearch = Effect.gen(function* () {
       const query = input.query.trim();
       const limit = clampLimit(input.limit);
       const includeArchived = input.includeArchived ?? true;
+      const updatedSince = input.updatedSince ?? null;
 
       // Exact mode returns only verbatim hits — no keyword fallback, no
       // semantic pass. Blending in approximate matches would destroy the one
       // thing it is for: an empty result that can be believed.
       if (input.exact === true) {
         return {
-          results: toOrderedThreadSearchResults(yield* searchExact(query, includeArchived, limit)),
+          results: toOrderedThreadSearchResults(
+            yield* searchExact(query, includeArchived, limit, updatedSince),
+          ),
           semanticStatus,
         } satisfies OrchestrationSearchThreadsResult;
       }
@@ -752,15 +766,15 @@ const makeConversationSearch = Effect.gen(function* () {
       );
       const [metadata, content] = yield* Effect.all(
         [
-          searchMetadata(query, includeArchived, candidateLimit),
-          searchContent(query, includeArchived, candidateLimit),
+          searchMetadata(query, includeArchived, candidateLimit, updatedSince),
+          searchContent(query, includeArchived, candidateLimit, updatedSince),
         ],
         { concurrency: "unbounded" },
       );
       const semantic =
         input.includeSemantic === false
           ? []
-          : yield* searchSemantic(query, includeArchived, candidateLimit).pipe(
+          : yield* searchSemantic(query, includeArchived, candidateLimit, updatedSince).pipe(
               Effect.timeoutOption(SEMANTIC_QUERY_BUDGET),
               Effect.catch((cause) =>
                 Effect.logWarning(

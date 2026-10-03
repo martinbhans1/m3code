@@ -1,5 +1,10 @@
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime";
-import { DEFAULT_RUNTIME_MODE, type ScopedProjectRef } from "@t3tools/contracts";
+import {
+  DEFAULT_RUNTIME_MODE,
+  type ModelSelection,
+  type ScopedProjectRef,
+} from "@t3tools/contracts";
+import { getDefaultModelSelection } from "@t3tools/shared/model";
 import { useParams, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -15,15 +20,19 @@ import {
   getProjectOrderKey,
   selectProjectGroupingSettings,
 } from "../logicalProject";
-import { selectProjectsAcrossEnvironments, useStore } from "../store";
+import { selectProjectsAcrossEnvironments, selectThreadByRef, useStore } from "../store";
 import { createThreadSelectorByRef } from "../storeSelectors";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { useUiStateStore } from "../uiStateStore";
 import { useSettings } from "./useSettings";
+import { getServerConfig } from "../rpc/serverState";
+import { useSavedEnvironmentRuntimeStore } from "../environments/runtime/catalog";
+import { resolveNewThreadModelSelection } from "../newThreadModel";
 
 function useNewThreadState() {
   const projects = useStore(useShallow((store) => selectProjectsAcrossEnvironments(store)));
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
+  const defaultModelSelection = useSettings(getDefaultModelSelection);
   const router = useRouter();
   const getCurrentRouteTarget = useCallback(() => {
     const currentRouteParams = router.state.matches[router.state.matches.length - 1]?.params ?? {};
@@ -37,6 +46,7 @@ function useNewThreadState() {
         branch?: string | null;
         worktreePath?: string | null;
         envMode?: DraftThreadEnvMode;
+        modelSelection?: ModelSelection;
       },
     ): Promise<void> => {
       const {
@@ -44,6 +54,8 @@ function useNewThreadState() {
         getDraftSession,
         getDraftThread,
         applyStickyState,
+        getComposerDraft,
+        setModelSelection,
         setDraftThreadContext,
         setLogicalProjectDraftThreadId,
       } = useComposerDraftStore.getState();
@@ -129,13 +141,52 @@ function useNewThreadState() {
         });
         applyStickyState(draftId);
 
+        const currentThread =
+          currentRouteTarget?.kind === "server"
+            ? selectThreadByRef(useStore.getState(), currentRouteTarget.threadRef)
+            : null;
+        // Provider instance IDs are scoped to an environment. Never carry an
+        // account selection from another server into this draft.
+        const sameEnvironment = currentThread
+          ? currentThread.environmentId === projectRef.environmentId
+          : latestActiveDraftThread?.environmentId === projectRef.environmentId;
+        const currentComposer =
+          sameEnvironment && currentRouteTarget
+            ? getComposerDraft(
+                currentRouteTarget.kind === "server"
+                  ? currentRouteTarget.threadRef
+                  : currentRouteTarget.draftId,
+              )
+            : null;
+        const primaryConfig = getServerConfig();
+        const remoteSettings =
+          useSavedEnvironmentRuntimeStore.getState().byId[projectRef.environmentId]?.serverConfig
+            ?.settings;
+        const selection =
+          options?.modelSelection ??
+          resolveNewThreadModelSelection({
+            defaultSelection:
+              primaryConfig?.environment.environmentId === projectRef.environmentId
+                ? defaultModelSelection
+                : remoteSettings
+                  ? getDefaultModelSelection(remoteSettings)
+                  : null,
+            currentComposer,
+            currentThreadSelection: sameEnvironment
+              ? (currentThread?.modelSelection ?? null)
+              : null,
+          });
+        if (selection) {
+          setModelSelection(draftId, { ...selection, options: selection.options ?? [] });
+        }
+
         await router.navigate({
           to: "/draft/$draftId",
           params: { draftId },
         });
       })();
     },
-    [getCurrentRouteTarget, projectGroupingSettings, router, projects],
+    [getCurrentRouteTarget, projectGroupingSettings, router, projects, defaultModelSelection],
   );
 }
 

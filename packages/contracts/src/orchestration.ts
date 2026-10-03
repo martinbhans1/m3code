@@ -897,7 +897,11 @@ export const ClientOrchestrationCommand = Schema.Union([
   ProjectCreateCommand,
   ProjectMetaUpdateCommand,
   ProjectDeleteCommand,
-  ThreadCreateCommand,
+  Schema.Struct({
+    ...ThreadCreateCommand.fields,
+    // Integrations can follow the user's current choice without pinning a model ID.
+    modelSelection: Schema.Union([ModelSelection, Schema.Literal("default")]),
+  }),
   ThreadDeleteCommand,
   ThreadArchiveCommand,
   ThreadUnarchiveCommand,
@@ -1483,6 +1487,8 @@ export const OrchestrationSearchThreadsInput = Schema.Struct({
   limit: Schema.optionalKey(NonNegativeInt),
   includeArchived: Schema.optionalKey(Schema.Boolean),
   includeSemantic: Schema.optionalKey(Schema.Boolean),
+  /** Only search threads updated on or after this instant (inclusive). */
+  updatedSince: Schema.optionalKey(IsoDateTime),
   /**
    * Match `query` as a literal substring instead of as keywords: no tokenizing,
    * no stopwords, no ranking, no semantic pass. Case-sensitive when the query

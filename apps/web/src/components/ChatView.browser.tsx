@@ -5394,7 +5394,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
-  it("snapshots sticky codex settings into a new draft thread", async () => {
+  it("inherits the current chat model instead of sticky settings in a new draft", async () => {
     useComposerDraftStore.setState({
       stickyModelSelectionByProvider: {
         [ProviderInstanceId.make("codex")]: createModelSelection(
@@ -5430,26 +5430,28 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       const newDraftId = draftIdFromPath(newThreadPath);
 
-      // `toMatchObject` matches objects loosely (extras ignored) but compares
-      // arrays strictly, so wrap `options` in `arrayContaining` to keep the
-      // assertion focused on sticky `fastMode` carrying over without asserting
-      // on exactly which other options are preserved.
       expect(composerDraftFor(newDraftId)).toMatchObject({
         modelSelectionByProvider: {
           codex: {
             instanceId: ProviderInstanceId.make("codex"),
-            model: "gpt-5.3-codex",
-            options: expect.arrayContaining([{ id: "fastMode", value: true }]),
+            model: "gpt-5",
           },
         },
         activeProvider: "codex",
       });
+      expect(
+        composerDraftFor(newDraftId)?.modelSelectionByProvider[ProviderInstanceId.make("codex")]
+          ?.options,
+      ).toBeUndefined();
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("hydrates the provider alongside a sticky claude model", async () => {
+  it("uses the enabled default model ahead of the current chat and sticky settings", async () => {
+    const defaultSelection = createModelSelection(ProviderInstanceId.make("codex"), "gpt-6-astra", [
+      { id: "reasoningEffort", value: "high" },
+    ]);
     useComposerDraftStore.setState({
       stickyModelSelectionByProvider: {
         [ProviderInstanceId.make("claudeAgent")]: createModelSelection(
@@ -5470,6 +5472,16 @@ describe("ChatView timeline estimator parity (full app)", () => {
         targetMessageId: "msg-user-sticky-claude-model-test" as MessageId,
         targetText: "sticky claude model test",
       }),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          settings: {
+            ...nextFixture.serverConfig.settings,
+            defaultModelEnabled: true,
+            defaultModelSelection: defaultSelection,
+          },
+        };
+      },
     });
 
     try {
@@ -5481,29 +5493,22 @@ describe("ChatView timeline estimator parity (full app)", () => {
       const newThreadPath = await waitForURL(
         mounted.router,
         (path) => UUID_ROUTE_RE.test(path),
-        "Route should have changed to a new sticky claude draft thread UUID.",
+        "Route should have changed to a new draft thread UUID.",
       );
       const newDraftId = draftIdFromPath(newThreadPath);
 
       expect(composerDraftFor(newDraftId)).toMatchObject({
         modelSelectionByProvider: {
-          claudeAgent: createModelSelection(
-            ProviderInstanceId.make("claudeAgent"),
-            "claude-opus-4-6",
-            [
-              { id: "effort", value: "max" },
-              { id: "fastMode", value: true },
-            ],
-          ),
+          codex: defaultSelection,
         },
-        activeProvider: "claudeAgent",
+        activeProvider: "codex",
       });
     } finally {
       await mounted.cleanup();
     }
   });
 
-  it("falls back to defaults when no sticky composer settings exist", async () => {
+  it("inherits the current chat when no sticky composer settings exist", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -5525,7 +5530,12 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       const newDraftId = draftIdFromPath(newThreadPath);
 
-      expect(composerDraftFor(newDraftId)).toBe(undefined);
+      expect(composerDraftFor(newDraftId)).toMatchObject({
+        activeProvider: "codex",
+        modelSelectionByProvider: {
+          codex: { instanceId: "codex", model: "gpt-5" },
+        },
+      });
     } finally {
       await mounted.cleanup();
     }
@@ -5567,15 +5577,11 @@ describe("ChatView timeline estimator parity (full app)", () => {
       );
       const draftId = draftIdFromPath(threadPath);
 
-      // See the note on the sibling sticky-codex test: arrays match strictly
-      // under `toMatchObject`, so use `arrayContaining` to keep the assertion
-      // scoped to the sticky trait (`fastMode`) that must carry over.
       expect(composerDraftFor(draftId)).toMatchObject({
         modelSelectionByProvider: {
           codex: {
             instanceId: ProviderInstanceId.make("codex"),
-            model: "gpt-5.3-codex",
-            options: expect.arrayContaining([{ id: "fastMode", value: true }]),
+            model: "gpt-5",
           },
         },
         activeProvider: "codex",

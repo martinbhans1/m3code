@@ -1436,6 +1436,19 @@ describe("composerDraftStore setModelSelection", () => {
     resetComposerDraftStore();
   });
 
+  it("clears inherited options when a selection explicitly supplies an empty option list", () => {
+    const store = useComposerDraftStore.getState();
+    store.setModelSelection(threadRef, modelSelection(CODEX_DRIVER, "gpt-5.4", { fastMode: true }));
+    store.setModelSelection(threadRef, {
+      instanceId: CODEX_INSTANCE,
+      model: "gpt-6-astra",
+      options: [],
+    });
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+    ).toEqual({ instanceId: CODEX_INSTANCE, model: "gpt-6-astra" });
+  });
+
   it("keeps explicit model overrides instead of coercing to null", () => {
     const store = useComposerDraftStore.getState();
 

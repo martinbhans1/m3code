@@ -64,6 +64,7 @@ import {
   type CodexSessionRuntimeOptions,
   type CodexSessionRuntimeShape,
 } from "./CodexSessionRuntime.ts";
+import { makeSessionLifecycleLock } from "../sessionLifecycleLock.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
@@ -1385,6 +1386,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
   const sessions = new Map<ThreadId, CodexAdapterSessionContext>();
+  const withSessionLock = makeSessionLifecycleLock();
 
   const startSession: CodexAdapterShape["startSession"] = (input) =>
     Effect.scoped(
@@ -1671,20 +1673,25 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
       return;
     }
     session.stopped = true;
-    sessions.delete(session.threadId);
+    // Keep the closing context visible to stopAll until its writer is released.
+    // Starts and other stops wait on the same per-thread lifecycle lock.
     yield* session.runtime.close.pipe(Effect.ignore);
     yield* Effect.ignore(Scope.close(session.scope, Exit.void));
     yield* Fiber.interrupt(session.eventFiber).pipe(Effect.ignore);
-  });
+    sessions.delete(session.threadId);
+  }, Effect.uninterruptible);
 
   const stopSession: CodexAdapterShape["stopSession"] = (threadId) =>
-    Effect.gen(function* () {
-      const session = sessions.get(threadId);
-      if (!session) {
-        return;
-      }
-      yield* stopSessionInternal(session);
-    });
+    withSessionLock(
+      threadId,
+      Effect.gen(function* () {
+        const session = sessions.get(threadId);
+        if (!session) {
+          return;
+        }
+        yield* stopSessionInternal(session);
+      }),
+    );
 
   const listSessions: CodexAdapterShape["listSessions"] = () =>
     Effect.forEach(
@@ -1697,10 +1704,12 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     Effect.succeed(Boolean(sessions.get(threadId) && !sessions.get(threadId)?.stopped));
 
   const stopAll: CodexAdapterShape["stopAll"] = () =>
-    Effect.forEach(Array.from(sessions.values()), stopSessionInternal, {
-      concurrency: 1,
-      discard: true,
-    }).pipe(Effect.asVoid);
+    Effect.suspend(() =>
+      Effect.forEach(Array.from(sessions.keys()), stopSession, {
+        concurrency: 1,
+        discard: true,
+      }),
+    ).pipe(Effect.asVoid);
 
   yield* Effect.acquireRelease(Effect.void, () =>
     stopAll().pipe(
@@ -1715,7 +1724,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     capabilities: {
       sessionModelSwitch: "in-session",
     },
-    startSession,
+    startSession: (input) => withSessionLock(input.threadId, startSession(input)),
     sendTurn,
     interruptTurn,
     readThread,

@@ -53,7 +53,8 @@ import {
   ProviderSessionDirectory,
   type ProviderRuntimeBinding,
 } from "../Services/ProviderSessionDirectory.ts";
-import { isSessionOffLimits } from "../sessionOwner.ts";
+import { isOwnedByLiveForeignBackend, isSessionOffLimits } from "../sessionOwner.ts";
+import { makeSessionLifecycleLock } from "../sessionLifecycleLock.ts";
 import { type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
@@ -353,6 +354,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     () => reconcileInstanceSubscriptions,
   ).pipe(Effect.forkScoped);
 
+  const withSessionLock = makeSessionLifecycleLock();
+  const assertSessionOwnership = (binding: ProviderRuntimeBinding | undefined, operation: string) =>
+    binding && binding.status !== "stopped" && isOwnedByLiveForeignBackend(binding.runtimePayload)
+      ? Effect.fail(
+          toValidationError(
+            operation,
+            `Thread '${binding.threadId}' is open in another running M3 Code backend. Continue in that app or stop its session before retrying here.`,
+          ),
+        )
+      : Effect.void;
+
   const recoverSessionForThread = Effect.fn("recoverSessionForThread")(function* (input: {
     readonly binding: ProviderRuntimeBinding;
     readonly operation: string;
@@ -438,7 +450,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
-  const resolveRoutableSession = Effect.fn("resolveRoutableSession")(function* (input: {
+  const resolveRoutableSessionUnlocked = Effect.fn("resolveRoutableSession")(function* (input: {
     readonly threadId: ThreadId;
     readonly operation: string;
     readonly allowRecovery: boolean;
@@ -452,6 +464,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       );
     }
     const instanceId = yield* requireBindingInstanceId(input.operation, binding);
+    yield* assertSessionOwnership(binding, input.operation);
     const adapter = yield* registry.getByInstance(instanceId);
 
     const hasRequestedSession = yield* adapter.hasSession(input.threadId);
@@ -485,6 +498,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     } as const;
   });
 
+  const resolveRoutableSession = (input: Parameters<typeof resolveRoutableSessionUnlocked>[0]) =>
+    withSessionLock(input.threadId, resolveRoutableSessionUnlocked(input));
+
   const stopStaleSessionsForThread = Effect.fn("stopStaleSessionsForThread")(function* (input: {
     readonly threadId: ThreadId;
     readonly currentInstanceId: ProviderInstanceId;
@@ -507,7 +523,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
                     provider: adapter.provider,
                   }),
                 ),
-                Effect.catchCause((cause) =>
+                Effect.tapError((cause) =>
                   Effect.logWarning("provider.session.stop-stale-failed", {
                     threadId: input.threadId,
                     provider: adapter.provider,
@@ -561,6 +577,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           );
         }
         const persistedBinding = Option.getOrUndefined(yield* directory.getBinding(threadId));
+        yield* assertSessionOwnership(persistedBinding, "ProviderService.startSession");
         const effectiveResumeCursor =
           input.resumeCursor ??
           (persistedBinding?.providerInstanceId === resolvedInstanceId
@@ -591,6 +608,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.cwd.effective": effectiveCwd ?? "",
         });
         const adapter = yield* registry.getByInstance(resolvedInstanceId);
+        yield* stopStaleSessionsForThread({ threadId, currentInstanceId: resolvedInstanceId });
         yield* prepareMcpSession(threadId, resolvedInstanceId);
         const session = yield* adapter
           .startSession({
@@ -613,10 +631,6 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           providerInstanceId: resolvedInstanceId,
         };
 
-        yield* stopStaleSessionsForThread({
-          threadId,
-          currentInstanceId: resolvedInstanceId,
-        });
         yield* upsertSessionBinding(sessionWithInstance, threadId, {
           modelSelection: input.modelSelection,
         });
@@ -836,7 +850,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       });
       let metricProvider = "unknown";
       return yield* Effect.gen(function* () {
-        const routed = yield* resolveRoutableSession({
+        const routed = yield* resolveRoutableSessionUnlocked({
           threadId: input.threadId,
           operation: "ProviderService.stopSession",
           allowRecovery: false,
@@ -1066,12 +1080,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   );
 
   return {
-    startSession,
+    startSession: (threadId, input) => withSessionLock(threadId, startSession(threadId, input)),
     sendTurn,
     interruptTurn,
     respondToRequest,
     respondToUserInput,
-    stopSession,
+    stopSession: (input) => withSessionLock(input.threadId, stopSession(input)),
     listSessions,
     getCapabilities,
     getInstanceInfo,

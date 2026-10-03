@@ -521,6 +521,9 @@ export function useSettingsRestore(onRestored?: () => void) {
   const changedSettingLabels = useMemo(
     () => [
       ...(theme !== "system" ? ["Theme"] : []),
+      ...(settings.defaultModelEnabled || settings.defaultModelSelection !== null
+        ? ["Default model"]
+        : []),
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
@@ -631,6 +634,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
+      defaultModelEnabled: DEFAULT_UNIFIED_SETTINGS.defaultModelEnabled,
+      defaultModelSelection: DEFAULT_UNIFIED_SETTINGS.defaultModelSelection,
       defaultOrchestratorThreadAccess: DEFAULT_UNIFIED_SETTINGS.defaultOrchestratorThreadAccess,
       orchestratorAccessOverride: DEFAULT_UNIFIED_SETTINGS.orchestratorAccessOverride,
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
@@ -685,11 +690,15 @@ export function GeneralSettingsPanel() {
   const textGenInstanceId = textGenerationModelSelection.instanceId;
   const textGenModel = textGenerationModelSelection.model;
   const textGenModelOptions = textGenerationModelSelection.options;
+  const defaultModelSelection = settings.defaultModelSelection ?? textGenerationModelSelection;
   const gitModelInstanceEntries = sortProviderInstanceEntries(
     deriveProviderInstanceEntries(serverProviders),
   );
   const textGenInstanceEntry = gitModelInstanceEntries.find(
     (entry) => entry.instanceId === textGenInstanceId,
+  );
+  const defaultModelInstanceEntry = gitModelInstanceEntries.find(
+    (entry) => entry.instanceId === defaultModelSelection.instanceId,
   );
   const textGenProvider: ProviderDriverKind =
     textGenInstanceEntry?.driverKind ?? DEFAULT_DRIVER_KIND;
@@ -895,6 +904,62 @@ export function GeneralSettingsPanel() {
 
       {activeTab === "chat" ? (
         <SettingsSection title="Composer">
+          <SettingsRow
+            title="Use a default model"
+            description="Start new threads with your chosen model and account. When off, new threads inherit the current chat's model and reasoning options. Existing chats and drafts keep their selections."
+            control={
+              <Switch
+                checked={settings.defaultModelEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({
+                    defaultModelEnabled: Boolean(checked),
+                    defaultModelSelection,
+                  })
+                }
+                aria-label="Use a default model"
+              />
+            }
+          />
+          <SettingsRow
+            title="Default model"
+            description="Choose the model, account, and reasoning options to use when the default is enabled. Integrations can follow this choice when they create a thread."
+            control={
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
+                <ProviderModelPicker
+                  activeInstanceId={defaultModelSelection.instanceId}
+                  model={defaultModelSelection.model}
+                  lockedProvider={null}
+                  instanceEntries={gitModelInstanceEntries}
+                  modelOptionsByInstance={gitModelOptionsByInstance}
+                  triggerVariant="outline"
+                  onInstanceModelChange={(instanceId, model) =>
+                    updateSettings({
+                      defaultModelSelection: createModelSelection(instanceId, model),
+                    })
+                  }
+                />
+                <TraitsPicker
+                  provider={defaultModelInstanceEntry?.driverKind ?? DEFAULT_DRIVER_KIND}
+                  models={defaultModelInstanceEntry?.models ?? []}
+                  model={defaultModelSelection.model}
+                  prompt=""
+                  onPromptChange={() => {}}
+                  modelOptions={defaultModelSelection.options}
+                  allowPromptInjectedEffort={false}
+                  triggerVariant="outline"
+                  onModelOptionsChange={(options) =>
+                    updateSettings({
+                      defaultModelSelection: createModelSelection(
+                        defaultModelSelection.instanceId,
+                        defaultModelSelection.model,
+                        options,
+                      ),
+                    })
+                  }
+                />
+              </div>
+            }
+          />
           <SettingsRow
             title="Plan mode button"
             description="Show the Build/Plan toggle in the chat composer. Hiding it leaves the mode where you last set it."

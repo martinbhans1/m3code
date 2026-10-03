@@ -5,9 +5,6 @@ import {
   DEFAULT_MODEL,
   type EnvironmentId,
   type FilesystemBrowseResult,
-  type OrchestrationSemanticSearchStatus,
-  type OrchestrationSearchThreadsResult,
-  type OrchestrationThreadSearchResult,
   type ProjectId,
   ProviderInstanceId,
   type SourceControlDiscoveryResult,
@@ -48,6 +45,7 @@ import {
   useSavedEnvironmentRegistryStore,
   useSavedEnvironmentRuntimeStore,
 } from "../environments/runtime";
+import { useConversationSearch } from "../hooks/useConversationSearch";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useSettings } from "../hooks/useSettings";
 import { readLocalApi } from "../localApi";
@@ -126,66 +124,6 @@ import type { ChatComposerHandle } from "./chat/ChatComposer";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 const BROWSE_STALE_TIME_MS = 30_000;
-
-interface ScopedThreadSearchResult extends OrchestrationThreadSearchResult {
-  readonly environmentId: EnvironmentId;
-}
-
-interface ThreadSearchResponseState {
-  readonly query: string;
-  readonly results: ReadonlyArray<ScopedThreadSearchResult>;
-  readonly semanticStatus: OrchestrationSemanticSearchStatus;
-}
-
-async function searchThreadsAcrossEnvironments(input: {
-  readonly environmentIds: ReadonlyArray<EnvironmentId>;
-  readonly query: string;
-  readonly includeSemantic: boolean;
-}): Promise<ThreadSearchResponseState | null> {
-  const settled = await Promise.allSettled(
-    input.environmentIds.map(async (environmentId) => {
-      const api = readEnvironmentApi(environmentId);
-      if (!api) throw new Error(`Environment ${environmentId} is unavailable.`);
-      const response = await api.orchestration.searchThreads({
-        query: input.query,
-        limit: 30,
-        includeArchived: true,
-        includeSemantic: input.includeSemantic,
-      });
-      return { environmentId, response };
-    }),
-  );
-  const fulfilled = settled.filter(
-    (
-      entry,
-    ): entry is PromiseFulfilledResult<{
-      environmentId: EnvironmentId;
-      response: OrchestrationSearchThreadsResult;
-    }> => entry.status === "fulfilled",
-  );
-  if (fulfilled.length === 0) return null;
-
-  const semanticStatus = fulfilled.some((entry) => entry.value.response.semanticStatus === "ready")
-    ? "ready"
-    : fulfilled.some((entry) => entry.value.response.semanticStatus === "indexing")
-      ? "indexing"
-      : "unavailable";
-  const results = fulfilled
-    .flatMap((entry) =>
-      entry.value.response.results.map((result) => ({
-        ...result,
-        environmentId: entry.value.environmentId,
-      })),
-    )
-    // The server hands back one score per relevance tier, so this reads as
-    // "loose matches last, everything else newest first" — the same order each
-    // environment decided on its own, preserved across the merge.
-    .toSorted(
-      (left, right) => right.score - left.score || right.updatedAt.localeCompare(left.updatedAt),
-    )
-    .slice(0, 30);
-  return { query: input.query, results, semanticStatus };
-}
 
 function getLocalFileManagerName(platform: string): string {
   if (isMacPlatform(platform)) {
@@ -474,11 +412,11 @@ function OpenCommandPaletteDialog() {
   const keybindings = useServerKeybindings();
   const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
   const currentView = viewStack.at(-1) ?? null;
-  const [threadSearchResponse, setThreadSearchResponse] =
-    useState<ThreadSearchResponseState | null>(null);
-  // The query whose conversation search (keyword pass, then the slower
-  // meaning-based pass) has not finished yet, so the palette can say so.
-  const [pendingThreadSearchQuery, setPendingThreadSearchQuery] = useState<string | null>(null);
+  const [searchDays, setSearchDays] = useState(0);
+  const updatedSince = useMemo(
+    () => (searchDays === 0 ? null : new Date(Date.now() - searchDays * 86_400_000).toISOString()),
+    [searchDays],
+  );
   const [browseGeneration, setBrowseGeneration] = useState(0);
   const [addProjectEnvironmentId, setAddProjectEnvironmentId] = useState<EnvironmentId | null>(
     null,
@@ -492,56 +430,26 @@ function OpenCommandPaletteDialog() {
   const savedEnvironmentRegistry = useSavedEnvironmentRegistryStore((state) => state.byId);
   const savedEnvironmentRuntimeById = useSavedEnvironmentRuntimeStore((state) => state.byId);
 
-  const searchableEnvironmentIds = useMemo(() => {
+  const searchableEnvironmentIds = useShallow(() => {
     const environmentIds = new Set([...projects, ...threads].map((entry) => entry.environmentId));
     if (primaryEnvironmentId) environmentIds.add(primaryEnvironmentId);
     return [...environmentIds].toSorted((a, b) => a.localeCompare(b));
-  }, [primaryEnvironmentId, projects, threads]);
+  })(undefined);
 
-  useEffect(() => {
-    const normalizedQuery = deferredQuery.trim();
-    if (
-      normalizedQuery.length < 2 ||
-      deferredQuery.startsWith(">") ||
-      currentView !== null ||
-      searchableEnvironmentIds.length === 0
-    ) {
-      setThreadSearchResponse(null);
-      setPendingThreadSearchQuery(null);
-      return;
-    }
-
-    let cancelled = false;
-    setPendingThreadSearchQuery(normalizedQuery);
-    const timeoutId = window.setTimeout(() => {
-      void (async () => {
-        try {
-          const lexicalResponse = await searchThreadsAcrossEnvironments({
-            environmentIds: searchableEnvironmentIds,
-            query: normalizedQuery,
-            includeSemantic: false,
-          });
-          if (cancelled) return;
-          setThreadSearchResponse(lexicalResponse);
-          if (!lexicalResponse) return;
-
-          const hybridResponse = await searchThreadsAcrossEnvironments({
-            environmentIds: searchableEnvironmentIds,
-            query: normalizedQuery,
-            includeSemantic: true,
-          });
-          if (!cancelled && hybridResponse) setThreadSearchResponse(hybridResponse);
-        } finally {
-          if (!cancelled) setPendingThreadSearchQuery(null);
-        }
-      })();
-    }, 150);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timeoutId);
-    };
-  }, [currentView, deferredQuery, searchableEnvironmentIds]);
+  const {
+    response: threadSearchResponse,
+    pending: isThreadSearchPending,
+    failed: threadSearchFailed,
+  } = useConversationSearch({
+    query,
+    updatedSince,
+    environmentIds: searchableEnvironmentIds,
+    enabled:
+      currentView === null &&
+      addProjectCloneFlow === null &&
+      !query.startsWith(">") &&
+      !isFilesystemBrowseQuery(query),
+  });
 
   const addProjectEnvironmentOptions = useMemo(() => {
     const options: AddProjectEnvironmentOption[] = [];
@@ -802,7 +710,9 @@ function OpenCommandPaletteDialog() {
   const allThreadItems = useMemo(
     () =>
       buildThreadActionItems({
-        threads,
+        threads: threads.filter(
+          (thread) => !updatedSince || (thread.updatedAt ?? thread.createdAt) >= updatedSince,
+        ),
         ...(activeThreadId ? { activeThreadId } : {}),
         projectTitleById,
         sortOrder: settings.sidebarThreadSortOrder,
@@ -816,11 +726,23 @@ function OpenCommandPaletteDialog() {
           });
         },
       }),
-    [activeThreadId, navigate, projectTitleById, settings.sidebarThreadSortOrder, threads],
+    [
+      activeThreadId,
+      navigate,
+      projectTitleById,
+      settings.sidebarThreadSortOrder,
+      threads,
+      updatedSince,
+    ],
   );
   const serverThreadSearchItems = useMemo<CommandPaletteActionItem[] | null>(() => {
     const normalizedQuery = deferredQuery.trim();
-    if (!threadSearchResponse || threadSearchResponse.query !== normalizedQuery) return null;
+    if (
+      !threadSearchResponse ||
+      threadSearchResponse.query !== query.trim() ||
+      threadSearchResponse.updatedSince !== updatedSince
+    )
+      return null;
     const loadedThreadByKey = new Map(
       threads.map((thread) => [`${thread.environmentId}:${thread.id}`, thread] as const),
     );
@@ -856,7 +778,7 @@ function OpenCommandPaletteDialog() {
         },
       } satisfies CommandPaletteActionItem;
     });
-  }, [deferredQuery, navigate, threadSearchResponse, threads]);
+  }, [deferredQuery, navigate, query, threadSearchResponse, threads, updatedSince]);
   const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
 
   function pushPaletteView(view: CommandPaletteView): void {
@@ -1208,9 +1130,12 @@ function OpenCommandPaletteDialog() {
     },
   });
 
-  const isThreadSearchPending =
-    pendingThreadSearchQuery !== null && pendingThreadSearchQuery === query.trim();
-
+  const isConversationSearch =
+    currentView === null &&
+    !isBrowsing &&
+    !isRemoteProjectCloneFlow &&
+    !query.startsWith(">") &&
+    query.trim().length >= 2;
   const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
   const activeGroups = currentView ? currentView.groups : rootGroups;
 
@@ -1219,7 +1144,7 @@ function OpenCommandPaletteDialog() {
     query: deferredQuery,
     isInSubmenu: currentView !== null,
     projectSearchItems: projectSearchItems,
-    threadSearchItems: serverThreadSearchItems ?? allThreadItems,
+    threadSearchItems: isConversationSearch ? (serverThreadSearchItems ?? []) : allThreadItems,
   });
 
   const handleAddProject = useCallback(
@@ -1808,6 +1733,33 @@ function OpenCommandPaletteDialog() {
             </Tooltip>
           ) : null}
         </div>
+        {currentView === null && !isBrowsing && !isRemoteProjectCloneFlow && !isActionsOnly ? (
+          <div className="relative flex min-h-10 shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1 text-xs text-muted-foreground">
+            <label htmlFor="conversation-search-date">Updated</label>
+            <select
+              id="conversation-search-date"
+              className="rounded border bg-background px-2 py-1 text-foreground"
+              value={searchDays}
+              onChange={(event) => setSearchDays(Number(event.target.value))}
+            >
+              <option value={0}>Any time</option>
+              <option value={7}>Past week</option>
+              <option value={14}>Past 2 weeks</option>
+              <option value={30}>Past month</option>
+              <option value={90}>Past 3 months</option>
+            </select>
+            <span role="status" className="ml-auto flex items-center gap-1.5">
+              {isThreadSearchPending ? (
+                <>
+                  <Spinner className="size-3" />
+                  Searching conversations...
+                </>
+              ) : isConversationSearch && threadSearchFailed ? (
+                "Conversation search unavailable. Try again."
+              ) : null}
+            </span>
+          </div>
+        ) : null}
         <CommandPanel className="max-h-[min(28rem,70vh)]">
           {remoteProjectContext ? (
             <div className="p-2 pb-0">
@@ -1851,7 +1803,12 @@ function OpenCommandPaletteDialog() {
                       }
                     : isThreadSearchPending
                       ? { emptyStateMessage: "Searching conversations…" }
-                      : {})}
+                      : isConversationSearch && threadSearchFailed
+                        ? {
+                            emptyStateMessage:
+                              "Conversation search unavailable. Edit your query to retry.",
+                          }
+                        : {})}
           />
         </CommandPanel>
         <CommandFooter className="gap-3 max-sm:flex-col max-sm:items-start">
@@ -1889,12 +1846,6 @@ function OpenCommandPaletteDialog() {
               <span className={cn("text-muted-foreground/80")}>Close</span>
             </KbdGroup>
           </div>
-          {isThreadSearchPending ? (
-            <span className="flex items-center gap-1.5 text-xs text-muted-foreground/80">
-              <Spinner className="size-3" />
-              Searching conversations…
-            </span>
-          ) : null}
           {canOpenProjectFromFileManager ? (
             <Button
               variant="ghost"

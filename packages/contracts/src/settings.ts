@@ -517,6 +517,10 @@ export const DEFAULT_ORCHESTRATOR_ACCESS_OVERRIDE =
   "per-conversation" as const satisfies OrchestratorAccessOverride;
 
 export const ServerSettings = Schema.Struct({
+  defaultModelEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  defaultModelSelection: Schema.NullOr(ModelSelection).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   automaticGitFetchInterval: Schema.DurationFromMillis.pipe(
     Schema.withDecodingDefault(
@@ -565,7 +569,7 @@ export const ServerSettings = Schema.Struct({
       Effect.succeed([
         {
           instanceId: ProviderInstanceId.make("claudeAgent"),
-          model: "claude-opus-5",
+          model: "claude-opus-5-5",
           options: [{ id: "effort", value: "medium" }],
         },
         {
@@ -697,6 +701,8 @@ const OpenCodeSettingsPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  defaultModelEnabled: Schema.optionalKey(Schema.Boolean),
+  defaultModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   // Server settings
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
   automaticGitFetchInterval: Schema.optionalKey(Schema.DurationFromMillis),

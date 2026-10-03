@@ -1431,6 +1431,70 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
     // ── checkClaudeProviderStatus tests ──────────────────────────
 
     describe("checkClaudeProviderStatus", () => {
+      for (const { slug, version, supported, minimumVersion, defaultEffort } of [
+        {
+          slug: "claude-opus-5-5",
+          version: "2.1.279",
+          supported: false,
+          minimumVersion: "2.1.280",
+          defaultEffort: "medium",
+        },
+        {
+          slug: "claude-opus-5-5",
+          version: "2.1.280",
+          supported: true,
+          minimumVersion: "2.1.280",
+          defaultEffort: "medium",
+        },
+        {
+          slug: "claude-sonnet-5-5",
+          version: "2.1.283",
+          supported: false,
+          minimumVersion: "2.1.284",
+          defaultEffort: "high",
+        },
+        {
+          slug: "claude-sonnet-5-5",
+          version: "2.1.284",
+          supported: true,
+          minimumVersion: "2.1.284",
+          defaultEffort: "high",
+        },
+      ]) {
+        it.effect(`gates ${slug} for Claude Code ${version}`, () =>
+          Effect.gen(function* () {
+            const status = yield* checkClaudeProviderStatus(
+              defaultClaudeSettings,
+              claudeCapabilities(),
+            );
+            const selectedModel = status.models.find((model) => model.slug === slug);
+            assert.strictEqual(Boolean(selectedModel), supported);
+            if (!supported) {
+              assert.ok(status.message?.includes(`Upgrade to v${minimumVersion}`));
+            } else {
+              const effort = selectedModel?.capabilities?.optionDescriptors?.find(
+                (descriptor) => descriptor.type === "select" && descriptor.id === "effort",
+              );
+              assert.strictEqual(
+                effort?.type === "select"
+                  ? effort.options.find((option) => option.isDefault)?.id
+                  : undefined,
+                defaultEffort,
+              );
+            }
+          }).pipe(
+            Effect.provide(
+              mockSpawnerLayer((args) => {
+                if (args.join(" ") === "--version") {
+                  return { stdout: `${version}\n`, stderr: "", code: 0 };
+                }
+                throw new Error(`Unexpected args: ${args.join(" ")}`);
+              }),
+            ),
+          ),
+        );
+      }
+
       it.effect("returns ready when claude is installed and authenticated", () =>
         Effect.gen(function* () {
           const status = yield* checkClaudeProviderStatus(

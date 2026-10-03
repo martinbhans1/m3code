@@ -6,6 +6,7 @@ import {
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  type ModelSelection,
   type OrchestrationCommand,
   type OrchestrationProjectShell,
   type OrchestrationThread,
@@ -660,7 +661,11 @@ let defaultAccess: OrchestratorThreadAccess = "none";
 // The blanket override, set from the orchestrator's own composer. Mutable so a
 // test can hand over everything mid-session the way the control does.
 let accessOverride: OrchestratorAccessOverride = "per-conversation";
+let defaultModelSelection: ModelSelection | null = null;
+let defaultModelEnabled = false;
 const resetAccess = () => {
+  defaultModelSelection = null;
+  defaultModelEnabled = false;
   gitLocalStatus = { isRepo: true, refName: "staging" };
   worktreeFailure = null;
   setupScriptStatus = "started";
@@ -1009,6 +1014,8 @@ const TestServicesLive = Layer.mergeAll(
     ServerSettingsService.of({
       getSettings: Effect.sync(() => ({
         ...DEFAULT_SERVER_SETTINGS,
+        defaultModelEnabled,
+        defaultModelSelection,
         orchestratorProjectId: designatedProjectId,
         defaultOrchestratorThreadAccess: defaultAccess,
         orchestratorThreadAccess: threadAccess,
@@ -3079,6 +3086,63 @@ it.effect("will not show changes for a conversation that is not shared", () =>
       const watched = yield* callTool("read_thread_changes", { threadId: idleThreadId });
       expect(watched.isError).toBe(false);
 
+      resetAccess();
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("resolves the configured default on each create_thread call", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      resetAccess();
+      dispatched.length = 0;
+      defaultModelEnabled = true;
+      for (const model of [undefined, "default"]) {
+        defaultModelSelection = {
+          instanceId: ProviderInstanceId.make("claude-personal"),
+          model: model === undefined ? "claude-opus-5-5" : "claude-sonnet-5-5",
+          options: [{ id: "effort", value: "high" }],
+        };
+        const result = yield* callTool("create_thread", {
+          projectTitle: "dealjourney",
+          title: "Follow default",
+          message: "Do the work.",
+          ...(model ? { model } : {}),
+        });
+        expect(result.isError).toBe(false);
+        expect(dispatched.findLast((command) => command.type === "thread.create")).toMatchObject({
+          modelSelection: defaultModelSelection,
+        });
+        expect(
+          dispatched.findLast((command) => command.type === "thread.turn.start"),
+        ).toMatchObject({ modelSelection: defaultModelSelection });
+      }
+      resetAccess();
+      dispatched.length = 0;
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("refuses an explicit default request when disabled without creating a thread", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      resetAccess();
+      dispatched.length = 0;
+      defaultModelSelection = {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-opus-5-5",
+      };
+      const result = yield* callTool("create_thread", {
+        projectTitle: "dealjourney",
+        title: "No default",
+        message: "Do the work.",
+        model: "default",
+      });
+      expect(result.isError).toBe(true);
+      expect(
+        result.content.map((entry) => ("text" in entry ? entry.text : "")).join(" "),
+      ).toContain("Choose and enable a default model");
+      expect(dispatched).toEqual([]);
       resetAccess();
     }),
   ).pipe(Effect.provide(TestLayer)),

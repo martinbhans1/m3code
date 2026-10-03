@@ -768,7 +768,7 @@ export const CreateThreadInput = Schema.Struct({
   model: Schema.optional(
     Schema.String.annotate({
       description:
-        "Which model the new conversation should run on. The default sanctioned choices are claude-opus-5, gpt-5.6-sol and gpt-6-astra; the user may customize that list under Settings > Orchestrator > Orchestrator model choices. Passing an unrecognised one returns the current allowed list. Omit to inherit the project's own default; choose deliberately when another model is better suited to the work.",
+        "Use 'default' to follow the model and account enabled under Settings > Chat > Default model. Omitting this also uses that default when enabled, otherwise the project's model or this conversation's model. An explicit model ID must be in Settings > Orchestrator > Orchestrator model choices; an unrecognised one returns the allowed list.",
     }),
   ),
   runtimeMode: Schema.optional(

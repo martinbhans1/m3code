@@ -20,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
+import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import { page } from "vite-plus/test/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { render } from "vitest-browser-react";
@@ -767,6 +768,53 @@ describe("GeneralSettingsPanel observability", () => {
     await expect.element(page.getByText("Default", { exact: true })).toBeInTheDocument();
     await page.getByRole("button", { name: "Set as default" }).first().click();
     await expect.element(page.getByText("http://127.0.0.1:3773/").first()).toBeInTheDocument();
+  });
+
+  it("toggles the default model while preserving its account and reasoning options", async () => {
+    const selection = {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-opus-5-5",
+      options: [{ id: "effort", value: "high" }],
+    };
+    const config = createBaseServerConfig();
+    const updateSettings = vi
+      .fn<LocalApi["server"]["updateSettings"]>()
+      .mockImplementation(async (patch) => applyServerSettingsPatch(config.settings, patch));
+    window.nativeApi = {
+      persistence: {
+        getClientSettings: vi.fn().mockResolvedValue(null),
+        setClientSettings: vi.fn().mockResolvedValue(undefined),
+      },
+      server: { updateSettings },
+    } as unknown as LocalApi;
+    setServerConfigSnapshot({
+      ...config,
+      settings: {
+        ...config.settings,
+        defaultModelEnabled: false,
+        defaultModelSelection: selection,
+      },
+    });
+    mounted = await renderWithTestRouter(
+      <AppAtomRegistryProvider>
+        <GeneralSettingsPanel />
+      </AppAtomRegistryProvider>,
+    );
+    await page.getByRole("tab", { name: "Chat", exact: true }).click();
+    const toggle = page.getByRole("switch", { name: "Use a default model" });
+    await expect.element(toggle).not.toBeChecked();
+    await toggle.click();
+    await expect.element(toggle).toBeChecked();
+    expect(updateSettings).toHaveBeenLastCalledWith({
+      defaultModelEnabled: true,
+      defaultModelSelection: selection,
+    });
+    await toggle.click();
+    await expect.element(toggle).not.toBeChecked();
+    expect(updateSettings).toHaveBeenLastCalledWith({
+      defaultModelEnabled: false,
+      defaultModelSelection: selection,
+    });
   });
 
   it("splits the general page into categories", async () => {

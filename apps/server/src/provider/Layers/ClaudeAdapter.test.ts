@@ -652,6 +652,36 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  for (const { model, defaultEffort } of [
+    { model: "claude-opus-5-5", defaultEffort: "medium" },
+    { model: "claude-sonnet-5-5", defaultEffort: "high" },
+  ]) {
+    for (const effort of [undefined, "xhigh"] as const) {
+      it.effect(`starts ${model} with ${effort ?? "default"} effort`, () => {
+        const harness = makeHarness();
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: ProviderDriverKind.make("claudeAgent"),
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("claudeAgent"),
+              model,
+              effort ? [{ id: "effort", value: effort }] : [],
+            ),
+            runtimeMode: "full-access",
+          });
+          const createInput = harness.getLastCreateQueryInput();
+          assert.equal(createInput?.options.model, model);
+          assert.equal(createInput?.options.effort, effort ?? defaultEffort);
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+        );
+      });
+    }
+  }
+
   it.effect("maps the Claude Opus 4.7 default effort to the SDK-supported max value", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

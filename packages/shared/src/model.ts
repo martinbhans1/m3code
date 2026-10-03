@@ -4,6 +4,7 @@ import {
   MODEL_SLUG_ALIASES_BY_PROVIDER,
   type ModelCapabilities,
   type ModelSelection,
+  type ServerSettings,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderOptionDescriptor,
@@ -11,6 +12,13 @@ import {
 } from "@t3tools/contracts";
 
 const DEFAULT_PROVIDER_DRIVER_KIND = ProviderDriverKind.make("codex");
+
+/** Resolve the user's opt-in default without changing any existing conversation. */
+export function getDefaultModelSelection(
+  settings: Pick<ServerSettings, "defaultModelEnabled" | "defaultModelSelection">,
+): ModelSelection | null {
+  return settings.defaultModelEnabled ? settings.defaultModelSelection : null;
+}
 
 export interface SelectableModelOption {
   slug: string;

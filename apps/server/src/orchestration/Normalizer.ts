@@ -13,9 +13,30 @@ import { createAttachmentId, resolveAttachmentPath } from "../attachmentStore.ts
 import { ServerConfig } from "../config.ts";
 import { parseBase64DataUrl } from "../imageMime.ts";
 import { WorkspacePaths } from "../workspace/Services/WorkspacePaths.ts";
+import { ServerSettingsService } from "../serverSettings.ts";
+import { getDefaultModelSelection } from "@t3tools/shared/model";
 
 export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
   Effect.gen(function* () {
+    if (command.type === "thread.create" && command.modelSelection === "default") {
+      const settingsService = yield* ServerSettingsService;
+      const settings = yield* settingsService.getSettings.pipe(
+        Effect.mapError(
+          () =>
+            new OrchestrationDispatchCommandError({
+              message: "Could not read the default model from Settings.",
+            }),
+        ),
+      );
+      const modelSelection = getDefaultModelSelection(settings);
+      if (!modelSelection) {
+        return yield* new OrchestrationDispatchCommandError({
+          message:
+            "Choose and enable a default model in Settings > Chat before using the default model.",
+        });
+      }
+      return { ...command, modelSelection } satisfies OrchestrationCommand;
+    }
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const serverConfig = yield* ServerConfig;

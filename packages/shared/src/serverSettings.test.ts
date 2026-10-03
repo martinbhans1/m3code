@@ -4,7 +4,7 @@ import {
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
-import { createModelSelection } from "./model.ts";
+import { createModelSelection, getDefaultModelSelection } from "./model.ts";
 import {
   applyServerSettingsPatch,
   extractPersistedServerObservabilitySettings,
@@ -13,6 +13,31 @@ import {
 } from "./serverSettings.ts";
 
 describe("serverSettings helpers", () => {
+  it("retains the chosen default while disabled and replaces options when switching models", () => {
+    const selection = createModelSelection(
+      ProviderInstanceId.make("claude-personal"),
+      "claude-opus-5-5",
+      [{ id: "effort", value: "high" }],
+    );
+    const enabled = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      defaultModelEnabled: true,
+      defaultModelSelection: selection,
+    });
+    expect(getDefaultModelSelection(enabled)).toEqual(selection);
+    const disabled = applyServerSettingsPatch(enabled, { defaultModelEnabled: false });
+    expect(getDefaultModelSelection(disabled)).toBeNull();
+    expect(disabled.defaultModelSelection).toEqual(selection);
+    const replacement = createModelSelection(ProviderInstanceId.make("codex"), "gpt-6-astra");
+    expect(
+      applyServerSettingsPatch(enabled, { defaultModelSelection: replacement })
+        .defaultModelSelection,
+    ).toEqual(replacement);
+    expect(
+      applyServerSettingsPatch(enabled, { defaultModelSelection: null }).defaultModelSelection,
+    ).toBeNull();
+    expect(getDefaultModelSelection(DEFAULT_SERVER_SETTINGS)).toBeNull();
+  });
+
   it("normalizes optional persisted strings", () => {
     expect(normalizePersistedServerSettingString(undefined)).toBeUndefined();
     expect(normalizePersistedServerSettingString("   ")).toBeUndefined();

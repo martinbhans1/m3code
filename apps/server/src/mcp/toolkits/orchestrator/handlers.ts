@@ -21,6 +21,7 @@ import {
   UserInputQuestion,
 } from "@t3tools/contracts";
 import { projectThreadAwareness } from "@t3tools/shared/agentAwareness";
+import { getDefaultModelSelection } from "@t3tools/shared/model";
 import { resolveOrchestratorThreadAccess } from "@t3tools/shared/orchestratorAccess";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import { isThreadCold, threadQuietDays } from "@t3tools/shared/threadDisposition";
@@ -1854,26 +1855,37 @@ const handlers = {
       const projects = shell.projects.filter((project) => project.id !== orchestratorProjectId);
       const project = yield* resolveTargetProject(projects, input.projectTitle);
 
-      // A project without a default model has never pinned one, so fall back to
-      // whatever this orchestrator conversation is itself running — a known-good
-      // selection on a provider that exists, rather than a guess.
+      // The user's enabled default takes precedence. Otherwise inherit the
+      // project's selection, then this orchestrator conversation's selection.
       const callerThread = yield* projectionSnapshotQuery
         .getThreadShellById(invocation.threadId)
         .pipe(Effect.orElseSucceed(() => Option.none<OrchestrationThreadShell>()));
+      const currentSettings = yield* serverSettings.getSettings.pipe(
+        Effect.mapError(
+          () => new OrchestratorToolError({ message: "Could not read model settings." }),
+        ),
+      );
+      const defaultModel = getDefaultModelSelection(currentSettings);
       const inheritedModel =
+        defaultModel ??
         project.defaultModelSelection ??
         (Option.isSome(callerThread) ? callerThread.value.modelSelection : null);
 
       // Choosing a model is allow-listed: the defaults cover the current
       // primary Claude and Codex models, and the user can curate or clear the
       // set in settings. Anything outside it is refused rather than guessed.
-      const allowedModels = yield* serverSettings.getSettings.pipe(
-        Effect.map((value) => value.orchestratorModelChoices),
-        Effect.orElseSucceed(() => [] as ReadonlyArray<ModelSelection>),
-      );
+      const allowedModels = currentSettings.orchestratorModelChoices;
       const requestedModel = input.model?.trim();
       let modelSelection: ModelSelection | null = inheritedModel;
-      if (requestedModel !== undefined && requestedModel.length > 0) {
+      if (requestedModel?.toLowerCase() === "default") {
+        if (!defaultModel) {
+          return yield* new OrchestratorToolError({
+            message:
+              "Choose and enable a default model in Settings > Chat before using the default model.",
+          });
+        }
+        modelSelection = defaultModel;
+      } else if (requestedModel !== undefined && requestedModel.length > 0) {
         const allowedList =
           allowedModels.length === 0
             ? "none — the user has not sanctioned any models for you to choose from, so omit `model` and let the conversation inherit its project's default"

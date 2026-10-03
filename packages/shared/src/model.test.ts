@@ -71,11 +71,29 @@ const claudeCaps: ModelCapabilities = createModelCapabilities({
 });
 
 describe("normalizeModelSlug", () => {
+  it("resolves Opus 5.5 aliases without rewriting pinned older models", () => {
+    const claude = ProviderDriverKind.make("claudeAgent");
+    for (const alias of ["opus", "opus-5.5", "opus-5-5", "claude-opus-5.5"]) {
+      expect(normalizeModelSlug(alias, claude)).toBe("claude-opus-5-5");
+    }
+    expect(normalizeModelSlug("claude-opus-5", claude)).toBe("claude-opus-5");
+    expect(normalizeModelSlug("opus-4.8", claude)).toBe("claude-opus-4-8");
+  });
+
   it("maps known aliases to canonical slugs", () => {
     const claude = ProviderDriverKind.make("claudeAgent");
-    expect(normalizeModelSlug("gpt-5-codex")).toBe("gpt-5.4");
+    expect(normalizeModelSlug("gpt-5-codex")).toBe(DEFAULT_MODEL);
     expect(normalizeModelSlug("5.3")).toBe("gpt-5.3-codex");
-    expect(normalizeModelSlug("sonnet", claude)).toBe("claude-sonnet-4-6");
+    expect(normalizeModelSlug("sonnet", claude)).toBe("claude-sonnet-5-5");
+  });
+
+  it("resolves Sonnet 5.5 aliases without rewriting pinned older models", () => {
+    const claude = ProviderDriverKind.make("claudeAgent");
+    for (const alias of ["sonnet-5.5", "sonnet-5-5", "claude-sonnet-5.5"]) {
+      expect(normalizeModelSlug(alias, claude)).toBe("claude-sonnet-5-5");
+    }
+    expect(normalizeModelSlug("claude-sonnet-5", claude)).toBe("claude-sonnet-5");
+    expect(normalizeModelSlug("sonnet-4.6", claude)).toBe("claude-sonnet-4-6");
   });
 
   it("returns null for empty or missing values", () => {
@@ -110,7 +128,7 @@ describe("resolveSelectableModel", () => {
   it("resolves exact slugs, labels, and aliases", () => {
     const options = [
       { slug: "gpt-5.3-codex", name: "GPT-5.3 Codex" },
-      { slug: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+      { slug: "claude-sonnet-5-5", name: "Claude Sonnet 5.5" },
     ];
     expect(resolveSelectableModel(ProviderDriverKind.make("codex"), "gpt-5.3-codex", options)).toBe(
       "gpt-5.3-codex",
@@ -119,7 +137,7 @@ describe("resolveSelectableModel", () => {
       "gpt-5.3-codex",
     );
     expect(resolveSelectableModel(ProviderDriverKind.make("claudeAgent"), "sonnet", options)).toBe(
-      "claude-sonnet-4-6",
+      "claude-sonnet-5-5",
     );
   });
 });

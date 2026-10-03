@@ -98,6 +98,9 @@ export function applyServerSettingsPatch(
   const next = deepMerge(current, patchForMerge);
   const nextWithReplacements = {
     ...next,
+    ...(patch.defaultModelSelection !== undefined
+      ? { defaultModelSelection: patch.defaultModelSelection }
+      : {}),
     ...(patch.providerInstances !== undefined
       ? { providerInstances: patch.providerInstances }
       : {}),

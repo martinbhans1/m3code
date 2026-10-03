@@ -33,6 +33,35 @@ const makeServerSettingsLayer = () =>
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect("persists and reloads the default model and keeps the choice when disabled", () =>
+    Effect.gen(function* () {
+      const settings = yield* ServerSettingsService;
+      const config = yield* ServerConfig;
+      const selection = createModelSelection(
+        ProviderInstanceId.make("claude-personal"),
+        "claude-opus-5-5",
+        [{ id: "effort", value: "high" }],
+      );
+      yield* settings.updateSettings({
+        defaultModelEnabled: true,
+        defaultModelSelection: selection,
+      });
+      const reload = Effect.gen(function* () {
+        const fresh = yield* ServerSettingsService;
+        return yield* fresh.getSettings;
+      }).pipe(
+        Effect.provide(Layer.fresh(ServerSettingsLive)),
+        Effect.provideService(ServerConfig, config),
+      );
+      assert.deepEqual((yield* reload).defaultModelSelection, selection);
+      assert.equal((yield* reload).defaultModelEnabled, true);
+      yield* settings.updateSettings({ defaultModelEnabled: false });
+      const disabled = yield* reload;
+      assert.equal(disabled.defaultModelEnabled, false);
+      assert.deepEqual(disabled.defaultModelSelection, selection);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect("decodes nested settings patches", () =>
     Effect.gen(function* () {
       assert.deepEqual(
