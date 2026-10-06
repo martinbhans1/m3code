@@ -75,9 +75,7 @@ function buildProps() {
     timestampFormat: "24-hour" as const,
     workspaceRoot: undefined,
     onIsAtEndChange: vi.fn(),
-    // Two user prompts, so the prompt navigator's buttons can actually be
-    // enabled — a disabled button is not hit-testable and would make the
-    // overlap assertions meaningless.
+    // Two user prompts: the minimap rail only shows from two up.
     timelineEntries: [
       {
         id: "entry-1",
@@ -119,20 +117,6 @@ function buildProps() {
   };
 }
 
-function rect(element: Element | null) {
-  if (!element) throw new Error("expected element to be present");
-  return element.getBoundingClientRect();
-}
-
-function overlaps(a: DOMRect, b: DOMRect) {
-  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
-}
-
-/** The element the user's click would actually land on at a point. */
-function hitTarget(x: number, y: number) {
-  return document.elementFromPoint(x, y);
-}
-
 describe("MessagesTimeline top overlay row", () => {
   beforeEach(() => {
     localStorage.removeItem("t3code:changed-files-hidden");
@@ -142,35 +126,6 @@ describe("MessagesTimeline top overlay row", () => {
     vi.restoreAllMocks();
     localStorage.removeItem("t3code:changed-files-hidden");
     document.body.innerHTML = "";
-  });
-
-  it("keeps the changed-files panel clear of the prompt navigator at a narrow width", async () => {
-    await page.viewport(620, 780);
-    const screen = await render(<MessagesTimeline {...buildProps()} />);
-
-    try {
-      // Step back a prompt so "Next prompt" is enabled and clickable.
-      await page.getByLabelText("Previous prompt").click();
-      const nextPrompt = page.getByLabelText("Next prompt");
-      await expect.element(nextPrompt).toBeVisible();
-      expect(document.querySelector('[aria-label="Next prompt"]')?.hasAttribute("disabled")).toBe(
-        false,
-      );
-
-      const navRect = rect(document.querySelector('[aria-label="Next prompt"]'));
-      const changedFiles = document.querySelector('[title="Show changed files"]');
-      const changedRect = rect(changedFiles);
-
-      expect(overlaps(navRect, changedRect)).toBe(false);
-
-      // The regression was that the changed-files chip sat on top of this
-      // button, so the click never reached it.
-      const target = hitTarget(navRect.left + navRect.width / 2, navRect.top + navRect.height / 2);
-      expect(target && changedFiles?.contains(target)).toBeFalsy();
-      expect(document.querySelector('[aria-label="Next prompt"]')?.contains(target)).toBe(true);
-    } finally {
-      await screen.unmount();
-    }
   });
 
   it("hides the changed-files panel and offers a control to bring it back", async () => {
@@ -190,6 +145,30 @@ describe("MessagesTimeline top overlay row", () => {
 
       await expect.element(page.getByLabelText("Hide changed files")).toBeVisible();
       expect(localStorage.getItem("t3code:changed-files-hidden")).toBe("false");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("previews a prompt and its reply when hovering the minimap rail", async () => {
+    await page.viewport(1100, 780);
+    const props = buildProps();
+    const screen = await render(<MessagesTimeline {...props} />);
+
+    try {
+      const minimap = document.querySelector<HTMLElement>('[data-testid="timeline-minimap"]');
+      if (!minimap) throw new Error("expected the minimap rail to render");
+      // Wide window: the rail sits in the gutter and stays visible.
+      await vi.waitFor(() => expect(minimap.dataset.persistentGutter).toBe("true"));
+
+      const rail = page.getByRole("button", { name: /Jump to message/ });
+      await rail.hover({ position: { x: 4, y: 0 } });
+
+      await vi.waitFor(() => {
+        const preview = document.querySelector("[data-minimap-preview]");
+        expect(preview?.textContent ?? "").toContain("what i'm imagining");
+        expect(preview?.textContent ?? "").toContain("darkest surface");
+      });
     } finally {
       await screen.unmount();
     }

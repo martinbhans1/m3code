@@ -81,6 +81,14 @@ import {
   type TimelineLatestTurn,
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
+import { TimelineMinimap } from "./TimelineMinimap";
+import {
+  deriveTimelineMinimapItems,
+  resolveTimelineMinimapCurrentIndex,
+  resolveTimelineMinimapHasPersistentGutter,
+  resolveTimelineMinimapHitStripWidth,
+  type TimelineMinimapItem,
+} from "./timelineMinimapItems";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   deriveDisplayedUserMessageState,
@@ -358,13 +366,93 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     ],
   );
   const rows = useStableRows(rawRows);
+  const minimapItems = useMemo(
+    () => deriveTimelineMinimapItems(rows, summarizeUserPromptForContextStrip),
+    [rows],
+  );
+  const [minimapStripMap] = useState(() => new Map<string, HTMLSpanElement>());
+  const [minimapCurrentIndex, setMinimapCurrentIndex] = useState<number | null>(null);
+  const [minimapHasPersistentGutter, setMinimapHasPersistentGutter] = useState(false);
+  const [minimapHitStripWidth, setMinimapHitStripWidth] = useState(0);
+  const [timelineViewportElement, setTimelineViewportElement] = useState<HTMLDivElement | null>(
+    null,
+  );
 
   const handleScroll = useCallback(() => {
     const state = listRef.current?.getState?.();
-    if (state) {
-      onIsAtEndChange(state.isAtEnd);
+    if (!state) {
+      return;
     }
-  }, [listRef, onIsAtEndChange]);
+    onIsAtEndChange(state.isAtEnd);
+    if (minimapItems.length === 0) {
+      return;
+    }
+
+    const scrollTop = state.scroll ?? 0;
+    const scrollBottom = scrollTop + (state.scrollLength ?? 0);
+    const itemBounds = minimapItems.map((item) => ({
+      top: finiteOrNull(state.positionAtIndex?.(item.rowIndex)),
+      height: finiteOrNull(state.sizeAtIndex?.(item.rowIndex)),
+    }));
+    for (const [index, item] of minimapItems.entries()) {
+      const strip = minimapStripMap.get(item.id);
+      const bounds = itemBounds[index];
+      const rowTop = bounds?.top ?? null;
+      const inView =
+        rowTop !== null &&
+        rowTop < scrollBottom &&
+        rowTop + Math.max(1, bounds?.height ?? 1) > scrollTop;
+      // Skip no-op writes: this runs for every strip on every scroll tick.
+      const next = inView ? "true" : "false";
+      if (strip && strip.dataset.inView !== next) {
+        strip.dataset.inView = next;
+      }
+    }
+    const nextCurrentIndex = resolveTimelineMinimapCurrentIndex({
+      scrollTop,
+      scrollBottom,
+      itemBounds,
+    });
+    setMinimapCurrentIndex((current) =>
+      current === nextCurrentIndex ? current : nextCurrentIndex,
+    );
+  }, [listRef, minimapItems, minimapStripMap, onIsAtEndChange]);
+
+  // Rows that grow or arrive without a scroll still move which turns are on screen.
+  useEffect(() => {
+    const frame = requestAnimationFrame(handleScroll);
+    return () => cancelAnimationFrame(frame);
+  }, [handleScroll, rows.length]);
+
+  // The rail lives in the gutter beside the centered column, so it needs the
+  // gutter's width: in a narrow pane it must not cover message text.
+  useEffect(() => {
+    if (!timelineViewportElement) {
+      return;
+    }
+    const measure = () => {
+      const viewportWidth = timelineViewportElement.getBoundingClientRect().width;
+      const contentWidth =
+        timelineViewportElement
+          .querySelector<HTMLElement>("[data-timeline-content]")
+          ?.getBoundingClientRect().width ?? viewportWidth;
+      const nextHasPersistentGutter = resolveTimelineMinimapHasPersistentGutter(
+        viewportWidth,
+        contentWidth,
+      );
+      setMinimapHasPersistentGutter((current) =>
+        current === nextHasPersistentGutter ? current : nextHasPersistentGutter,
+      );
+      setMinimapHitStripWidth(resolveTimelineMinimapHitStripWidth(viewportWidth, contentWidth));
+    };
+    const frame = requestAnimationFrame(measure);
+    const observer = new ResizeObserver(measure);
+    observer.observe(timelineViewportElement);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [timelineViewportElement, rows.length]);
 
   const previousRowCountRef = useRef(rows.length);
   useEffect(() => {
@@ -429,24 +517,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   // Stable renderItem — no closure deps. Row components read shared state
   // from TimelineRowCtx, which propagates through LegendList's memo.
-  const userPromptRows = useMemo(
-    () =>
-      rows.flatMap((row, index) =>
-        row.kind === "message" && row.message.role === "user" ? [{ row, index }] : [],
-      ),
-    [rows],
-  );
-  const latestUserPromptId = userPromptRows.at(-1)?.row.message.id ?? null;
-  const [selectedUserPromptOffset, setSelectedUserPromptOffset] = useState<number | null>(null);
-  useEffect(() => {
-    setSelectedUserPromptOffset(null);
-  }, [latestUserPromptId]);
-  const selectedUserPrompt =
-    userPromptRows.length > 0
-      ? userPromptRows[selectedUserPromptOffset ?? userPromptRows.length - 1]
-      : undefined;
-  const selectedUserPromptIndex =
-    selectedUserPromptOffset ?? Math.max(0, userPromptRows.length - 1);
   const latestChangedFilesSummary = useMemo(() => {
     for (let index = rows.length - 1; index >= 0; index -= 1) {
       const row = rows[index];
@@ -461,11 +531,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     return null;
   }, [rows]);
   const [changedFilesHidden, setChangedFilesHidden] = useChangedFilesHidden();
-  const showContextStrip = Boolean(selectedUserPrompt);
-  const hasChangedFiles = Boolean(latestChangedFilesSummary);
-  // The prompt navigator and the changed-files panel share a single overlay row,
-  // so they can never sit on top of each other. The row exists if either does.
-  const showOverlayRow = showContextStrip || hasChangedFiles;
+  const showOverlayRow = Boolean(latestChangedFilesSummary);
 
   const scrollToTimelineRow = useCallback(
     (index: number) => {
@@ -479,22 +545,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [listRef],
   );
 
-  const selectUserPrompt = useCallback(
-    (offset: number) => {
-      const nextOffset = Math.min(Math.max(offset, 0), Math.max(0, userPromptRows.length - 1));
-      setSelectedUserPromptOffset(nextOffset);
-      const target = userPromptRows[nextOffset];
-      if (target) {
-        scrollToTimelineRow(target.index);
-      }
-    },
-    [scrollToTimelineRow, userPromptRows],
+  const onMinimapSelect = useCallback(
+    (item: TimelineMinimapItem) => scrollToTimelineRow(item.rowIndex),
+    [scrollToTimelineRow],
   );
 
   const renderItem = useCallback(
     ({ item }: { item: MessagesTimelineRow }) => (
       <div className="chat-timeline-row" data-timeline-root="true">
-        <div className="mx-auto w-full min-w-0 max-w-3xl">
+        <div className="mx-auto w-full min-w-0 max-w-3xl" data-timeline-content="true">
           <TimelineRowContent row={item} />
         </div>
       </div>
@@ -515,23 +574,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   return (
     <TimelineRowCtx value={sharedState}>
       <TimelineRowActivityCtx value={activityState}>
-        <div className="relative h-full min-h-0">
+        <div ref={setTimelineViewportElement} className="relative h-full min-h-0">
           {showOverlayRow ? (
             <div className="pointer-events-none absolute inset-x-3 top-2 z-20 flex justify-center sm:inset-x-5">
-              <div className="flex w-full max-w-3xl items-start gap-2">
-                {showContextStrip ? (
-                  <ConversationContextStrip
-                    selectedUserPrompt={selectedUserPrompt}
-                    selectedUserPromptIndex={selectedUserPromptIndex}
-                    userPromptCount={userPromptRows.length}
-                    onSelectUserPrompt={selectUserPrompt}
-                    onJumpToSelectedUserPrompt={() => {
-                      if (selectedUserPrompt) {
-                        scrollToTimelineRow(selectedUserPrompt.index);
-                      }
-                    }}
-                  />
-                ) : null}
+              <div className="flex w-full max-w-3xl items-start justify-end gap-2">
                 {latestChangedFilesSummary ? (
                   changedFilesHidden ? (
                     <ChangedFilesRestoreButton
@@ -567,6 +613,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             }
             ListFooterComponent={TIMELINE_LIST_FOOTER}
           />
+          <TimelineMinimap
+            items={minimapItems}
+            hasPersistentGutter={minimapHasPersistentGutter}
+            hitStripWidth={minimapHitStripWidth}
+            currentIndex={minimapCurrentIndex}
+            stripMap={minimapStripMap}
+            onSelect={onMinimapSelect}
+          />
         </div>
       </TimelineRowActivityCtx>
     </TimelineRowCtx>
@@ -581,75 +635,11 @@ function keyExtractor(item: MessagesTimelineRow) {
 // TimelineRowContent — the actual row component
 // ---------------------------------------------------------------------------
 
-const ConversationContextStrip = memo(function ConversationContextStrip(props: {
-  selectedUserPrompt:
-    | { row: Extract<MessagesTimelineRow, { kind: "message" }>; index: number }
-    | undefined;
-  selectedUserPromptIndex: number;
-  userPromptCount: number;
-  onSelectUserPrompt: (offset: number) => void;
-  onJumpToSelectedUserPrompt: () => void;
-}) {
-  const {
-    onJumpToSelectedUserPrompt,
-    onSelectUserPrompt,
-    selectedUserPrompt,
-    selectedUserPromptIndex,
-    userPromptCount,
-  } = props;
-  const visiblePromptText = selectedUserPrompt
-    ? summarizeUserPromptForContextStrip(selectedUserPrompt.row.message.text)
-    : "";
-  const promptLabel = visiblePromptText || "Empty prompt";
-
-  if (!selectedUserPrompt) return null;
-
-  return (
-    <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-border/70 bg-background/92 px-2 py-1.5 shadow-sm backdrop-blur">
-      <Button
-        type="button"
-        size="icon-xs"
-        variant="ghost"
-        className="shrink-0"
-        disabled={selectedUserPromptIndex <= 0}
-        aria-label="Previous prompt"
-        onClick={() => onSelectUserPrompt(selectedUserPromptIndex - 1)}
-      >
-        <ChevronUpIcon className="size-3.5" />
-      </Button>
-      <button
-        type="button"
-        className="min-w-0 flex-1 truncate text-left text-xs text-foreground/82 hover:text-foreground"
-        onClick={onJumpToSelectedUserPrompt}
-        title={promptLabel}
-      >
-        <span className="mr-1 text-muted-foreground/60">You:</span>
-        {promptLabel}
-      </button>
-      <Button
-        type="button"
-        size="icon-xs"
-        variant="ghost"
-        className="shrink-0"
-        disabled={selectedUserPromptIndex >= userPromptCount - 1}
-        aria-label="Next prompt"
-        onClick={() => onSelectUserPrompt(selectedUserPromptIndex + 1)}
-      >
-        <ChevronDownIcon className="size-3.5" />
-      </Button>
-    </div>
-  );
-});
-
 /**
- * Collapsible "Changed files" indicator, sharing the chat's top overlay row with
- * the prompt navigator. Minimized by default to a small chip; expands in place
- * into a scrollable file tree. Clicking a file (or "View diff") opens the full
- * diff in the right panel.
- *
- * It used to be absolutely positioned in the right gutter on its own, which put
- * it on top of the prompt navigator on narrower windows and made the next-prompt
- * button unclickable. Both now live in one flex row owned by the parent.
+ * Collapsible "Changed files" indicator, pinned to the top-right of the chat.
+ * Minimized by default to a small chip; expands in place into a scrollable
+ * file tree. Clicking a file (or "View diff") opens the full diff in the right
+ * panel.
  */
 const ChangedFilesMiniPanel = memo(function ChangedFilesMiniPanel(props: {
   summary: TurnDiffSummary;
@@ -804,6 +794,10 @@ function useChangedFilesHidden(): [boolean, (hidden: boolean) => void] {
     }
   }, []);
   return [hidden, update];
+}
+
+function finiteOrNull(value: number | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function summarizeUserPromptForContextStrip(prompt: string): string {
