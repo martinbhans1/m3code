@@ -43,6 +43,31 @@ describe("ProviderSessionStartInput", () => {
     expect(getOptionValue(parsed.modelSelection?.options, "fastMode")).toBe(true);
   });
 
+  it("carries a long rebuilt history through decoding", () => {
+    // Every turn goes through this decode. A thread's rebuilt history runs to
+    // tens of thousands of characters, and silently dropping or rejecting it
+    // would break the one path that keeps an unresumable thread alive.
+    const seedHistory = `<rebuilt-conversation-history>
+${"x".repeat(30_000)}
+</rebuilt-conversation-history>`;
+    const parsed = decodeProviderSessionStartInput({
+      threadId: "thread-1",
+      provider: "claudeAgent",
+      runtimeMode: "full-access",
+      seedHistory,
+    });
+    expect(parsed.seedHistory).toBe(seedHistory);
+  });
+
+  it("leaves rebuilt history absent for an ordinary session start", () => {
+    const parsed = decodeProviderSessionStartInput({
+      threadId: "thread-1",
+      provider: "claudeAgent",
+      runtimeMode: "full-access",
+    });
+    expect(parsed.seedHistory).toBeUndefined();
+  });
+
   it("rejects payloads without runtime mode", () => {
     expect(() =>
       decodeProviderSessionStartInput({
