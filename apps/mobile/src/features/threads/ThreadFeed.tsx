@@ -64,6 +64,7 @@ import {
 import { isThreadFeedNearEnd } from "../../lib/threadFeedLayout";
 import { relativeTime } from "../../lib/time";
 import { messageImageUrl } from "./threadPresentation";
+import { CollapsibleUserMessage } from "./CollapsibleUserMessage";
 
 const THREAD_FEED_END_THRESHOLD = 80;
 const MESSAGE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
@@ -736,12 +737,18 @@ function renderFeedEntry(
             }}
           >
             {message.text.trim().length > 0 ? (
-              <UserMessageContent
-                text={message.text}
-                markdownStyles={styles}
-                reviewCommentColors={props.reviewCommentColors}
-                skills={props.skills}
-              />
+              <CollapsibleUserMessage
+                key={message.id}
+                backgroundColor={userBubbleColor}
+                lineHeight={styles.nativeTextStyle.lineHeight}
+              >
+                <UserMessageContent
+                  text={message.text}
+                  markdownStyles={styles}
+                  reviewCommentColors={props.reviewCommentColors}
+                  skills={props.skills}
+                />
+              </CollapsibleUserMessage>
             ) : null}
             {attachments.map((attachment) => {
               const uri = messageImageUrl(props.httpBaseUrl, attachment.id);
