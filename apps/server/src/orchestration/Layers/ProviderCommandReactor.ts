@@ -31,6 +31,7 @@ import { increment, orchestrationEventsProcessedTotal } from "../../observabilit
 import { ProviderAdapterRequestError } from "../../provider/Errors.ts";
 import type { ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
+import { renderSeedHistoryForThread } from "../../provider/sessionSeedHistory.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
@@ -484,6 +485,15 @@ const make = Effect.gen(function* () {
       projects: project ? [project] : [],
     });
 
+    // The thread's own record of the conversation, rendered for an agent that
+    // has to start without the provider's memory of it. Supplied on every
+    // session start, including the ones that expect to resume: whether a saved
+    // Claude transcript still exists or a Codex rollout still loads is only
+    // discovered at the provider, by which point the user's turn is already in
+    // flight. `thread.messages` is already in hand here, so this costs no
+    // extra read, and the digest is bounded regardless of thread length.
+    const seedHistory = renderSeedHistoryForThread(thread.messages);
+
     const startProviderSession = (input?: {
       readonly resumeCursor?: unknown;
       readonly provider?: ProviderDriverKind;
@@ -495,6 +505,7 @@ const make = Effect.gen(function* () {
         ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
         modelSelection: desiredModelSelection,
         ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+        ...(seedHistory !== undefined ? { seedHistory: seedHistory.text } : {}),
         runtimeMode: desiredRuntimeMode,
       });
 

@@ -235,11 +235,28 @@ describe("isRecoverableThreadResumeError", () => {
       false,
     );
   });
+  it("treats a rollout payload it cannot decode as recoverable", () => {
+    // What a recorded item our schema does not know looks like — a `sleep`
+    // event was the first. Unresumable for good, so the thread must fall back
+    // rather than die.
+    assert.equal(
+      isRecoverableThreadResumeError(
+        new CodexErrors.CodexAppServerRequestError({
+          code: -32602,
+          errorMessage: 'Invalid thread/resume payload: unexpected variant "sleep"',
+        }),
+      ),
+      true,
+    );
+  });
 });
 
 describe("openCodexThread", () => {
-  it("falls back to thread/start when resume fails recoverably", async () => {
+  it("falls back to thread/start when resume fails recoverably and reports the fallback", async () => {
     const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];
+    // The caller needs to know: the fresh thread has no memory of the
+    // conversation, so it is the one that seeds the history and says so.
+    const fallbackReasons: Array<string> = [];
     const started = makeThreadOpenResponse("fresh-thread");
     const client = {
       request: <M extends "thread/start" | "thread/resume">(
@@ -268,6 +285,10 @@ describe("openCodexThread", () => {
         requestedModel: "gpt-5.3-codex",
         serviceTier: undefined,
         resumeThreadId: "stale-thread",
+        onResumeFallback: (reason) =>
+          Effect.sync(() => {
+            fallbackReasons.push(reason);
+          }),
       }),
     );
 
@@ -276,9 +297,11 @@ describe("openCodexThread", () => {
       calls.map((call) => call.method),
       ["thread/resume", "thread/start"],
     );
+    assert.deepStrictEqual(fallbackReasons, ["thread not found"]);
   });
 
-  it("propagates non-recoverable resume failures", async () => {
+  it("propagates non-recoverable resume failures without reporting a fallback", async () => {
+    const fallbackReasons: Array<string> = [];
     const client = {
       request: <M extends "thread/start" | "thread/resume">(
         method: M,
@@ -308,11 +331,16 @@ describe("openCodexThread", () => {
           requestedModel: "gpt-5.3-codex",
           serviceTier: undefined,
           resumeThreadId: "stale-thread",
+          onResumeFallback: (reason) =>
+            Effect.sync(() => {
+              fallbackReasons.push(reason);
+            }),
         }),
       ),
       (error: unknown) =>
         isCodexAppServerRequestError(error) &&
         error.errorMessage === "timed out waiting for server",
     );
+    assert.deepStrictEqual(fallbackReasons, []);
   });
 });

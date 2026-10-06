@@ -3,14 +3,18 @@ import * as NodeOS from "node:os";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import {
+  claudeSessionTranscriptExists,
+  encodeClaudeProjectDirName,
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
   makeClaudeEnvironment,
   resolveClaudeConfigDirPath,
   resolveClaudeHomePath,
+  resolveClaudeSessionTranscriptPath,
 } from "./ClaudeHome.ts";
 
 it.layer(NodeServices.layer)("ClaudeHome", (it) => {
@@ -99,6 +103,73 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
 
         expect(personal).not.toBe(work);
       }),
+    );
+  });
+  describe("session transcripts", () => {
+    it("encodes a workspace path the way Claude Code names its project folder", () => {
+      expect(
+        encodeClaudeProjectDirName(
+          String.raw`C:\Users\Martin\Documents\GitHub\dealjourney\website`,
+        ),
+      ).toBe("C--Users-Martin-Documents-GitHub-dealjourney-website");
+      // A leading dot is a separator too, which is why `.t3` gains a dash.
+      expect(encodeClaudeProjectDirName(String.raw`C:\Users\Martin\.t3\userdata`)).toBe(
+        "C--Users-Martin--t3-userdata",
+      );
+    });
+
+    it.effect("names the transcript a resume would read", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const configDir = path.join(NodeOS.tmpdir(), "m3code-claude-home-test");
+        const transcriptPath = yield* resolveClaudeSessionTranscriptPath(
+          {
+            config: { homePath: "" },
+            cwd: "/workspace/project",
+            sessionId: "ace4f745-cada-4244-9de7-fc0b44c9e845",
+          },
+          { CLAUDE_CONFIG_DIR: configDir },
+        );
+
+        expect(transcriptPath).toBe(
+          path.join(
+            configDir,
+            "projects",
+            encodeClaudeProjectDirName("/workspace/project"),
+            "ace4f745-cada-4244-9de7-fc0b44c9e845.jsonl",
+          ),
+        );
+      }),
+    );
+
+    it.effect("reports a deleted transcript as unresumable and a present one as resumable", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const configDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "m3code-claude-config-",
+        });
+        const cwd = path.join(configDir, "workspace");
+        const projectDir = path.join(configDir, "projects", encodeClaudeProjectDirName(cwd));
+        yield* fileSystem.makeDirectory(projectDir, { recursive: true });
+
+        const present = "11111111-1111-4111-8111-111111111111";
+        const deleted = "22222222-2222-4222-8222-222222222222";
+        yield* fileSystem.writeFileString(path.join(projectDir, `${present}.jsonl`), "{}");
+
+        expect(
+          yield* claudeSessionTranscriptExists(
+            { config: { homePath: "" }, cwd, sessionId: present },
+            { CLAUDE_CONFIG_DIR: configDir },
+          ),
+        ).toBe(true);
+        expect(
+          yield* claudeSessionTranscriptExists(
+            { config: { homePath: "" }, cwd, sessionId: deleted },
+            { CLAUDE_CONFIG_DIR: configDir },
+          ),
+        ).toBe(false);
+      }).pipe(Effect.scoped),
     );
   });
 });

@@ -54,6 +54,7 @@ import {
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
 import { makeClaudeCapabilitiesCacheKey, makeClaudeContinuationGroupKey } from "./ClaudeHome.ts";
+import { applyClaudeSessionRetention } from "./ClaudeSessionRetention.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
@@ -142,6 +143,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         effectiveConfig,
         processEnv,
       );
+      // Raise this account's transcript retention before anything can start a
+      // session against it. Claude Code deletes transcripts older than
+      // `cleanupPeriodDays` (30 by default) and a deleted transcript is a thread
+      // that can never be resumed again, so every config dir the app launches
+      // gets the floor applied — including one added after this code shipped.
+      yield* applyClaudeSessionRetention({ instanceId, config: effectiveConfig }, processEnv);
       const stampIdentity = withInstanceIdentity({
         instanceId,
         displayName,

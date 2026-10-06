@@ -68,6 +68,61 @@ export const resolveClaudeSessionStorePath = Effect.fn("resolveClaudeSessionStor
   return yield* fileSystem.realPath(sessionStore).pipe(Effect.orElseSucceed(() => sessionStore));
 });
 
+/**
+ * How Claude Code names the per-workspace folder inside its session store:
+ * every character that is not a letter or a digit becomes a dash, so
+ * `C:\Users\Martin\Documents\GitHub\dealjourney\website` becomes
+ * `C--Users-Martin-Documents-GitHub-dealjourney-website`.
+ */
+export function encodeClaudeProjectDirName(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
+/**
+ * The transcript file a resume reads: `<store>/<encoded cwd>/<session id>.jsonl`.
+ *
+ * This file is the entire basis of a resume, and it is not ours — Claude Code
+ * deletes it once it is older than `cleanupPeriodDays`. Being able to name it is
+ * what lets us check whether a saved resume cursor is still worth anything
+ * *before* spending a turn finding out the hard way.
+ */
+export const resolveClaudeSessionTranscriptPath = Effect.fn("resolveClaudeSessionTranscriptPath")(
+  function* (
+    input: {
+      readonly config: Pick<ClaudeSettings, "homePath">;
+      readonly cwd: string;
+      readonly sessionId: string;
+    },
+    environment?: NodeJS.ProcessEnv,
+  ): Effect.fn.Return<string, never, FileSystem.FileSystem | Path.Path> {
+    const path = yield* Path.Path;
+    const store = yield* resolveClaudeSessionStorePath(input.config, environment);
+    return path.join(store, encodeClaudeProjectDirName(input.cwd), `${input.sessionId}.jsonl`);
+  },
+);
+
+/**
+ * Whether a Claude session can still be resumed from this instance's store.
+ *
+ * Absence is the answer we act on: a missing transcript means the resume will
+ * fail, every time, so the thread is better served by a fresh session seeded
+ * with the history we hold. Any *other* problem (an unreadable store, a path we
+ * cannot resolve) answers "yes" — guessing "no" there would throw away a live
+ * session's memory over a transient filesystem error.
+ */
+export const claudeSessionTranscriptExists = Effect.fn("claudeSessionTranscriptExists")(function* (
+  input: {
+    readonly config: Pick<ClaudeSettings, "homePath">;
+    readonly cwd: string;
+    readonly sessionId: string;
+  },
+  environment?: NodeJS.ProcessEnv,
+): Effect.fn.Return<boolean, never, FileSystem.FileSystem | Path.Path> {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const transcriptPath = yield* resolveClaudeSessionTranscriptPath(input, environment);
+  return yield* fileSystem.exists(transcriptPath).pipe(Effect.orElseSucceed(() => true));
+});
+
 export const makeClaudeContinuationGroupKey = Effect.fn("makeClaudeContinuationGroupKey")(
   function* (
     config: Pick<ClaudeSettings, "homePath">,

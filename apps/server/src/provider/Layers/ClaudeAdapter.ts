@@ -35,6 +35,7 @@ import {
   type ProviderRuntimeEvent,
   type ProviderRuntimeTurnStatus,
   type ProviderSendTurnInput,
+  type ProviderSessionStartInput,
   type ProviderSession,
   type ThreadTokenUsageSnapshot,
   type ProviderUserInputAnswers,
@@ -74,7 +75,8 @@ import { ServerConfig } from "../../config.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { CLAUDE_USAGE_METHOD } from "../ClaudeUsage.ts";
 import { projectToolServerMatchesPath } from "@t3tools/contracts";
-import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { claudeSessionTranscriptExists, makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import { seedHistoryNoticeMessage, type SeedHistoryReason } from "../sessionSeedHistory.ts";
 import { readProjectToolServers } from "../ProjectToolServerRegistry.ts";
 import {
   getClaudeModelCapabilities,
@@ -218,6 +220,28 @@ interface ClaudeSessionContext {
    * the only trustworthy signal that the turn ended because we stopped it.
    */
   interruptRequested: boolean;
+  /**
+   * The thread's visible history, to hand the agent on its next prompt because
+   * this session has no provider-side memory of the conversation. Cleared once
+   * delivered, so it rides exactly one turn.
+   */
+  pendingSeedHistory: string | undefined;
+  /** Kept so a mid-stream rebuild can seed the replacement session too. */
+  readonly seedHistory: string | undefined;
+  /** True when this session was started from a saved resume cursor. */
+  readonly startedFromResume: boolean;
+  /**
+   * The last turn handed to this session, so a rebuild can re-deliver it. A
+   * dead resume announces itself only once the SDK is already running the
+   * user's prompt, and that prompt must not be lost with the session.
+   */
+  lastTurnInput: ProviderSendTurnInput | undefined;
+  /**
+   * Replace this session with a fresh one carrying no resume cursor, seeded
+   * with the thread history, and re-deliver the turn that was in flight.
+   * Installed by `createSession` once the inputs it closes over are known.
+   */
+  rebuildWithoutResume: ((reason: string) => Effect.Effect<void, ProviderAdapterError>) | undefined;
 }
 
 interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
@@ -229,6 +253,16 @@ interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
   readonly [CLAUDE_USAGE_METHOD]?: () => Promise<unknown>;
   readonly close: () => void;
 }
+
+/**
+ * `startSession`, plus the one thing only this adapter can know: that the
+ * session it is replacing had a resume the CLI rejected once the stream was
+ * already running. See `startSessionInternal`.
+ */
+type ClaudeStartSessionWithReason = (
+  input: ProviderSessionStartInput,
+  seedHistoryReason?: SeedHistoryReason,
+) => Effect.Effect<ProviderSession, ProviderAdapterError>;
 
 export interface ClaudeAdapterLiveOptions {
   readonly instanceId?: ProviderInstanceId;
@@ -321,6 +355,33 @@ function isClaudeInterruptedCause(cause: Cause.Cause<{ readonly message: string 
     Cause.hasInterruptsOnly(cause) ||
     normalizeClaudeStreamMessages(cause).some(isClaudeInterruptedMessage)
   );
+}
+
+/**
+ * How Claude Code says "the session you asked me to resume is not there".
+ *
+ * The canonical wording is `No conversation found with session ID: <uuid>`,
+ * which is what a thread gets once its transcript has aged past
+ * `cleanupPeriodDays`. The others cover the same condition reported by older
+ * and newer CLI builds; all of them mean the same thing, and all of them are
+ * permanent — retrying the same resume can only produce the same answer.
+ */
+const CLAUDE_STALE_RESUME_SNIPPETS = [
+  "no conversation found with session id",
+  "no conversation found",
+  "conversation not found",
+  "session id not found",
+  "could not find session",
+  "no such session",
+] as const;
+
+export function isClaudeStaleResumeMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return CLAUDE_STALE_RESUME_SNIPPETS.some((snippet) => normalized.includes(snippet));
+}
+
+function isClaudeStaleResumeCause(cause: Cause.Cause<{ readonly message: string }>): boolean {
+  return normalizeClaudeStreamMessages(cause).some(isClaudeStaleResumeMessage);
 }
 
 function messageFromClaudeStreamCause(
@@ -1249,10 +1310,20 @@ const buildUserMessageEffect = Effect.fn("buildUserMessageEffect")(function* (
     readonly fileSystem: FileSystem.FileSystem;
     readonly attachmentsDir: string;
     readonly boundInstanceId: ProviderInstanceId;
+    /**
+     * Thread history for a session with no provider-side memory of it. Rides as
+     * its own leading block so the agent reads it as context handed to it, not
+     * as something the user typed.
+     */
+    readonly seedHistory?: string | undefined;
   },
 ) {
   const text = buildPromptText(input, dependencies.boundInstanceId);
   const sdkContent: Array<Record<string, unknown>> = [];
+
+  if (dependencies.seedHistory) {
+    sdkContent.push({ type: "text", text: dependencies.seedHistory });
+  }
 
   if (text.length > 0) {
     sdkContent.push({ type: "text", text });
@@ -3413,6 +3484,68 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       ),
     );
 
+  /**
+   * Replace a session whose resume the CLI rejected, and carry the turn over.
+   *
+   * The thread is not broken — only Claude Code's copy of it is. So the
+   * replacement starts with no resume cursor, is handed the conversation as
+   * text, and inherits the live turn state so the prompt that was in flight
+   * continues as the same turn: the orchestration layer sees one turn that took
+   * a little longer, not a failure followed by a mystery second turn.
+   *
+   * There is no retry budget to keep. The replacement carries no resume cursor,
+   * so it cannot fail this way again.
+   */
+  const rebuildSessionWithoutResume = Effect.fn("rebuildSessionWithoutResume")(function* (args: {
+    readonly context: ClaudeSessionContext;
+    readonly startInput: ProviderSessionStartInput;
+    readonly reason: string;
+  }) {
+    const { context, startInput, reason } = args;
+    const threadId = context.session.threadId;
+    const pendingTurn = context.lastTurnInput;
+    const carriedTurnState = context.turnState;
+
+    // Hand the turn over before the teardown runs: `stopSessionInternal`
+    // settles whatever turn it finds as interrupted, and this one is not over.
+    context.turnState = undefined;
+    context.lastTurnInput = undefined;
+    context.rebuildWithoutResume = undefined;
+
+    yield* Effect.logWarning("claude.session.rebuilding-without-resume", {
+      threadId,
+      reason,
+      resumeSessionId: context.resumeSessionId,
+    });
+
+    const { resumeCursor: _droppedCursor, ...withoutResume } = startInput;
+    yield* startSessionInternal(withoutResume, "rejected");
+
+    const rebuilt = sessions.get(threadId);
+    if (!rebuilt) {
+      return yield* new ProviderAdapterProcessError({
+        provider: PROVIDER,
+        threadId,
+        detail: "Claude session rebuild did not register a replacement session.",
+      });
+    }
+    rebuilt.turnState = carriedTurnState;
+
+    if (pendingTurn) {
+      yield* sendTurn(pendingTurn).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId,
+              detail: toMessage(cause, "Failed to re-send the turn after rebuilding the session."),
+              cause,
+            }),
+        ),
+      );
+    }
+  });
+
   const handleStreamExit = Effect.fn("handleStreamExit")(function* (
     context: ClaudeSessionContext,
     exit: Exit.Exit<void, ProviderAdapterProcessError>,
@@ -3422,6 +3555,33 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     if (Exit.isFailure(exit)) {
+      // A resume the CLI rejected is not a failed turn — it is a session we
+      // should never have reused. Rebuild it and carry the prompt across rather
+      // than handing the user an error for a conversation that is still intact.
+      const rebuild = context.rebuildWithoutResume;
+      if (
+        rebuild !== undefined &&
+        context.startedFromResume &&
+        isClaudeStaleResumeCause(exit.cause)
+      ) {
+        const detail = messageFromClaudeStreamCause(exit.cause, "Claude rejected the resume.");
+        const rebuilt = yield* rebuild(detail).pipe(
+          Effect.as(true),
+          Effect.catchCause((cause) =>
+            Effect.logError("claude.session.rebuild-without-resume.failed", {
+              threadId: context.session.threadId,
+              cause,
+            }).pipe(Effect.as(false)),
+          ),
+        );
+        if (rebuilt) {
+          // The replacement owns the thread now, including the turn. Tearing the
+          // old context down here would settle a turn that is running again.
+          context.stopped = true;
+          return;
+        }
+      }
+
       if (isClaudeInterruptedCause(exit.cause)) {
         if (context.turnState) {
           yield* completeTurn(
@@ -3549,8 +3709,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     return Effect.succeed(context);
   };
 
-  const startSession: ClaudeAdapterShape["startSession"] = Effect.fn("startSession")(
-    function* (input) {
+  /**
+   * Start a session, optionally knowing why the one before it is being replaced.
+   *
+   * `seedHistoryReason` only ever comes from inside this adapter — a resume the
+   * CLI accepted and then rejected once the stream was running. No caller
+   * outside can know that, which is why the public `startSession` below does
+   * not take it.
+   */
+  const startSessionInternal: ClaudeStartSessionWithReason = Effect.fn("startSession")(
+    function* (input, seedHistoryReason) {
       if (input.provider !== undefined && input.provider !== PROVIDER) {
         return yield* new ProviderAdapterValidationError({
           provider: PROVIDER,
@@ -3583,9 +3751,50 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       const startedAt = yield* nowIso;
       const resumeState = readClaudeResumeState(input.resumeCursor);
       const threadId = input.threadId;
-      const existingResumeSessionId = resumeState?.resume;
+      const requestedResumeSessionId = resumeState?.resume;
+
+      // Resuming a transcript Claude Code has already deleted is the single
+      // most common way a thread dies: the CLI accepts the `resume` option,
+      // then fails the first prompt with "No conversation found with session
+      // ID". The transcript is a file in this instance's own session store, so
+      // we can simply look before we leap — and when it is gone, start fresh
+      // with the thread's visible history instead of burning the user's turn.
+      const resumeTranscriptMissing =
+        requestedResumeSessionId !== undefined && input.cwd !== undefined
+          ? !(yield* claudeSessionTranscriptExists(
+              {
+                config: claudeSettings,
+                cwd: input.cwd,
+                sessionId: requestedResumeSessionId,
+              },
+              options?.environment,
+            ).pipe(
+              Effect.provideService(Path.Path, path),
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+            ))
+          : false;
+      if (resumeTranscriptMissing) {
+        yield* Effect.logWarning("claude.resume.transcript-missing", {
+          threadId: input.threadId,
+          resumeSessionId: requestedResumeSessionId,
+          cwd: input.cwd,
+        });
+      }
+
+      const existingResumeSessionId = resumeTranscriptMissing
+        ? undefined
+        : requestedResumeSessionId;
       const newSessionId = existingResumeSessionId === undefined ? yield* randomUUIDv4 : undefined;
       const sessionId = existingResumeSessionId ?? newSessionId;
+
+      // Seeding is for sessions that start with no provider-side memory. A
+      // successful resume already has the conversation and must not be told it
+      // twice.
+      const seedHistory = input.seedHistory?.trim();
+      const pendingSeedHistory =
+        existingResumeSessionId === undefined && seedHistory && seedHistory.length > 0
+          ? seedHistory
+          : undefined;
 
       const runtimeContext = yield* Effect.context<never>();
       const runFork = Effect.runForkWith(runtimeContext);
@@ -4165,7 +4374,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastThreadStartedId: undefined,
         stopped: false,
         interruptRequested: false,
+        pendingSeedHistory,
+        seedHistory: seedHistory && seedHistory.length > 0 ? seedHistory : undefined,
+        startedFromResume: existingResumeSessionId !== undefined,
+        lastTurnInput: undefined,
+        rebuildWithoutResume: undefined,
       };
+      // A resume that the CLI itself rejects can only be discovered once the
+      // stream is already running the user's prompt. This is how the stream
+      // handler gets back here: same inputs, no resume cursor, history seeded,
+      // and the in-flight prompt re-delivered onto the same turn.
+      context.rebuildWithoutResume = (reason: string) =>
+        rebuildSessionWithoutResume({ context, startInput: input, reason });
       yield* Ref.set(contextRef, context);
       sessions.set(threadId, context);
 
@@ -4212,6 +4432,18 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         providerRefs: {},
       });
 
+      // Say it in the thread, not just in the log. The agent is about to answer
+      // from a text transcript rather than from its own memory of the work, and
+      // the user is the only one who can tell whether that is good enough.
+      if (pendingSeedHistory !== undefined) {
+        const seedReason: SeedHistoryReason =
+          seedHistoryReason ?? (resumeTranscriptMissing ? "expired" : "absent");
+        yield* emitRuntimeWarning(context, seedHistoryNoticeMessage(seedReason), {
+          reason: seedReason,
+          ...(requestedResumeSessionId ? { resumeSessionId: requestedResumeSessionId } : {}),
+        });
+      }
+
       let streamFiber: Fiber.Fiber<void, never>;
       streamFiber = runFork(
         Effect.exit(runSdkStream(context)).pipe(
@@ -4242,6 +4474,8 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       };
     },
   );
+
+  const startSession: ClaudeAdapterShape["startSession"] = (input) => startSessionInternal(input);
 
   const sendTurn: ClaudeAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
     const context = yield* requireSession(input.threadId);
@@ -4331,16 +4565,28 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       });
     }
 
+    // Retained before the message is built: if this session turns out to be
+    // unresumable, the rebuild re-delivers exactly this input rather than
+    // losing the user's prompt with the session.
+    context.lastTurnInput = input;
+
+    const seedHistory = context.pendingSeedHistory;
     const message = yield* buildUserMessageEffect(input, {
       fileSystem,
       attachmentsDir: serverConfig.attachmentsDir,
       boundInstanceId,
+      ...(seedHistory !== undefined ? { seedHistory } : {}),
     });
 
     yield* Queue.offer(context.promptQueue, {
       type: "message",
       message,
     }).pipe(Effect.mapError((cause) => toRequestError(input.threadId, "turn/start", cause)));
+
+    // One prompt only. Once the history is in the transcript the session owns
+    // it, and repeating it every turn would spend the context window on a
+    // conversation the agent can already see.
+    context.pendingSeedHistory = undefined;
 
     return {
       threadId: context.session.threadId,

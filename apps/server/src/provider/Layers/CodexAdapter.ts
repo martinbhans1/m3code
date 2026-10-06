@@ -645,6 +645,21 @@ function mapToRuntimeEvents(
     ];
   }
 
+  // The session started without the rollout it meant to resume and was handed
+  // the thread's visible history instead. An info-toned work-log line, because
+  // nothing failed — the agent simply knows less than it would have.
+  if (event.method === "session/historyRebuilt") {
+    return [
+      {
+        type: "runtime.warning",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          message: event.message ?? "Memory rebuilt from the visible history.",
+        },
+      },
+    ];
+  }
+
   if (event.method === "session/exited" || event.method === "session/closed") {
     return [
       {
@@ -1419,6 +1434,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
           ...(isCodexResumeCursorSchema(input.resumeCursor)
             ? { resumeCursor: input.resumeCursor }
             : {}),
+          ...(input.seedHistory ? { seedHistory: input.seedHistory } : {}),
           runtimeMode: input.runtimeMode,
           ...(input.modelSelection?.instanceId === boundInstanceId
             ? { model: input.modelSelection.model }

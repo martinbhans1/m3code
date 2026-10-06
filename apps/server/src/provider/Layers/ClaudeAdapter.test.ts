@@ -167,8 +167,19 @@ function makeHarness(config?: {
   readonly baseDir?: string;
   readonly claudeConfig?: Partial<ClaudeSettings>;
   readonly instanceId?: ProviderInstanceId;
+  readonly environment?: NodeJS.ProcessEnv;
+  /**
+   * Give every `startSession` its own fake runtime. A session rebuild starts a
+   * second query, and it must not inherit the first one's already-finished
+   * stream. Opt-in so existing tests keep the single shared query they assert on.
+   */
+  readonly freshQueryPerCall?: boolean;
 }) {
-  const query = new FakeClaudeQuery();
+  const queries: Array<FakeClaudeQuery> = [new FakeClaudeQuery()];
+  const createInputs: Array<{
+    readonly prompt: AsyncIterable<SDKUserMessage>;
+    readonly options: ClaudeQueryOptions;
+  }> = [];
   let createInput:
     | {
         readonly prompt: AsyncIterable<SDKUserMessage>;
@@ -178,9 +189,14 @@ function makeHarness(config?: {
 
   const adapterOptions: ClaudeAdapterLiveOptions = {
     ...(config?.instanceId ? { instanceId: config.instanceId } : {}),
+    ...(config?.environment ? { environment: config.environment } : {}),
     createQuery: (input) => {
       createInput = input;
-      return query;
+      createInputs.push(input);
+      if (config?.freshQueryPerCall && createInputs.length > 1) {
+        queries.push(new FakeClaudeQuery());
+      }
+      return queries[queries.length - 1] as FakeClaudeQuery;
     },
     ...(config?.nativeEventLogger
       ? {
@@ -211,8 +227,10 @@ function makeHarness(config?: {
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(NodeServices.layer),
     ),
-    query,
+    query: queries[0] as FakeClaudeQuery,
+    queries,
     getLastCreateQueryInput: () => createInput,
+    getCreateQueryInputs: () => createInputs,
   };
 }
 
@@ -4520,6 +4538,218 @@ describe("ClaudeAdapterLive", () => {
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
+    );
+  });
+  describe("unresumable provider sessions", () => {
+    const RESUMED_SESSION_ID = "ace4f745-cada-4244-9de7-fc0b44c9e845";
+    const SEED_HISTORY =
+      "<rebuilt-conversation-history>\nEarlier: the marketing angle discussion.\n</rebuilt-conversation-history>";
+
+    /**
+     * A Claude config dir on disk, because the whole point of the preflight is
+     * that it reads the real session store rather than trusting the cursor.
+     */
+    function makeConfigDir(input: { readonly withTranscript: boolean }): {
+      readonly configDir: string;
+      readonly cwd: string;
+    } {
+      const configDir = mkdtempSync(path.join(os.tmpdir(), "claude-resume-config-"));
+      const cwd = path.join(configDir, "workspace");
+      mkdirSync(cwd, { recursive: true });
+      const projectDir = path.join(configDir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+      mkdirSync(projectDir, { recursive: true });
+      if (input.withTranscript) {
+        writeFileSync(path.join(projectDir, `${RESUMED_SESSION_ID}.jsonl`), "{}");
+      }
+      return { configDir, cwd };
+    }
+
+    it.effect("starts fresh and seeds the history when the saved transcript is gone", () => {
+      const { configDir, cwd } = makeConfigDir({ withTranscript: false });
+      const harness = makeHarness({ environment: { CLAUDE_CONFIG_DIR: configDir } });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const runtimeEventsFiber = yield* Stream.takeUntil(
+          adapter.streamEvents,
+          (event) => event.type === "turn.started",
+        ).pipe(Stream.runCollect, Effect.forkChild);
+
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+          cwd,
+          seedHistory: SEED_HISTORY,
+          resumeCursor: {
+            threadId: THREAD_ID,
+            resume: RESUMED_SESSION_ID,
+            turnCount: 3,
+          },
+        });
+
+        const createInput = harness.getLastCreateQueryInput();
+        assert.equal(createInput?.options.resume, undefined);
+        assert.notEqual(createInput?.options.sessionId, undefined);
+        assert.notEqual(createInput?.options.sessionId, RESUMED_SESSION_ID);
+
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "picking this back up" });
+
+        const promptMessage = yield* Effect.promise(() => readFirstPromptMessage(createInput));
+        const content = promptMessage?.message.content;
+        assert.equal(Array.isArray(content), true);
+        if (!Array.isArray(content)) return;
+        assert.deepEqual(
+          content.map((block) => (block as { text?: string }).text),
+          [SEED_HISTORY, "picking this back up"],
+        );
+
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        const notice = runtimeEvents.find((event) => event.type === "runtime.warning");
+        assert.notEqual(notice, undefined);
+        if (notice?.type === "runtime.warning") {
+          assert.include(notice.payload.message, "Memory rebuilt from the visible history");
+          assert.include(notice.payload.message, "expired");
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+        Effect.ensuring(Effect.sync(() => rmSync(configDir, { recursive: true, force: true }))),
+      );
+    });
+
+    it.effect("resumes normally and seeds nothing when the transcript is still there", () => {
+      const { configDir, cwd } = makeConfigDir({ withTranscript: true });
+      const harness = makeHarness({ environment: { CLAUDE_CONFIG_DIR: configDir } });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const runtimeEventsFiber = yield* Stream.takeUntil(
+          adapter.streamEvents,
+          (event) => event.type === "turn.started",
+        ).pipe(Stream.runCollect, Effect.forkChild);
+
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+          cwd,
+          seedHistory: SEED_HISTORY,
+          resumeCursor: {
+            threadId: THREAD_ID,
+            resume: RESUMED_SESSION_ID,
+            turnCount: 3,
+          },
+        });
+
+        const createInput = harness.getLastCreateQueryInput();
+        assert.equal(createInput?.options.resume, RESUMED_SESSION_ID);
+        assert.equal(createInput?.options.sessionId, undefined);
+
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "picking this back up" });
+        const promptText = yield* Effect.promise(() => readFirstPromptText(createInput));
+        assert.equal(promptText, "picking this back up");
+
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        assert.equal(
+          runtimeEvents.some((event) => event.type === "runtime.warning"),
+          false,
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+        Effect.ensuring(Effect.sync(() => rmSync(configDir, { recursive: true, force: true }))),
+      );
+    });
+
+    it.effect(
+      "rebuilds the session and re-delivers the turn when Claude rejects the resume",
+      () => {
+        // Transcript present, so the preflight passes: this is the case only the
+        // CLI can discover, once the prompt is already in flight.
+        const { configDir, cwd } = makeConfigDir({ withTranscript: true });
+        const harness = makeHarness({
+          environment: { CLAUDE_CONFIG_DIR: configDir },
+          freshQueryPerCall: true,
+        });
+        return Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const runtimeEventsFiber = yield* Stream.takeUntil(
+            adapter.streamEvents,
+            (event) => event.type === "runtime.warning",
+          ).pipe(Stream.runCollect, Effect.forkChild);
+
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: ProviderDriverKind.make("claudeAgent"),
+            runtimeMode: "full-access",
+            cwd,
+            seedHistory: SEED_HISTORY,
+            resumeCursor: {
+              threadId: THREAD_ID,
+              resume: RESUMED_SESSION_ID,
+              turnCount: 3,
+            },
+          });
+
+          const turn = yield* adapter.sendTurn({
+            threadId: THREAD_ID,
+            input: "picking this back up",
+          });
+
+          harness.queries[0]?.fail(
+            new Error(
+              `Claude Code returned an error result: No conversation found with session ID: ${RESUMED_SESSION_ID}`,
+            ),
+          );
+
+          // Joining on the rebuild's notice is also what waits for the rebuild:
+          // it is the last event the replacement session emits on startup.
+          const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+
+          const createInputs = harness.getCreateQueryInputs();
+          assert.equal(createInputs.length, 2);
+          assert.equal(createInputs[0]?.options.resume, RESUMED_SESSION_ID);
+          assert.equal(createInputs[1]?.options.resume, undefined);
+
+          // The user's prompt is not lost: it rides the rebuilt session, with the
+          // history in front of it.
+          const promptMessage = yield* Effect.promise(() =>
+            readFirstPromptMessage(createInputs[1]),
+          );
+          const content = promptMessage?.message.content;
+          assert.equal(Array.isArray(content), true);
+          if (Array.isArray(content)) {
+            assert.deepEqual(
+              content.map((block) => (block as { text?: string }).text),
+              [SEED_HISTORY, "picking this back up"],
+            );
+          }
+
+          // The turn is still the same turn, and it has not been reported failed.
+          assert.equal(
+            runtimeEvents.some(
+              (event) => event.type === "turn.completed" && event.payload.state === "failed",
+            ),
+            false,
+          );
+          assert.equal(runtimeEvents.filter((event) => event.type === "turn.started").length, 1);
+          const turnStarted = runtimeEvents.find((event) => event.type === "turn.started");
+          assert.equal(String(turnStarted?.turnId), String(turn.turnId));
+
+          const notice = runtimeEvents.find((event) => event.type === "runtime.warning");
+          if (notice?.type === "runtime.warning") {
+            assert.include(notice.payload.message, "could not be reopened");
+          } else {
+            assert.fail("expected a memory-rebuilt notice");
+          }
+
+          // And the thread still has a live session to send the next turn to.
+          assert.equal(yield* adapter.hasSession(THREAD_ID), true);
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.provide(harness.layer),
+          Effect.ensuring(Effect.sync(() => rmSync(configDir, { recursive: true, force: true }))),
+        );
+      },
     );
   });
 });

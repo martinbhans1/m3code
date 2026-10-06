@@ -58,6 +58,17 @@ export const ProviderSessionStartInput = Schema.Struct({
   cwd: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   resumeCursor: Schema.optional(Schema.Unknown),
+  /**
+   * The thread's visible history, already rendered and bounded, for a session
+   * that has to start without the provider's own memory of it.
+   *
+   * Supplied whenever the thread has prior messages — the caller cannot know in
+   * advance whether the resume will work, because a dead Claude transcript or a
+   * rejected Codex rollout only announces itself at the provider. An adapter
+   * that resumes successfully ignores this; one that cannot falls back to a
+   * fresh session and delivers it as a preamble instead of failing the turn.
+   */
+  seedHistory: Schema.optional(TrimmedNonEmptyString),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
   runtimeMode: RuntimeMode,

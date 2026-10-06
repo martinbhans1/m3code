@@ -42,6 +42,7 @@ import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
 } from "../CodexDeveloperInstructions.ts";
+import { seedHistoryNoticeMessage, type SeedHistoryReason } from "../sessionSeedHistory.ts";
 const decodeV2TurnStartResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnStartResponse);
 const decodeV2TurnSteerResponse = Schema.decodeUnknownEffect(EffectCodexSchema.V2TurnSteerResponse);
 
@@ -62,6 +63,11 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "no such thread",
   "unknown thread",
   "does not exist",
+  // A rollout this build cannot decode is every bit as unresumable as one that
+  // is gone, and just as permanent — a recorded item our schema does not know
+  // (a `sleep` event was the first of these) fails the same way on every
+  // attempt. Treating it as fatal killed threads whose conversation was intact.
+  "invalid thread/resume payload",
 ];
 
 export function hasConfiguredMcpServer(appServerArgs: ReadonlyArray<string> | undefined): boolean {
@@ -121,6 +127,12 @@ export interface CodexSessionRuntimeOptions {
   readonly model?: string;
   readonly serviceTier?: CodexServiceTier | undefined;
   readonly resumeCursor?: CodexResumeCursor;
+  /**
+   * The thread's visible history, for a session that ends up without the
+   * rollout it meant to resume. Delivered as a preamble on the first turn; see
+   * `sessionSeedHistory`.
+   */
+  readonly seedHistory?: string;
   readonly appServerArgs?: ReadonlyArray<string>;
 }
 
@@ -456,6 +468,14 @@ export const openCodexThread = (input: {
   readonly requestedModel: string | undefined;
   readonly serviceTier: CodexServiceTier | undefined;
   readonly resumeThreadId: string | undefined;
+  /**
+   * Called when the resume was abandoned for a fresh thread. The conversation
+   * survives in our own store, so the caller uses this to hand the new thread
+   * the history and tell the user its memory was rebuilt.
+   */
+  readonly onResumeFallback?: (
+    reason: string,
+  ) => Effect.Effect<void, CodexErrors.CodexAppServerError>;
 }): Effect.Effect<CodexThreadOpenResponse, CodexErrors.CodexAppServerError> => {
   const resumeThreadId = input.resumeThreadId;
   const startParams = buildThreadStartParams({
@@ -482,7 +502,10 @@ export const openCodexThread = (input: {
           resumeThreadId,
           recoverable: true,
           cause: error.message,
-        }).pipe(Effect.andThen(input.client.request("thread/start", startParams))),
+        }).pipe(
+          Effect.andThen(input.onResumeFallback?.(error.message) ?? Effect.void),
+          Effect.andThen(input.client.request("thread/start", startParams)),
+        ),
       ),
     );
 };
@@ -728,6 +751,12 @@ export const makeCodexSessionRuntime = (
     const pendingUserInputsRef = yield* Ref.make(new Map<ApprovalRequestId, PendingUserInput>());
     const collabReceiverTurnsRef = yield* Ref.make(new Map<string, TurnId>());
     const closedRef = yield* Ref.make(false);
+    /**
+     * History to hand the agent on its first prompt, set only when this session
+     * ends up with no rollout of the conversation. Cleared once delivered, so it
+     * rides exactly one turn.
+     */
+    const pendingSeedHistoryRef = yield* Ref.make<string | undefined>(undefined);
 
     // `~` is not shell-expanded when env vars are set via
     // `child_process.spawn`; `expandHomePath` lets a configured
@@ -1220,6 +1249,21 @@ export const makeCodexSessionRuntime = (
 
       const requestedModel = normalizeCodexModelSlug(options.model);
 
+      const requestedResumeThreadId = readResumeCursorThreadId(options.resumeCursor);
+      const seedHistory = options.seedHistory?.trim();
+
+      // Say it in the thread, not just in the log: the agent is about to answer
+      // from a text transcript rather than its own memory of the work, and the
+      // user is the only one who can judge whether that is good enough.
+      const armSeedHistory = (reason: SeedHistoryReason) =>
+        seedHistory && seedHistory.length > 0
+          ? Ref.set(pendingSeedHistoryRef, seedHistory).pipe(
+              Effect.andThen(
+                emitSessionEvent("session/historyRebuilt", seedHistoryNoticeMessage(reason)),
+              ),
+            )
+          : Effect.void;
+
       const opened = yield* openCodexThread({
         client,
         threadId: options.threadId,
@@ -1227,8 +1271,18 @@ export const makeCodexSessionRuntime = (
         cwd: options.cwd,
         requestedModel,
         serviceTier: options.serviceTier,
-        resumeThreadId: readResumeCursorThreadId(options.resumeCursor),
+        ...(requestedResumeThreadId !== undefined
+          ? { resumeThreadId: requestedResumeThreadId }
+          : { resumeThreadId: undefined }),
+        onResumeFallback: () => armSeedHistory("rejected"),
       });
+
+      // No rollout to resume at all: a thread moving to a Codex instance that
+      // was not there for the original conversation starts blank unless we seed
+      // it.
+      if (requestedResumeThreadId === undefined) {
+        yield* armSeedHistory("absent");
+      }
 
       const providerThreadId = opened.thread.id;
       const session = {
@@ -1293,10 +1347,21 @@ export const makeCodexSessionRuntime = (
           const normalizedModel = normalizeCodexModelSlug(
             input.model ?? (yield* Ref.get(sessionRef)).model,
           );
+          // Taken, not peeked: the rollout holds the history after this turn, and
+          // repeating it would spend the context window on a conversation the
+          // agent can already see.
+          const pendingSeedHistory = yield* Ref.getAndSet(pendingSeedHistoryRef, undefined);
+          const promptText =
+            pendingSeedHistory !== undefined
+              ? `${pendingSeedHistory}
+
+${input.input ?? ""}`.trimEnd()
+              : input.input;
+
           const params = yield* buildTurnStartParams({
             threadId: providerThreadId,
             runtimeMode: options.runtimeMode,
-            ...(input.input ? { prompt: input.input } : {}),
+            ...(promptText ? { prompt: promptText } : {}),
             ...(input.attachments ? { attachments: input.attachments } : {}),
             ...(normalizedModel ? { model: normalizedModel } : {}),
             ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
