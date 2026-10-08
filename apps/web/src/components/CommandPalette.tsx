@@ -1800,7 +1800,7 @@ function OpenCommandPaletteDialog() {
             <Toggle
               size="xs"
               variant="ghost"
-              className="gap-1 px-2 text-xs text-muted-foreground"
+              className="gap-1 px-2 text-xs text-muted-foreground sm:text-xs"
               pressed={searchMessages}
               onPressedChange={setSearchMessages}
               aria-label="Also search message text"
