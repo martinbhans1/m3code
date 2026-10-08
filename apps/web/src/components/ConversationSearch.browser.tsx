@@ -16,13 +16,14 @@ vi.mock("../environmentApi", () => ({
 }));
 const environmentIds = [EnvironmentId.make("local")];
 const cutoff = "2026-09-08T00:00:00.000Z";
-function Harness() {
+function Harness({ titlesOnly = false }: { titlesOnly?: boolean }) {
   const [query, setQuery] = useState("deployment");
   const [recent, setRecent] = useState(false);
   const state = useConversationSearch({
     query,
     environmentIds,
     updatedSince: recent ? cutoff : null,
+    titlesOnly,
     enabled: true,
   });
   return (
@@ -104,6 +105,17 @@ it("hides old results when the date filter changes and ignores an obsolete query
   await page.getByRole("textbox", { name: "Query" }).fill("another query");
   await expect.element(page.getByRole("button", { name: "Recent result" })).not.toBeInTheDocument();
   await expect.element(page.getByRole("status")).toHaveTextContent("Searching");
+});
+
+it("searches titles only, without the semantic pass, until message search is asked for", async () => {
+  searchThreads.mockResolvedValue(response("Title result"));
+  await render(<Harness titlesOnly />);
+  await expect.element(page.getByRole("button", { name: "Title result" })).toBeVisible();
+  expect(searchThreads.mock.calls[0]?.[0]).toMatchObject({
+    query: "deployment",
+    titlesOnly: true,
+    includeSemantic: false,
+  });
 });
 
 it("ends loading with a failure instead of reporting no matches", async () => {

@@ -1500,6 +1500,12 @@ export const OrchestrationSearchThreadsInput = Schema.Struct({
    * either finds the string or reports honestly that nothing contains it.
    */
   exact: Schema.optionalKey(Schema.Boolean),
+  /**
+   * Match only thread titles, project names and branches — never message text,
+   * never the semantic index. Cheap enough to run on every keystroke, and it is
+   * what a search is most of the time: a word you remember from the title.
+   */
+  titlesOnly: Schema.optionalKey(Schema.Boolean),
 });
 export type OrchestrationSearchThreadsInput = typeof OrchestrationSearchThreadsInput.Type;
 

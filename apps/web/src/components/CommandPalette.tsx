@@ -14,6 +14,7 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import {
   ArrowDownIcon,
   ArrowLeftIcon,
@@ -25,6 +26,7 @@ import {
   MessageSquareIcon,
   SettingsIcon,
   SquarePenIcon,
+  TextSearchIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -47,6 +49,7 @@ import {
 } from "../environments/runtime";
 import { useConversationSearch } from "../hooks/useConversationSearch";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
+import { useLocalStorage } from "../hooks/useLocalStorage";
 import { useSettings } from "../hooks/useSettings";
 import { readLocalApi } from "../localApi";
 import {
@@ -116,11 +119,22 @@ import {
 } from "./ui/command";
 import { Button } from "./ui/button";
 import { Kbd, KbdGroup } from "./ui/kbd";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { Spinner } from "./ui/spinner";
+import { Toggle } from "./ui/toggle";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ComposerHandleContext, useComposerHandleContext } from "../composerHandleContext";
 import type { ChatComposerHandle } from "./chat/ChatComposer";
+
+const CONVERSATION_SEARCH_DAYS_KEY = "t3code:conversation-search-days";
+const CONVERSATION_SEARCH_DAY_OPTIONS = [
+  { value: "0", label: "Any time" },
+  { value: "7", label: "Past week" },
+  { value: "14", label: "Past 2 weeks" },
+  { value: "30", label: "Past month" },
+  { value: "90", label: "Past 3 months" },
+];
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 const BROWSE_STALE_TIME_MS = 30_000;
@@ -412,7 +426,16 @@ function OpenCommandPaletteDialog() {
   const keybindings = useServerKeybindings();
   const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
   const currentView = viewStack.at(-1) ?? null;
-  const [searchDays, setSearchDays] = useState(0);
+  // Remembered between openings: the range you searched last is almost always
+  // the one you want next.
+  const [searchDays, setSearchDays] = useLocalStorage(
+    CONVERSATION_SEARCH_DAYS_KEY,
+    14,
+    Schema.Number,
+  );
+  // Titles first, every time the palette opens. Message text is the slow,
+  // noisy fallback for when no title word comes to mind.
+  const [searchMessages, setSearchMessages] = useState(false);
   const updatedSince = useMemo(
     () => (searchDays === 0 ? null : new Date(Date.now() - searchDays * 86_400_000).toISOString()),
     [searchDays],
@@ -443,6 +466,7 @@ function OpenCommandPaletteDialog() {
   } = useConversationSearch({
     query,
     updatedSince,
+    titlesOnly: !searchMessages,
     environmentIds: searchableEnvironmentIds,
     enabled:
       currentView === null &&
@@ -740,13 +764,14 @@ function OpenCommandPaletteDialog() {
     if (
       !threadSearchResponse ||
       threadSearchResponse.query !== query.trim() ||
-      threadSearchResponse.updatedSince !== updatedSince
+      threadSearchResponse.updatedSince !== updatedSince ||
+      threadSearchResponse.titlesOnly === searchMessages
     )
       return null;
     const loadedThreadByKey = new Map(
       threads.map((thread) => [`${thread.environmentId}:${thread.id}`, thread] as const),
     );
-    return threadSearchResponse.results.map((result) => {
+    const resultItems = threadSearchResponse.results.map((result) => {
       const loadedThread = loadedThreadByKey.get(`${result.environmentId}:${result.threadId}`);
       const descriptionParts = [
         result.projectTitle,
@@ -778,7 +803,26 @@ function OpenCommandPaletteDialog() {
         },
       } satisfies CommandPaletteActionItem;
     });
-  }, [deferredQuery, navigate, query, threadSearchResponse, threads, updatedSince]);
+    if (searchMessages) return resultItems;
+    return [
+      ...resultItems,
+      {
+        kind: "action",
+        value: "thread-search:search-messages",
+        searchTerms: [normalizedQuery],
+        title: `Search inside conversations for "${normalizedQuery}"`,
+        description:
+          resultItems.length === 0
+            ? "No title matches. Look through what was said instead."
+            : "Look through what was said, not just titles.",
+        icon: <TextSearchIcon className={ITEM_ICON_CLASS} />,
+        keepOpen: true,
+        run: async () => {
+          setSearchMessages(true);
+        },
+      } satisfies CommandPaletteActionItem,
+    ];
+  }, [deferredQuery, navigate, query, searchMessages, threadSearchResponse, threads, updatedSince]);
   const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
 
   function pushPaletteView(view: CommandPaletteView): void {
@@ -1735,19 +1779,35 @@ function OpenCommandPaletteDialog() {
         </div>
         {currentView === null && !isBrowsing && !isRemoteProjectCloneFlow && !isActionsOnly ? (
           <div className="relative flex min-h-10 shrink-0 flex-wrap items-center gap-2 border-b px-3 py-1 text-xs text-muted-foreground">
-            <label htmlFor="conversation-search-date">Updated</label>
-            <select
-              id="conversation-search-date"
-              className="rounded border bg-background px-2 py-1 text-foreground"
-              value={searchDays}
-              onChange={(event) => setSearchDays(Number(event.target.value))}
+            <span>Updated</span>
+            <Select
+              modal={false}
+              value={String(searchDays)}
+              onValueChange={(value) => setSearchDays(Number(value))}
+              items={CONVERSATION_SEARCH_DAY_OPTIONS}
             >
-              <option value={0}>Any time</option>
-              <option value={7}>Past week</option>
-              <option value={14}>Past 2 weeks</option>
-              <option value={30}>Past month</option>
-              <option value={90}>Past 3 months</option>
-            </select>
+              <SelectTrigger variant="ghost" size="xs" aria-label="Updated within">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectPopup>
+                {CONVERSATION_SEARCH_DAY_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+            <Toggle
+              size="xs"
+              variant="ghost"
+              className="gap-1 px-2 text-xs text-muted-foreground"
+              pressed={searchMessages}
+              onPressedChange={setSearchMessages}
+              aria-label="Also search message text"
+            >
+              <TextSearchIcon className="size-3.5" />
+              Messages too
+            </Toggle>
             <span role="status" className="ml-auto flex items-center gap-1.5">
               {isThreadSearchPending ? (
                 <>

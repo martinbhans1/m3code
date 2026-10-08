@@ -364,6 +364,52 @@ export const THREAD_SEARCH_BAND = {
 
 export type ThreadSearchBand = (typeof THREAD_SEARCH_BAND)[keyof typeof THREAD_SEARCH_BAND];
 
+/**
+ * The words of a query worth matching on their own: lowercased, stopwords and
+ * single letters dropped. Falls back to every word when that would leave none,
+ * so "to do" still searches for something.
+ */
+export function querySearchWords(query: string): string[] {
+  const words = [
+    ...new Set(
+      query
+        .normalize("NFKC")
+        .toLowerCase()
+        .match(/[\p{L}\p{N}_]+/gu),
+    ),
+  ];
+  const meaningful = words.filter((word) => word.length > 1 && !FTS_STOPWORDS.has(word));
+  return meaningful.length > 0 ? meaningful : words;
+}
+
+/**
+ * How well a thread's own labels match the query: 0 for no match, and 3 or more
+ * when the thread's title matched rather than its project or branch.
+ *
+ * The whole query as one string comes first. Word by word comes after: a title
+ * is remembered as a few of its words, rarely in order, so "status fix" has to
+ * find "Fix the status bar" — a title holding every word counts as a title hit.
+ */
+export function rankThreadMetadata(
+  query: string,
+  labels: { readonly title: string; readonly projectTitle: string; readonly branch: string | null },
+): number {
+  const needle = query.trim().toLowerCase();
+  const title = labels.title.toLowerCase();
+  const projectTitle = labels.projectTitle.toLowerCase();
+  const branch = (labels.branch ?? "").toLowerCase();
+  if (title === needle) return 5;
+  if (title.startsWith(needle)) return 4;
+  if (title.includes(needle)) return 3;
+  const words = querySearchWords(needle);
+  if (words.length === 0) return 0;
+  if (words.every((word) => title.includes(word))) return 3;
+  if (projectTitle.includes(needle)) return 2;
+  if (branch.includes(needle)) return 1;
+  const labelText = `${title} ${projectTitle} ${branch}`;
+  return words.every((word) => labelText.includes(word)) ? 2 : 0;
+}
+
 /** A result carrying the band it should be read in; internal to search. */
 export interface BandedThreadSearchResult extends OrchestrationThreadSearchResult {
   readonly band: ThreadSearchBand;

@@ -108,6 +108,19 @@ layer("conversation date filtering", (it) => {
             });
             assert.deepStrictEqual(none.results, []);
           }
+
+          // Titles only: the title words find it, message-only words do not.
+          const byTitle = yield* search.search({ query: "sprint visma", titlesOnly: true });
+          assert.deepStrictEqual(
+            new Set(byTitle.results.map((row) => row.threadId)),
+            new Set(["recent", "thread-1"]),
+          );
+          const byMessage = yield* search.search({ query: "NXT", titlesOnly: true });
+          assert.deepStrictEqual(byMessage.results, []);
+
+          // Keyword hits still carry a snippet around the word, now built outside SQL.
+          const content = yield* search.search({ query: "NXT", includeSemantic: false });
+          assert.ok(content.results.every((row) => row.snippet?.includes("NXT")));
         }).pipe(Effect.provide(ConversationSearchLive));
       }),
   );

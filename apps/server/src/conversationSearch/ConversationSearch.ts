@@ -23,6 +23,8 @@ import {
   fromEmbeddingBytes,
   MAX_SEMANTIC_THREADS,
   mergeHybridThreadSearchResults,
+  querySearchWords,
+  rankThreadMetadata,
   relaxFtsQuery,
   semanticSimilarityFloor,
   THREAD_SEARCH_BAND,
@@ -100,18 +102,15 @@ interface ThreadMetadataRow {
   readonly branch: string | null;
   readonly archivedAt: string | null;
   readonly updatedAt: string;
-  readonly metadataRank: number;
 }
 
-interface ContentSearchRow extends Omit<ThreadMetadataRow, "metadataRank"> {
+interface ContentSearchRow extends ThreadMetadataRow {
   readonly messageId: string;
   readonly role: string;
   readonly text: string;
-  readonly snippet: string | null;
-  readonly ftsRank: number;
 }
 
-interface ExactSearchRow extends Omit<ThreadMetadataRow, "metadataRank"> {
+interface ExactSearchRow extends ThreadMetadataRow {
   readonly messageId: string;
   readonly role: string;
   readonly text: string;
@@ -136,7 +135,7 @@ interface SemanticChunkRow {
   readonly embedding: Uint8Array;
 }
 
-interface SemanticThreadMetadataRow extends Omit<ThreadMetadataRow, "metadataRank"> {}
+interface SemanticThreadMetadataRow extends ThreadMetadataRow {}
 
 interface LoadedSemanticChunk extends ConversationSearchChunk {
   readonly embedding: Float32Array;
@@ -197,6 +196,19 @@ function exactSnippet(text: string, matchOffset: number): string {
   const start = Math.max(0, matchOffset - 1 - EXACT_SNIPPET_LEAD);
   const slice = text.slice(start, start + EXACT_SNIPPET_CHARS);
   return `${start > 0 ? "…" : ""}${slice.trim()}${start + EXACT_SNIPPET_CHARS < text.length ? "…" : ""}`;
+}
+
+/**
+ * A window around the first search word in a keyword hit. Built here rather than
+ * by FTS5's `snippet()`, which has to be evaluated for every candidate row and so
+ * reads the full text of every message the index matched, not just the ones shown.
+ */
+function keywordSnippet(text: string, query: string): string {
+  const haystack = text.toLowerCase();
+  const offsets = querySearchWords(query)
+    .map((word) => haystack.indexOf(word))
+    .filter((offset) => offset >= 0);
+  return exactSnippet(text, offsets.length > 0 ? Math.min(...offsets) + 1 : 1);
 }
 
 function semanticSnippet(text: string): string {
@@ -477,6 +489,8 @@ const makeConversationSearch = Effect.gen(function* () {
     candidateLimit: number,
     updatedSince: string | null,
   ) {
+    // Every live thread's labels, ranked in JS: a few thousand short rows read in
+    // milliseconds, and word-by-word title matching is awkward to express in SQL.
     const rows = yield* sql<ThreadMetadataRow>`
       SELECT
         thread.thread_id AS "threadId",
@@ -485,41 +499,33 @@ const makeConversationSearch = Effect.gen(function* () {
         project.title AS "projectTitle",
         thread.branch,
         thread.archived_at AS "archivedAt",
-        thread.updated_at AS "updatedAt",
-        CASE
-          WHEN lower(thread.title) = lower(${query}) THEN 5
-          WHEN lower(thread.title) LIKE lower(${`${query}%`}) THEN 4
-          WHEN instr(lower(thread.title), lower(${query})) > 0 THEN 3
-          WHEN instr(lower(project.title), lower(${query})) > 0 THEN 2
-          ELSE 1
-        END AS "metadataRank"
+        thread.updated_at AS "updatedAt"
       FROM projection_threads AS thread
       JOIN projection_projects AS project ON project.project_id = thread.project_id
       WHERE thread.deleted_at IS NULL
         AND project.deleted_at IS NULL
         AND (${includeArchived ? 1 : 0} = 1 OR thread.archived_at IS NULL)
         AND (${updatedSince} IS NULL OR thread.updated_at >= ${updatedSince})
-        AND (
-          instr(lower(thread.title), lower(${query})) > 0
-          OR instr(lower(project.title), lower(${query})) > 0
-          OR instr(lower(COALESCE(thread.branch, '')), lower(${query})) > 0
-        )
-      ORDER BY "metadataRank" DESC, thread.updated_at DESC
-      LIMIT ${candidateLimit}
+      ORDER BY thread.updated_at DESC
     `;
-    return rows.map(
-      (row, index): BandedThreadSearchResult => ({
-        ...toBaseResult(row),
-        snippet: null,
-        matchedRole: null,
-        matchedMessageId: null,
-        matchKind: "metadata",
-        // Matching the thread's own title is a different claim from matching the
-        // project it happens to live in, which every sibling thread matches too.
-        band: row.metadataRank >= 3 ? THREAD_SEARCH_BAND.title : THREAD_SEARCH_BAND.metadata,
-        score: 1_100 + row.metadataRank * 20 - index,
-      }),
-    );
+    return rows
+      .map((row) => ({ row, rank: rankThreadMetadata(query, row) }))
+      .filter((entry) => entry.rank > 0)
+      .toSorted((left, right) => right.rank - left.rank)
+      .slice(0, candidateLimit)
+      .map(
+        ({ row, rank }, index): BandedThreadSearchResult => ({
+          ...toBaseResult(row),
+          snippet: null,
+          matchedRole: null,
+          matchedMessageId: null,
+          matchKind: "metadata",
+          // Matching the thread's own title is a different claim from matching the
+          // project it happens to live in, which every sibling thread matches too.
+          band: rank >= 3 ? THREAD_SEARCH_BAND.title : THREAD_SEARCH_BAND.metadata,
+          score: 1_100 + rank * 20 - index,
+        }),
+      );
   });
 
   const runContentQuery = Effect.fn("ConversationSearch.runContentQuery")(function* (
@@ -528,7 +534,31 @@ const makeConversationSearch = Effect.gen(function* () {
     candidateLimit: number,
     updatedSince: string | null,
   ) {
+    // Rank first, read text after. A common word matches thousands of messages,
+    // and anything the ranking step selects is read for every one of them — text,
+    // or any column stored after it, means paging through the whole message body.
+    // On a cold cache that turned one keystroke into a 30-second stall of the
+    // entire server, since SQLite runs on its thread. Ranking needs only the index
+    // and `thread_id`, which sits ahead of the text, so only the rows that make the
+    // cut have their text read. Rowid stands in for creation order as tiebreak.
     return yield* sql<ContentSearchRow>`
+      WITH ranked AS (
+        SELECT
+          projection_thread_messages_fts.rowid AS "hitRowid",
+          bm25(projection_thread_messages_fts) AS "ftsRank"
+        FROM projection_thread_messages_fts
+        JOIN projection_thread_messages AS message
+          ON message.rowid = projection_thread_messages_fts.rowid
+        JOIN projection_threads AS thread ON thread.thread_id = message.thread_id
+        JOIN projection_projects AS project ON project.project_id = thread.project_id
+        WHERE projection_thread_messages_fts MATCH ${ftsQuery}
+          AND thread.deleted_at IS NULL
+          AND project.deleted_at IS NULL
+          AND (${includeArchived ? 1 : 0} = 1 OR thread.archived_at IS NULL)
+          AND (${updatedSince} IS NULL OR thread.updated_at >= ${updatedSince})
+        ORDER BY "ftsRank" ASC, projection_thread_messages_fts.rowid DESC
+        LIMIT ${candidateLimit}
+      )
       SELECT
         thread.thread_id AS "threadId",
         thread.project_id AS "projectId",
@@ -539,21 +569,12 @@ const makeConversationSearch = Effect.gen(function* () {
         thread.updated_at AS "updatedAt",
         message.message_id AS "messageId",
         message.role,
-        message.text,
-        snippet(projection_thread_messages_fts, 0, '', '', '…', 28) AS snippet,
-        bm25(projection_thread_messages_fts) AS "ftsRank"
-      FROM projection_thread_messages_fts
-      JOIN projection_thread_messages AS message
-        ON message.rowid = projection_thread_messages_fts.rowid
+        message.text
+      FROM ranked
+      CROSS JOIN projection_thread_messages AS message ON message.rowid = ranked."hitRowid"
       JOIN projection_threads AS thread ON thread.thread_id = message.thread_id
       JOIN projection_projects AS project ON project.project_id = thread.project_id
-      WHERE projection_thread_messages_fts MATCH ${ftsQuery}
-        AND thread.deleted_at IS NULL
-        AND project.deleted_at IS NULL
-        AND (${includeArchived ? 1 : 0} = 1 OR thread.archived_at IS NULL)
-        AND (${updatedSince} IS NULL OR thread.updated_at >= ${updatedSince})
-      ORDER BY "ftsRank" ASC, message.created_at DESC
-      LIMIT ${candidateLimit}
+      ORDER BY ranked."ftsRank" ASC, ranked."hitRowid" DESC
     `;
   });
 
@@ -585,7 +606,7 @@ const makeConversationSearch = Effect.gen(function* () {
       const exactPhrase = row.text.toLowerCase().includes(query.toLowerCase());
       results.push({
         ...toBaseResult(row),
-        snippet: row.snippet,
+        snippet: keywordSnippet(row.text, query),
         matchedRole: messageRole(row.role),
         matchedMessageId: MessageId.make(row.messageId),
         matchKind: loose ? "content-loose" : "content",
@@ -755,6 +776,17 @@ const makeConversationSearch = Effect.gen(function* () {
         return {
           results: toOrderedThreadSearchResults(
             yield* searchExact(query, includeArchived, limit, updatedSince),
+          ),
+          semanticStatus,
+        } satisfies OrchestrationSearchThreadsResult;
+      }
+
+      // Titles, project names and branches only: one short read, no message text
+      // and no embedding, so it answers on every keystroke.
+      if (input.titlesOnly === true) {
+        return {
+          results: toOrderedThreadSearchResults(
+            yield* searchMetadata(query, includeArchived, limit, updatedSince),
           ),
           semanticStatus,
         } satisfies OrchestrationSearchThreadsResult;

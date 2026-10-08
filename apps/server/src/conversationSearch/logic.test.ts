@@ -7,6 +7,7 @@ import {
   mergeHybridThreadSearchResults,
   MAX_SEMANTIC_THREADS,
   MIN_SEMANTIC_SIMILARITY,
+  rankThreadMetadata,
   relaxFtsQuery,
   semanticSimilarityFloor,
   THREAD_SEARCH_BAND,
@@ -219,5 +220,29 @@ describe("conversation search logic", () => {
       ThreadId.make("older-loose"),
     ]);
     expect(ordered[0]?.score).toBeGreaterThan(ordered[1]?.score ?? 0);
+  });
+});
+
+describe("rankThreadMetadata", () => {
+  const labels = (title: string, projectTitle = "m3code", branch: string | null = null) => ({
+    title,
+    projectTitle,
+    branch,
+  });
+
+  it("finds a title from its words in any order, as a title match", () => {
+    expect(rankThreadMetadata("status fix", labels("Fix the status bar"))).toBe(3);
+    expect(rankThreadMetadata("Status", labels("status"))).toBe(5);
+    expect(rankThreadMetadata("stat", labels("Status bar"))).toBe(4);
+  });
+
+  it("ranks project and branch matches below any title match", () => {
+    expect(rankThreadMetadata("m3code", labels("Fix the status bar"))).toBe(2);
+    expect(rankThreadMetadata("m3code status", labels("Fix the status bar"))).toBe(2);
+    expect(rankThreadMetadata("feat/x", labels("Untitled", "Other", "feat/x"))).toBe(1);
+  });
+
+  it("does not match when any word is missing everywhere", () => {
+    expect(rankThreadMetadata("status deploy", labels("Fix the status bar"))).toBe(0);
   });
 });

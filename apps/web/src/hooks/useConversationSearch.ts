@@ -14,6 +14,7 @@ interface ScopedThreadSearchResult extends OrchestrationThreadSearchResult {
 interface ThreadSearchResponseState {
   readonly query: string;
   readonly updatedSince: string | null;
+  readonly titlesOnly: boolean;
   readonly results: ReadonlyArray<ScopedThreadSearchResult>;
   readonly semanticStatus: OrchestrationSemanticSearchStatus;
 }
@@ -22,6 +23,7 @@ async function searchThreadsAcrossEnvironments(input: {
   readonly environmentIds: ReadonlyArray<EnvironmentId>;
   readonly query: string;
   readonly updatedSince: string | null;
+  readonly titlesOnly: boolean;
 }): Promise<ThreadSearchResponseState | null> {
   const settled = await Promise.allSettled(
     input.environmentIds.map(async (environmentId) => {
@@ -31,7 +33,8 @@ async function searchThreadsAcrossEnvironments(input: {
         query: input.query,
         limit: 30,
         includeArchived: true,
-        includeSemantic: true,
+        includeSemantic: !input.titlesOnly,
+        titlesOnly: input.titlesOnly,
         ...(input.updatedSince ? { updatedSince: input.updatedSince } : {}),
       });
       return { environmentId, response };
@@ -66,22 +69,30 @@ async function searchThreadsAcrossEnvironments(input: {
       (left, right) => right.score - left.score || right.updatedAt.localeCompare(left.updatedAt),
     )
     .slice(0, 30);
-  return { query: input.query, updatedSince: input.updatedSince, results, semanticStatus };
+  return {
+    query: input.query,
+    updatedSince: input.updatedSince,
+    titlesOnly: input.titlesOnly,
+    results,
+    semanticStatus,
+  };
 }
 
 interface SearchInput {
   readonly query: string;
   readonly updatedSince: string | null;
+  /** Titles, project names and branches only; message text is opt-in. */
+  readonly titlesOnly: boolean;
   readonly environmentIds: ReadonlyArray<EnvironmentId>;
   readonly enabled: boolean;
 }
 
 /** Publish one complete result set. Never replace clickable local/keyword hits with later ranking. */
 export function useConversationSearch(input: SearchInput) {
-  const { updatedSince, environmentIds, enabled } = input;
+  const { updatedSince, titlesOnly, environmentIds, enabled } = input;
   const query = input.query.trim();
   const active = enabled && query.length >= 2 && environmentIds.length > 0;
-  const key = JSON.stringify([query, updatedSince, environmentIds]);
+  const key = JSON.stringify([query, updatedSince, titlesOnly, environmentIds]);
   const [settled, setSettled] = useState<{
     key: string;
     response: ThreadSearchResponseState | null;
@@ -91,21 +102,31 @@ export function useConversationSearch(input: SearchInput) {
     setSettled(null);
     if (!active) return;
     let cancelled = false;
-    const timeout = window.setTimeout(() => {
-      void searchThreadsAcrossEnvironments({ query, updatedSince, environmentIds }).then(
-        (response) => {
-          if (!cancelled) setSettled({ key, response });
-        },
-        () => {
-          if (!cancelled) setSettled({ key, response: null });
-        },
-      );
-    }, 150);
+    // Message search costs the server real work per request, so it waits for a
+    // longer pause in typing than the near-free title search does.
+    const timeout = window.setTimeout(
+      () => {
+        void searchThreadsAcrossEnvironments({
+          query,
+          updatedSince,
+          titlesOnly,
+          environmentIds,
+        }).then(
+          (response) => {
+            if (!cancelled) setSettled({ key, response });
+          },
+          () => {
+            if (!cancelled) setSettled({ key, response: null });
+          },
+        );
+      },
+      titlesOnly ? 150 : 350,
+    );
     return () => {
       cancelled = true;
       window.clearTimeout(timeout);
     };
-  }, [active, key, query, updatedSince, environmentIds]);
+  }, [active, key, query, updatedSince, titlesOnly, environmentIds]);
 
   const current = active && settled?.key === key ? settled : null;
   return {
