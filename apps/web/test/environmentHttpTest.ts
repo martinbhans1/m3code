@@ -101,6 +101,8 @@ export async function installEnvironmentHttpTest(scenario: EnvironmentHttpTestSc
             )
             .handle("passwordSession", () => unexpectedEndpoint("auth.passwordSession"))
             .handle("token", () => unexpectedEndpoint("auth.token"))
+            .handle("refreshDevice", () => unexpectedEndpoint("auth.refreshDevice"))
+            .handle("logoutDevice", () => unexpectedEndpoint("auth.logoutDevice"))
             .handle("webSocketTicket", () => unexpectedEndpoint("auth.webSocketTicket"))
             .handle(
               "pairingCredential",

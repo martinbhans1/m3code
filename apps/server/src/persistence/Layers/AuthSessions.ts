@@ -155,7 +155,7 @@ const makeAuthSessionRepository = Effect.gen(function* () {
           revoked_at AS "revokedAt"
         FROM auth_sessions
         WHERE revoked_at IS NULL
-          AND expires_at > ${now}
+          AND (expires_at > ${now} OR EXISTS (SELECT 1 FROM auth_devices WHERE auth_devices.session_id = auth_sessions.session_id))
         ORDER BY issued_at DESC, session_id DESC
       `,
   });

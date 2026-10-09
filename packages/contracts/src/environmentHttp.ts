@@ -10,6 +10,8 @@ import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 
 import {
   AuthAccessTokenResult,
+  AuthDeviceRefreshRequest,
+  AuthDeviceLogoutRequest,
   AuthBrowserSessionRequest,
   AuthBrowserSessionResult,
   AuthPasswordSessionRequest,
@@ -374,6 +376,22 @@ export class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
       headers: OptionalDpopProofHeaders,
       payload: AuthTokenExchangeRequest,
       success: AuthAccessTokenResult,
+      error: EnvironmentTokenExchangeErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("refreshDevice", "/api/auth/device/refresh", {
+      headers: OptionalDpopProofHeaders,
+      payload: AuthDeviceRefreshRequest,
+      success: AuthAccessTokenResult,
+      error: EnvironmentTokenExchangeErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("logoutDevice", "/api/auth/device/logout", {
+      headers: OptionalDpopProofHeaders,
+      payload: AuthDeviceLogoutRequest,
+      success: AuthClientSessionRevokeResult,
       error: EnvironmentTokenExchangeErrors,
     }),
   )

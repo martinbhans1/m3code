@@ -30,7 +30,12 @@ vi.mock("./runtime", () => ({
   },
 }));
 
-import { loadSavedConnections, saveConnection } from "./storage";
+import {
+  loadSavedConnections,
+  saveConnection,
+  clearSavedConnection,
+  updateDeviceCredential,
+} from "./storage";
 import { toStableSavedRemoteConnection } from "./connection";
 
 const managedConnection = {
@@ -50,6 +55,50 @@ describe("mobile connection storage", () => {
   beforeEach(() => {
     mocks.clear();
     vi.clearAllMocks();
+  });
+
+  it("does not lose concurrent credential updates for different environments", async () => {
+    const first = {
+      ...managedConnection,
+      environmentId: EnvironmentId.make("device-one"),
+      authenticationMethod: "bearer" as const,
+      bearerToken: "short-access-one",
+      deviceRefreshToken: "refresh-one",
+    };
+    const second = {
+      ...first,
+      environmentId: EnvironmentId.make("device-two"),
+      deviceRefreshToken: "refresh-two",
+    };
+    await Promise.all([saveConnection(first), saveConnection(second)]);
+    const saved = await loadSavedConnections();
+    expect(saved.map((entry) => entry.deviceRefreshToken)).toEqual(["refresh-one", "refresh-two"]);
+  });
+
+  it("cannot overwrite removal or a new pairing with a late refresh response", async () => {
+    const first = {
+      ...managedConnection,
+      authenticationMethod: "bearer" as const,
+      bearerToken: "short-access",
+      deviceRefreshToken: "old-refresh",
+    };
+    await saveConnection(first);
+    await saveConnection({ ...first, deviceRefreshToken: "new-pairing" });
+    await expect(
+      updateDeviceCredential(first.environmentId, "old-refresh", {
+        bearerToken: "late-access",
+        deviceRefreshToken: "late-refresh",
+      }),
+    ).rejects.toThrow("replaced");
+    expect((await loadSavedConnections())[0]?.deviceRefreshToken).toBe("new-pairing");
+    await clearSavedConnection(first.environmentId);
+    await expect(
+      updateDeviceCredential(first.environmentId, "new-pairing", {
+        bearerToken: "late-access",
+        deviceRefreshToken: "late-refresh",
+      }),
+    ).rejects.toThrow("removed");
+    expect(await loadSavedConnections()).toEqual([]);
   });
 
   it("persists relay-managed connections without their ephemeral access token", async () => {

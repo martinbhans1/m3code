@@ -1516,6 +1516,128 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
   );
 
   it.effect(
+    "pairs a durable phone, binds refresh to its key, rejects proof replay and logs out",
+    () =>
+      Effect.gen(function* () {
+        yield* buildAppUnderTest();
+        const ownerCookie = yield* getAuthenticatedSessionCookieHeader();
+        const credentialResponse = yield* HttpClient.post("/api/auth/pairing-token", {
+          headers: { cookie: ownerCookie },
+          body: yield* HttpBody.json({ scopes: ["orchestration:read"] }),
+        });
+        const credential = (yield* credentialResponse.json) as { credential: string };
+        const tokenUrl = yield* getHttpServerUrl("/oauth/token");
+        const now = yield* DateTime.now;
+        const proof = makeDpopProof({
+          method: "POST",
+          url: tokenUrl,
+          iat: Math.floor(now.epochMilliseconds / 1000),
+          jti: "device-pairing",
+        });
+        const payload = new URLSearchParams({
+          grant_type: AuthTokenExchangeGrantType,
+          subject_token: credential.credential,
+          subject_token_type: AuthEnvironmentBootstrapTokenType,
+          requested_token_type: AuthAccessTokenType,
+          durable_device: "true",
+        }).toString();
+        const missingProof = yield* fetchEffect(tokenUrl, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: payload,
+        });
+        assert.equal(missingProof.status, 401);
+        const paired = yield* fetchEffect(tokenUrl, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded", dpop: proof.proof },
+          body: payload,
+        });
+        assert.equal(paired.status, 200);
+        const token = yield* responseJsonEffect<{
+          access_token: string;
+          refresh_token: string;
+          expires_in: number;
+          scope: string;
+        }>(paired);
+        assert.equal(token.expires_in, 900);
+        assert.equal(token.scope, "orchestration:read");
+        const refreshUrl = yield* getHttpServerUrl("/api/auth/device/refresh");
+        const refreshProof = makeDpopProof({
+          method: "POST",
+          url: refreshUrl,
+          iat: Math.floor(now.epochMilliseconds / 1000),
+          jti: "device-refresh",
+          accessToken: token.refresh_token,
+          privateKey: proof.privateKey,
+          publicJwk: proof.publicJwk,
+        });
+        const refreshBody = jsonRequestBody({
+          refresh_token: token.refresh_token,
+          request_id: "device-operation-0001",
+        });
+        const wrongKey = makeDpopProof({
+          method: "POST",
+          url: refreshUrl,
+          iat: Math.floor(now.epochMilliseconds / 1000),
+          jti: "wrong-device",
+          accessToken: token.refresh_token,
+        });
+        const stolen = yield* fetchEffect(refreshUrl, {
+          method: "POST",
+          headers: { "content-type": "application/json", dpop: wrongKey.proof },
+          body: refreshBody,
+        });
+        assert.equal(stolen.status, 401);
+        const refreshed = yield* fetchEffect(refreshUrl, {
+          method: "POST",
+          headers: { "content-type": "application/json", dpop: refreshProof.proof },
+          body: refreshBody,
+        });
+        assert.equal(refreshed.status, 200);
+        assert.equal(refreshed.headers["cache-control"], "no-store");
+        const renewed = yield* responseJsonEffect<{
+          access_token: string;
+          refresh_token: string;
+          scope: string;
+        }>(refreshed);
+        assert.notEqual(renewed.refresh_token, token.refresh_token);
+        assert.equal(renewed.scope, token.scope);
+        const proofReplay = yield* fetchEffect(refreshUrl, {
+          method: "POST",
+          headers: { "content-type": "application/json", dpop: refreshProof.proof },
+          body: refreshBody,
+        });
+        assert.equal(proofReplay.status, 401);
+        const attemptPrivilegeEscalation = yield* HttpClient.post("/api/auth/pairing-token", {
+          headers: { authorization: `Bearer ${renewed.access_token}` },
+          body: yield* HttpBody.json({}),
+        });
+        assert.equal(attemptPrivilegeEscalation.status, 403);
+        const logoutUrl = yield* getHttpServerUrl("/api/auth/device/logout");
+        const logoutProof = makeDpopProof({
+          method: "POST",
+          url: logoutUrl,
+          iat: Math.floor(now.epochMilliseconds / 1000),
+          jti: "device-logout",
+          accessToken: renewed.refresh_token,
+          privateKey: proof.privateKey,
+          publicJwk: proof.publicJwk,
+        });
+        const loggedOut = yield* fetchEffect(logoutUrl, {
+          method: "POST",
+          headers: { "content-type": "application/json", dpop: logoutProof.proof },
+          body: jsonRequestBody({ refresh_token: renewed.refresh_token }),
+        });
+        assert.equal(loggedOut.status, 200);
+        const sessionResponse = yield* HttpClient.get("/api/auth/session", {
+          headers: { authorization: `Bearer ${renewed.access_token}` },
+        });
+        const session = (yield* sessionResponse.json) as { authenticated: boolean };
+        assert.equal(session.authenticated, false);
+      }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect(
     "exchanges a bootstrap credential for a DPoP-bound access token without bearer downgrade",
     () =>
       Effect.gen(function* () {

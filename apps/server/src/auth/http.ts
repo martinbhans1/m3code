@@ -33,6 +33,10 @@ import * as HttpApiBuilder from "effect/unstable/httpapi/HttpApiBuilder";
 
 import * as EnvironmentAuth from "./EnvironmentAuth.ts";
 import * as SessionStore from "./SessionStore.ts";
+import { DurableDeviceAuthorization } from "./DurableDeviceAuthorization.ts";
+import { AuthAccessTokenType } from "@t3tools/contracts";
+import { encodeOAuthScope } from "@t3tools/shared/oauthScope";
+import * as Clock from "effect/Clock";
 import { deriveAuthClientMetadata } from "./utils.ts";
 import { verifyRequestDpopProof } from "./dpop.ts";
 
@@ -188,6 +192,7 @@ export const authHttpApiLayer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
     const sessions = yield* SessionStore.SessionStore;
+    const devices = yield* DurableDeviceAuthorization;
 
     return handlers
       .handle(
@@ -305,6 +310,8 @@ export const authHttpApiLayer = HttpApiBuilder.group(
                 )
               : undefined;
             yield* appendCredentialResponseHeaders;
+            if (args.payload.durable_device === "true" && !proofKeyThumbprint)
+              return yield* failEnvironmentAuthInvalid("invalid_credential");
             return yield* serverAuth.exchangeBootstrapCredentialForAccessToken(
               args.payload.subject_token,
               requestedScopes,
@@ -318,7 +325,10 @@ export const authHttpApiLayer = HttpApiBuilder.group(
                   ...(args.payload.client_os ? { os: args.payload.client_os } : {}),
                 },
               }),
-              proofKeyThumbprint ? { proofKeyThumbprint } : undefined,
+              {
+                ...(proofKeyThumbprint ? { proofKeyThumbprint } : {}),
+                durableDevice: args.payload.durable_device === "true",
+              },
             );
           },
           Effect.catchTags({
@@ -326,6 +336,68 @@ export const authHttpApiLayer = HttpApiBuilder.group(
             ServerAuthInvalidRequestError: (error) => failEnvironmentInvalidRequest(error.reason),
             ServerAuthInternalError: (error) =>
               failEnvironmentInternal("access_token_issuance_failed", error),
+          }),
+        ),
+      )
+      .handle(
+        "refreshDevice",
+        Effect.fn("environment.auth.refreshDevice")(
+          function* (args) {
+            yield* annotateEnvironmentRequest(args.endpoint.name);
+            yield* appendCredentialResponseHeaders;
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            const proofKey = yield* verifyRequestDpopProof({
+              request,
+              expectedAccessToken: args.payload.refresh_token,
+            });
+            const session = yield* devices.refresh(
+              args.payload.refresh_token,
+              args.payload.request_id,
+              proofKey,
+            );
+            const now = yield* Clock.currentTimeMillis;
+            return {
+              access_token: session.token,
+              refresh_token: session.refreshToken,
+              issued_token_type: AuthAccessTokenType,
+              token_type: "Bearer" as const,
+              expires_in: Math.max(
+                0,
+                Math.floor((session.expiresAt.epochMilliseconds - now) / 1000),
+              ),
+              scope: encodeOAuthScope(session.scopes),
+            };
+          },
+          Effect.catchTags({
+            SessionCredentialInvalidError: () => failEnvironmentAuthInvalid("invalid_credential"),
+            SessionCredentialInternalError: () =>
+              failEnvironmentInternal("access_token_issuance_failed"),
+            ServerAuthInvalidCredentialError: () =>
+              failEnvironmentAuthInvalid("invalid_credential"),
+            ServerAuthInternalError: () => failEnvironmentInternal("access_token_issuance_failed"),
+          }),
+        ),
+      )
+      .handle(
+        "logoutDevice",
+        Effect.fn("environment.auth.logoutDevice")(
+          function* (args) {
+            yield* annotateEnvironmentRequest(args.endpoint.name);
+            yield* appendCredentialResponseHeaders;
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            const proofKey = yield* verifyRequestDpopProof({
+              request,
+              expectedAccessToken: args.payload.refresh_token,
+            });
+            return { revoked: yield* devices.logout(args.payload.refresh_token, proofKey) };
+          },
+          Effect.catchTags({
+            SessionCredentialInvalidError: () => failEnvironmentAuthInvalid("invalid_credential"),
+            SessionCredentialInternalError: () =>
+              failEnvironmentInternal("access_token_issuance_failed"),
+            ServerAuthInvalidCredentialError: () =>
+              failEnvironmentAuthInvalid("invalid_credential"),
+            ServerAuthInternalError: () => failEnvironmentInternal("access_token_issuance_failed"),
           }),
         ),
       )

@@ -1,6 +1,9 @@
 import { EnvironmentId } from "@t3tools/contracts";
 import {
   bootstrapRemoteBearerSession,
+  exchangeRemoteDpopAccessToken,
+  ManagedRelayDpopSigner,
+  remoteEndpointUrl,
   fetchRemoteEnvironmentDescriptor,
 } from "@t3tools/client-runtime";
 import { resolveRemotePairingTarget, stripPairingTokenFromUrl } from "@t3tools/shared/remote";
@@ -22,6 +25,9 @@ export interface SavedRemoteConnection {
   readonly httpBaseUrl: string;
   readonly wsBaseUrl: string;
   readonly bearerToken: string | null;
+  readonly deviceRefreshToken?: string;
+  readonly deviceRefreshRequestId?: string;
+  readonly accessExpiresAt?: number;
   readonly authenticationMethod?: "bearer" | "dpop";
   readonly dpopAccessToken?: string;
   readonly relayManaged?: true;
@@ -68,19 +74,34 @@ export async function bootstrapRemoteConnection(
   });
 
   const { descriptor, bootstrap } = await mobileRuntime.runPromise(
-    Effect.all(
-      {
-        descriptor: fetchRemoteEnvironmentDescriptor({
-          httpBaseUrl: target.httpBaseUrl,
-        }),
-        bootstrap: bootstrapRemoteBearerSession({
+    Effect.gen(function* () {
+      const descriptor = yield* fetchRemoteEnvironmentDescriptor({
+        httpBaseUrl: target.httpBaseUrl,
+      });
+      if (!descriptor.capabilities.durableDeviceAuthorization) {
+        const bootstrap = yield* bootstrapRemoteBearerSession({
           httpBaseUrl: target.httpBaseUrl,
           credential: target.credential,
           clientMetadata: mobileAuthClientMetadata(),
-        }),
-      },
-      { concurrency: "unbounded" },
-    ),
+        });
+        return { descriptor, bootstrap };
+      }
+      const signer = yield* ManagedRelayDpopSigner;
+      const dpopProof = yield* signer.createProof({
+        method: "POST",
+        url: remoteEndpointUrl(target.httpBaseUrl, "/oauth/token"),
+      });
+      const bootstrap = yield* exchangeRemoteDpopAccessToken({
+        httpBaseUrl: target.httpBaseUrl,
+        credential: target.credential,
+        clientMetadata: mobileAuthClientMetadata(),
+        dpopProof,
+        durableDevice: true,
+      });
+      if (!bootstrap.refresh_token || bootstrap.token_type !== "Bearer")
+        return yield* Effect.fail(new Error("Backend did not issue durable device authorization."));
+      return { descriptor, bootstrap };
+    }),
   );
 
   return {
@@ -91,6 +112,12 @@ export async function bootstrapRemoteConnection(
     httpBaseUrl: target.httpBaseUrl,
     wsBaseUrl: target.wsBaseUrl,
     bearerToken: bootstrap.access_token,
+    ...(bootstrap.refresh_token
+      ? {
+          deviceRefreshToken: bootstrap.refresh_token,
+          accessExpiresAt: Date.now() + bootstrap.expires_in * 1000,
+        }
+      : {}),
     authenticationMethod: "bearer",
   };
 }

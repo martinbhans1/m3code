@@ -92,6 +92,8 @@ export function createAuthenticatedSessionHandlers(getAuthDescriptor: () => Serv
         }),
       )
       .handle("token", () => unexpectedEndpoint("auth.token"))
+      .handle("refreshDevice", () => unexpectedEndpoint("auth.refreshDevice"))
+      .handle("logoutDevice", () => unexpectedEndpoint("auth.logoutDevice"))
       .handle("webSocketTicket", () => unexpectedEndpoint("auth.webSocketTicket"))
       .handle("pairingCredential", () => unexpectedEndpoint("auth.pairingCredential"))
       .handle("pairingLinks", () => unexpectedEndpoint("auth.pairingLinks"))

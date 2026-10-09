@@ -30,6 +30,7 @@ import {
   isRelayManagedConnection,
   toStableSavedRemoteConnection,
 } from "../lib/connection";
+import { renewDeviceConnection, logoutDeviceConnection } from "../lib/deviceAuthorization";
 import { refreshCloudEnvironmentConnection } from "../features/cloud/linkEnvironment";
 import { terminalDebugLog } from "../features/terminal/terminalDebugLog";
 import {
@@ -68,6 +69,7 @@ import {
 } from "./use-shell-snapshot";
 import { subscribeTerminalMetadata, terminalSessionManager } from "./use-terminal-session";
 
+const deviceRenewalTimers = new Map<EnvironmentId, ReturnType<typeof setInterval>>();
 const terminalMetadataUnsubscribers = new Map<EnvironmentId, () => void>();
 const environmentConnectionAttempts = createEnvironmentConnectionAttemptRegistry();
 const SAVED_CONNECTION_BOOTSTRAP_TIMEOUT_MS = 8_000;
@@ -193,6 +195,8 @@ export function disconnectEnvironment(
       environmentConnectionAttempts.cancel(environmentId);
     }
 
+    clearInterval(deviceRenewalTimers.get(environmentId));
+    deviceRenewalTimers.delete(environmentId);
     const session = removeEnvironmentSession(environmentId);
     notifyEnvironmentConnectionListeners();
     if (session) {
@@ -209,6 +213,10 @@ export function disconnectEnvironment(
     environmentRuntimeManager.invalidate({ environmentId });
 
     if (options?.removeSaved) {
+      const saved = (yield* fromPromise(loadSavedConnections)).find(
+        (entry) => entry.environmentId === environmentId,
+      );
+      if (saved?.deviceRefreshToken) yield* fromPromise(() => logoutDeviceConnection(saved));
       yield* Effect.all(
         [
           fromPromise(() => clearSavedConnection(environmentId)),
@@ -294,10 +302,16 @@ export function connectSavedEnvironment(
                   dpopProof: dpop,
                 });
               })
-            : resolveRemoteWebSocketConnectionUrl({
-                wsBaseUrl: connection.wsBaseUrl,
-                httpBaseUrl: connection.httpBaseUrl,
-                bearerToken: connection.bearerToken ?? "",
+            : Effect.gen(function* () {
+                activeConnection = yield* fromPromise(() =>
+                  renewDeviceConnection(activeConnection),
+                );
+                if (isCurrentAttempt()) upsertSavedConnection(activeConnection);
+                return yield* resolveRemoteWebSocketConnectionUrl({
+                  wsBaseUrl: activeConnection.wsBaseUrl,
+                  httpBaseUrl: activeConnection.httpBaseUrl,
+                  bearerToken: activeConnection.bearerToken ?? "",
+                });
               }),
         ),
       {
@@ -454,6 +468,32 @@ export function connectSavedEnvironment(
     terminalDebugLog("registry:terminal-metadata-subscribed", {
       environmentId: connection.environmentId,
     });
+    if (activeConnection.deviceRefreshToken) {
+      deviceRenewalTimers.set(
+        connection.environmentId,
+        setInterval(() => {
+          if (!isCurrentAttempt()) return;
+          void renewDeviceConnection(activeConnection)
+            .then((renewed) => {
+              if (isCurrentAttempt()) {
+                activeConnection = renewed;
+                upsertSavedConnection(renewed);
+                if (client.isHeartbeatFresh()) {
+                  setEnvironmentConnectionStatus(connection.environmentId, "ready", null);
+                }
+              }
+            })
+            .catch(() => {
+              if (isCurrentAttempt())
+                setEnvironmentConnectionStatus(
+                  connection.environmentId,
+                  "disconnected",
+                  "Device authorization renewal failed. Reconnect to retry.",
+                );
+            });
+        }, 30_000),
+      );
+    }
     registerAgentAwarenessConnection(toStableSavedRemoteConnection(activeConnection));
     notifyEnvironmentConnectionListeners();
   });
@@ -467,7 +507,10 @@ export function reconnectEnvironmentConnectionsAfterAppResume(reason: string): v
 
   for (const connection of Object.values(getSavedConnectionsById())) {
     const session = getEnvironmentSession(connection.environmentId);
-    if (session?.client.isHeartbeatFresh()) {
+    if (
+      session?.client.isHeartbeatFresh() &&
+      (!connection.deviceRefreshToken || (connection.accessExpiresAt ?? 0) > now + 60_000)
+    ) {
       continue;
     }
 
@@ -607,6 +650,8 @@ export function useRemoteEnvironmentBootstrap() {
     return () => {
       cancelled = true;
       unsubscribeAppResumeReconnects();
+      for (const timer of deviceRenewalTimers.values()) clearInterval(timer);
+      deviceRenewalTimers.clear();
       for (const session of drainEnvironmentSessions()) {
         void session.connection.dispose();
       }
@@ -763,7 +808,12 @@ export function useRemoteConnections() {
           onPress: () => {
             void mobileRuntime
               .runPromise(disconnectEnvironment(environmentId, { removeSaved: true }))
-              .catch(() => undefined);
+              .catch(() =>
+                Alert.alert(
+                  "Could not remove environment",
+                  "Reconnect to revoke this device, then try again.",
+                ),
+              );
           },
         },
       ],

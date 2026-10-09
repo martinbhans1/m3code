@@ -14,19 +14,19 @@ const mobileRelayDpopSignerLayer = Layer.effect(
   ManagedRelayDpopSigner,
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto;
+    const getProofKey = yield* Effect.cached(
+      loadOrCreateDpopProofKeyPair().pipe(Effect.provideService(Crypto.Crypto, crypto)),
+    );
     return ManagedRelayDpopSigner.of({
       thumbprint: Effect.suspend(() =>
-        loadOrCreateDpopProofKeyPair().pipe(
-          Effect.provideService(Crypto.Crypto, crypto),
+        getProofKey.pipe(
           Effect.map((proofKey) => proofKey.thumbprint),
           Effect.mapError((cause) => new ManagedRelayDpopSignerError({ cause })),
         ),
       ),
       createProof: (input) =>
         Effect.gen(function* () {
-          const proofKey = yield* loadOrCreateDpopProofKeyPair().pipe(
-            Effect.provideService(Crypto.Crypto, crypto),
-          );
+          const proofKey = yield* getProofKey;
           return yield* createDpopProof({ ...input, proofKey }).pipe(
             Effect.provideService(Crypto.Crypto, crypto),
             Effect.map((proof) => proof.proof),

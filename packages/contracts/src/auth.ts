@@ -186,17 +186,25 @@ export const AuthTokenExchangeRequest = Schema.Struct({
   client_label: Schema.optionalKey(TrimmedNonEmptyString),
   client_device_type: Schema.optionalKey(AuthClientMetadataDeviceType),
   client_os: Schema.optionalKey(TrimmedNonEmptyString),
+  durable_device: Schema.optionalKey(Schema.Literal("true")),
 }).pipe(HttpApiSchema.asFormUrlEncoded());
 export type AuthTokenExchangeRequest = typeof AuthTokenExchangeRequest.Type;
 
 export const AuthAccessTokenResult = Schema.Struct({
   access_token: TrimmedNonEmptyString,
+  refresh_token: Schema.optionalKey(TrimmedNonEmptyString),
   issued_token_type: Schema.Literal(AuthAccessTokenType),
   token_type: Schema.Literals(["Bearer", "DPoP"]),
   expires_in: Schema.Number,
   scope: TrimmedNonEmptyString,
 });
 export type AuthAccessTokenResult = typeof AuthAccessTokenResult.Type;
+
+export const AuthDeviceRefreshRequest = Schema.Struct({
+  refresh_token: TrimmedNonEmptyString,
+  request_id: Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_-]{16,128}$/)),
+});
+export const AuthDeviceLogoutRequest = Schema.Struct({ refresh_token: TrimmedNonEmptyString });
 
 export const AuthWebSocketTicketResult = Schema.Struct({
   ticket: TrimmedNonEmptyString,

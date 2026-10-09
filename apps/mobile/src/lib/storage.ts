@@ -145,28 +145,63 @@ export async function loadSavedConnections(): Promise<ReadonlyArray<SavedRemoteC
   );
 }
 
-export async function saveConnection(connection: SavedRemoteConnection): Promise<void> {
-  const current = await loadSavedConnections();
-  const stableConnection = toStableSavedRemoteConnection(connection);
-  const next = current.some((entry) => entry.environmentId === connection.environmentId)
-    ? pipe(
-        current,
-        Arr.map((entry) =>
-          entry.environmentId === connection.environmentId ? stableConnection : entry,
-        ),
-      )
-    : pipe(current, Arr.append(stableConnection));
+let connectionWrites: Promise<void> = Promise.resolve();
 
-  await writeStorageItem(CONNECTIONS_KEY, JSON.stringify({ connections: next }));
+function serializeConnectionWrite(write: () => Promise<void>): Promise<void> {
+  const pending = connectionWrites.then(write);
+  connectionWrites = pending.catch(() => undefined);
+  return pending;
 }
 
-export async function clearSavedConnection(environmentId: EnvironmentId): Promise<void> {
-  const current = await loadSavedConnections();
-  const next = pipe(
-    current,
-    Arr.filter((entry) => entry.environmentId !== environmentId),
-  );
-  await writeStorageItem(CONNECTIONS_KEY, JSON.stringify({ connections: next }));
+export function saveConnection(connection: SavedRemoteConnection): Promise<void> {
+  return serializeConnectionWrite(async () => {
+    const current = await loadSavedConnections();
+    const stableConnection = toStableSavedRemoteConnection(connection);
+    const next = current.some((entry) => entry.environmentId === connection.environmentId)
+      ? pipe(
+          current,
+          Arr.map((entry) =>
+            entry.environmentId === connection.environmentId ? stableConnection : entry,
+          ),
+        )
+      : pipe(current, Arr.append(stableConnection));
+
+    await writeStorageItem(CONNECTIONS_KEY, JSON.stringify({ connections: next }));
+  });
+}
+
+export function clearSavedConnection(environmentId: EnvironmentId): Promise<void> {
+  return serializeConnectionWrite(async () => {
+    const current = await loadSavedConnections();
+    const next = pipe(
+      current,
+      Arr.filter((entry) => entry.environmentId !== environmentId),
+    );
+    await writeStorageItem(CONNECTIONS_KEY, JSON.stringify({ connections: next }));
+  });
+}
+
+/** Compare and persist rotation together so removal/re-pairing cannot be overwritten. */
+export function updateDeviceCredential(
+  environmentId: EnvironmentId,
+  expectedRefreshToken: string,
+  credential: Pick<
+    SavedRemoteConnection,
+    "bearerToken" | "deviceRefreshToken" | "accessExpiresAt" | "deviceRefreshRequestId"
+  >,
+): Promise<void> {
+  return serializeConnectionWrite(async () => {
+    const connections = await loadSavedConnections();
+    const stored = connections.find((entry) => entry.environmentId === environmentId);
+    if (!stored || stored.deviceRefreshToken !== expectedRefreshToken) {
+      throw new Error("Device authorization was removed or replaced.");
+    }
+    const { deviceRefreshRequestId: _, ...base } = stored;
+    const next = connections.map((entry) =>
+      entry.environmentId === environmentId ? { ...base, ...credential } : entry,
+    );
+    await writeStorageItem(CONNECTIONS_KEY, JSON.stringify({ connections: next }));
+  });
 }
 
 export async function loadPreferences(): Promise<MobilePreferences> {

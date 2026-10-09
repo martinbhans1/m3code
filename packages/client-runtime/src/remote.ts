@@ -186,6 +186,7 @@ export const exchangeRemoteDpopAccessToken = Effect.fn(
   readonly scopes?: ReadonlyArray<AuthEnvironmentScope>;
   readonly clientMetadata?: AuthClientPresentationMetadata;
   readonly dpopProof: string;
+  readonly durableDevice?: boolean;
   readonly timeoutMs?: number;
 }) {
   const client = yield* makeEnvironmentHttpApiClient(input.httpBaseUrl);
@@ -195,6 +196,7 @@ export const exchangeRemoteDpopAccessToken = Effect.fn(
     client.auth.token({
       headers: { dpop: input.dpopProof },
       payload: {
+        ...(input.durableDevice ? { durable_device: "true" as const } : {}),
         grant_type: AuthTokenExchangeGrantType,
         subject_token: input.credential,
         subject_token_type: AuthEnvironmentBootstrapTokenType,
@@ -230,6 +232,42 @@ export const bootstrapRemoteBearerSession = Effect.fn(
         ...(input.scopes ? { scope: encodeOAuthScope(input.scopes) } : {}),
         ...clientMetadataTokenExchangeFields(input.clientMetadata),
       },
+    }),
+  );
+});
+
+export const refreshRemoteDeviceSession = Effect.fn(
+  "clientRuntime.remote.refreshRemoteDeviceSession",
+)(function* (input: {
+  readonly httpBaseUrl: string;
+  readonly refreshToken: string;
+  readonly requestId: string;
+  readonly dpopProof: string;
+}) {
+  const client = yield* makeEnvironmentHttpApiClient(input.httpBaseUrl);
+  return yield* executeRemoteRequest(
+    remoteEndpointUrl(input.httpBaseUrl, "/api/auth/device/refresh"),
+    DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
+    client.auth.refreshDevice({
+      headers: { dpop: input.dpopProof },
+      payload: { refresh_token: input.refreshToken, request_id: input.requestId },
+    }),
+  );
+});
+export const logoutRemoteDeviceSession = Effect.fn(
+  "clientRuntime.remote.logoutRemoteDeviceSession",
+)(function* (input: {
+  readonly httpBaseUrl: string;
+  readonly refreshToken: string;
+  readonly dpopProof: string;
+}) {
+  const client = yield* makeEnvironmentHttpApiClient(input.httpBaseUrl);
+  return yield* executeRemoteRequest(
+    remoteEndpointUrl(input.httpBaseUrl, "/api/auth/device/logout"),
+    DEFAULT_REMOTE_REQUEST_TIMEOUT_MS,
+    client.auth.logoutDevice({
+      headers: { dpop: input.dpopProof },
+      payload: { refresh_token: input.refreshToken },
     }),
   );
 });

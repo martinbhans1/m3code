@@ -33,6 +33,7 @@ import * as EnvironmentAuthPolicy from "./EnvironmentAuthPolicy.ts";
 import * as PairingGrantStore from "./PairingGrantStore.ts";
 import * as ServerSecretStore from "./ServerSecretStore.ts";
 import * as SessionStore from "./SessionStore.ts";
+import * as DeviceAuthorization from "./DurableDeviceAuthorization.ts";
 import { hashAccessPassword, verifyAccessPasswordHash } from "./accessPassword.ts";
 import { verifyRequestDpopProof } from "./dpop.ts";
 import { layerConfig as SqlitePersistenceLayer } from "../persistence/Layers/Sqlite.ts";
@@ -130,6 +131,7 @@ export interface EnvironmentAuthShape {
     requestMetadata: AuthClientMetadata,
     input?: {
       readonly proofKeyThumbprint?: string;
+      readonly durableDevice?: boolean;
     },
   ) => Effect.Effect<
     AuthAccessTokenResult,
@@ -284,6 +286,7 @@ export const make = Effect.fn("makeEnvironmentAuth")(function* () {
   const policy = yield* EnvironmentAuthPolicy.EnvironmentAuthPolicy;
   const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
   const sessions = yield* SessionStore.SessionStore;
+  const devices = yield* DeviceAuthorization.DurableDeviceAuthorization;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const crypto = yield* Crypto.Crypto;
   const descriptor = yield* policy.getDescriptor();
@@ -510,31 +513,37 @@ export const make = Effect.fn("makeEnvironmentAuth")(function* () {
                 reason: "scope_not_granted",
               });
             }
-            return yield* sessions
-              .issue({
-                method: input?.proofKeyThumbprint ? "dpop-access-token" : "bearer-access-token",
-                subject: grant.subject,
-                scopes: grantedScopes,
-                ...(input?.proofKeyThumbprint
-                  ? {
-                      proofKeyThumbprint: input.proofKeyThumbprint,
-                      ttl: Duration.hours(1),
-                    }
-                  : {}),
-                client: {
-                  ...requestMetadata,
-                  ...(grant.label ? { label: grant.label } : {}),
-                },
-              })
-              .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ServerAuthInternalError({
-                      message: "Failed to issue authenticated access token.",
-                      cause,
-                    }),
-                ),
-              );
+            if (input?.durableDevice && !input.proofKeyThumbprint) {
+              return yield* new ServerAuthInvalidCredentialError({ reason: "invalid_credential" });
+            }
+            const issueInput = {
+              method: input?.proofKeyThumbprint ? "dpop-access-token" : "bearer-access-token",
+              subject: grant.subject,
+              scopes: grantedScopes,
+              ...(input?.proofKeyThumbprint
+                ? {
+                    proofKeyThumbprint: input.proofKeyThumbprint,
+                    ttl: Duration.hours(1),
+                  }
+                : {}),
+              client: {
+                ...requestMetadata,
+                ...(grant.label ? { label: grant.label } : {}),
+              },
+            } as const;
+            return yield* (
+              input?.durableDevice && input.proofKeyThumbprint
+                ? devices.issue({ ...issueInput, proofKeyThumbprint: input.proofKeyThumbprint })
+                : sessions.issue(issueInput)
+            ).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ServerAuthInternalError({
+                    message: "Failed to issue authenticated access token.",
+                    cause,
+                  }),
+              ),
+            );
           }),
         ),
         Effect.flatMap((session) =>
@@ -543,8 +552,11 @@ export const make = Effect.fn("makeEnvironmentAuth")(function* () {
               (now) =>
                 ({
                   access_token: session.token,
+                  ...("refreshToken" in session
+                    ? { refresh_token: session.refreshToken as string }
+                    : {}),
                   issued_token_type: AuthAccessTokenType,
-                  token_type: input?.proofKeyThumbprint ? "DPoP" : "Bearer",
+                  token_type: input?.proofKeyThumbprint && !input.durableDevice ? "DPoP" : "Bearer",
                   expires_in: Math.max(
                     0,
                     Math.floor(
@@ -812,7 +824,7 @@ export const make = Effect.fn("makeEnvironmentAuth")(function* () {
 
 export const layer = Layer.effect(EnvironmentAuth, make()).pipe(
   Layer.provideMerge(PairingGrantStore.layer),
-  Layer.provideMerge(SessionStore.layer),
+  Layer.provideMerge(DeviceAuthorization.layer.pipe(Layer.provideMerge(SessionStore.layer))),
   Layer.provideMerge(EnvironmentAuthPolicy.layer),
 );
 

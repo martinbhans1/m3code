@@ -19,6 +19,7 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Option from "effect/Option";
 
 import { ServerConfig } from "../config.ts";
@@ -82,6 +83,11 @@ export type SessionCredentialError = SessionCredentialInvalidError | SessionCred
 
 export interface SessionStoreShape {
   readonly cookieName: string;
+  readonly renewDeviceAccess: (
+    sessionId: AuthSessionId,
+    proofKey: string,
+    ttl: Duration.Duration,
+  ) => Effect.Effect<IssuedSession, SessionCredentialError>;
   readonly issue: (input?: {
     readonly ttl?: Duration.Duration;
     readonly subject?: string;
@@ -192,6 +198,7 @@ const toSessionCredentialInternalError = (message: string) => (cause: unknown) =
   });
 
 export const make = Effect.fn("makeSessionStore")(function* () {
+  const sql = yield* SqlClient.SqlClient;
   const crypto = yield* Crypto.Crypto;
   const serverConfig = yield* ServerConfig;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
@@ -369,6 +376,55 @@ export const make = Effect.fn("makeSessionStore")(function* () {
       } satisfies IssuedSession;
     },
     Effect.mapError(toSessionCredentialInternalError("Failed to issue session credential.")),
+  );
+
+  const renewDeviceAccess: SessionStoreShape["renewDeviceAccess"] = Effect.fn(
+    "SessionStore.renewDeviceAccess",
+  )(
+    function* (sessionId, proofKey, ttl) {
+      const row = yield* authSessions.getById({ sessionId });
+      if (
+        Option.isNone(row) ||
+        row.value.revokedAt !== null ||
+        row.value.method !== "bearer-access-token"
+      ) {
+        return yield* new SessionCredentialInvalidError({
+          message: "Device authorization revoked.",
+        });
+      }
+      const device = yield* sql<{
+        proofKey: string;
+      }>`SELECT proof_key_thumbprint AS "proofKey" FROM auth_devices WHERE session_id = ${sessionId}`;
+      if (device[0]?.proofKey !== proofKey)
+        return yield* new SessionCredentialInvalidError({ message: "Device key mismatch." });
+      const issuedAt = yield* DateTime.now;
+      const expiresAt = DateTime.add(issuedAt, { milliseconds: Duration.toMillis(ttl) });
+      const claims: SessionClaims = {
+        v: 1,
+        kind: "session",
+        sid: sessionId,
+        sub: row.value.subject,
+        scopes: row.value.scopes,
+        method: row.value.method,
+        iat: issuedAt.epochMilliseconds,
+        exp: expiresAt.epochMilliseconds,
+      };
+      const payload = yield* encodeClaims(claims).pipe(Effect.map(base64UrlEncode));
+      yield* sql`UPDATE auth_sessions SET expires_at = ${DateTime.formatIso(expiresAt)} WHERE session_id = ${sessionId} AND revoked_at IS NULL`;
+      return {
+        sessionId,
+        token: `${payload}.${signPayload(payload, signingSecret)}`,
+        method: row.value.method,
+        client: toClientMetadata(row.value.client),
+        expiresAt,
+        scopes: row.value.scopes,
+      };
+    },
+    Effect.mapError((cause) =>
+      cause instanceof SessionCredentialInvalidError
+        ? cause
+        : new SessionCredentialInternalError({ message: "Device access renewal failed.", cause }),
+    ),
   );
 
   const verify: SessionStoreShape["verify"] = Effect.fn("SessionStore.verify")(
@@ -624,6 +680,7 @@ export const make = Effect.fn("makeSessionStore")(function* () {
 
   return {
     cookieName,
+    renewDeviceAccess,
     issue,
     verify,
     issueWebSocketToken,
