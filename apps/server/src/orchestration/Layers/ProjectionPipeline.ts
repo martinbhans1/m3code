@@ -79,6 +79,39 @@ type ProjectorName =
   (typeof ORCHESTRATION_PROJECTOR_NAMES)[keyof typeof ORCHESTRATION_PROJECTOR_NAMES];
 
 /**
+ * A turn this projection settled before the provider ever reported it running.
+ *
+ * The turn's checkpoint and the provider's "running" report come from two
+ * separate producers, and nothing orders them. Under load the provider side
+ * queues behind every other thread's events, so the checkpoint can reach the
+ * store first. `thread.turn-diff-completed` then meets a turn it has never seen
+ * and a session that is not (yet) running it, and writes the turn completed at
+ * birth: requested, started and completed all carry the checkpoint's single
+ * timestamp. Seen on 2026-10-09 when 47 prompts started at once: three threads
+ * kept a "completed" turn under a session still running that same turn, with
+ * no assistant reply anywhere.
+ *
+ * The provider's later "running" report is the newer fact, so such a turn must
+ * reopen. A turn that was observed running and settled afterwards carries a
+ * start before its end, so a stale re-report of an old active turn cannot
+ * reopen it and wedge the thread as busy. Interrupted and errored turns never
+ * qualify: those are explicit outcomes, not an inference from a checkpoint.
+ */
+function wasSettledBeforeObservedRunning(turn: {
+  readonly state: string;
+  readonly requestedAt: string | null;
+  readonly startedAt: string | null;
+  readonly completedAt: string | null;
+}): boolean {
+  return (
+    turn.state === "completed" &&
+    turn.completedAt !== null &&
+    turn.startedAt === turn.completedAt &&
+    (turn.requestedAt === null || turn.requestedAt === turn.completedAt)
+  );
+}
+
+/**
  * Turn state to settle still-running turns with when their session leaves the
  * "running" status, or null while the session is (re)starting or running and
  * turns must stay unsettled.
@@ -1152,8 +1185,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             threadId: event.payload.threadId,
           });
           if (Option.isSome(existingTurn)) {
-            const nextState =
-              existingTurn.value.state === "completed" || existingTurn.value.state === "error"
+            // Completed-at-birth by a checkpoint that beat this report to the
+            // store: the provider says the turn is running now, so it is.
+            const reopen = wasSettledBeforeObservedRunning(existingTurn.value);
+            const pendingRequestedAt = Option.isSome(pendingTurnStart)
+              ? pendingTurnStart.value.requestedAt
+              : null;
+            const nextState = reopen
+              ? "running"
+              : existingTurn.value.state === "completed" || existingTurn.value.state === "error"
                 ? existingTurn.value.state
                 : "running";
             yield* projectionTurnRepository.upsertByTurnId({
@@ -1182,6 +1222,17 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
                 (Option.isSome(pendingTurnStart)
                   ? pendingTurnStart.value.requestedAt
                   : event.occurredAt),
+              // Last on purpose, so these win over the fields above: the
+              // checkpoint's single timestamp is not when the turn was asked
+              // for or began, and it has not ended. The pending start says
+              // when it was asked for, exactly as for a brand-new row.
+              ...(reopen
+                ? {
+                    completedAt: null,
+                    requestedAt: pendingRequestedAt ?? existingTurn.value.requestedAt,
+                    startedAt: pendingRequestedAt ?? event.occurredAt,
+                  }
+                : {}),
             });
           } else {
             yield* projectionTurnRepository.upsertByTurnId({

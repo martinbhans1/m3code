@@ -1380,6 +1380,229 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  // 2026-10-09: 47 prompts started at once and three threads ended with a
+  // "completed" turn under a session still running that turn, and no reply.
+  // In each, the turn's checkpoint reached the store BEFORE the provider's
+  // report that the turn was running (the provider side queued behind every
+  // other thread), so the checkpoint met an unseen turn and settled it at
+  // birth. This replays that exact order, one event at a time as the live
+  // server projects them.
+  it.effect("reopens a turn its checkpoint settled before the provider reported it running", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+      const threadId = ThreadId.make("thread-checkpoint-first");
+      const turnId = TurnId.make("turn-checkpoint-first");
+      const askedAt = "2026-01-01T00:00:00.500Z";
+      const meta = (n: string, occurredAt: string) => ({
+        eventId: EventId.make(`evt-cpf-${n}`),
+        aggregateKind: "thread" as const,
+        aggregateId: threadId,
+        occurredAt,
+        commandId: CommandId.make(`cmd-cpf-${n}`),
+        causationEventId: null,
+        correlationId: CorrelationId.make(`cmd-cpf-${n}`),
+        metadata: {},
+      });
+      const session = (
+        status: "ready" | "running",
+        activeTurnId: TurnId | null,
+        updatedAt: string,
+      ) => ({
+        threadId,
+        session: {
+          threadId,
+          status,
+          providerName: "claude",
+          runtimeMode: "full-access" as const,
+          activeTurnId,
+          lastError: null,
+          updatedAt,
+        },
+      });
+      const readTurn = sql<{
+        readonly state: string;
+        readonly requestedAt: string | null;
+        readonly startedAt: string | null;
+        readonly completedAt: string | null;
+      }>`
+        SELECT state, requested_at AS "requestedAt", started_at AS "startedAt",
+               completed_at AS "completedAt"
+        FROM projection_turns
+        WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+      `;
+
+      yield* appendAndProject({
+        type: "thread.created",
+        ...meta("1", "2026-01-01T00:00:00.000Z"),
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-checkpoint-first"),
+          title: "Checkpoint first",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claude"),
+            model: "claude-opus",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.turn-start-requested",
+        ...meta("2", askedAt),
+        payload: {
+          threadId,
+          messageId: MessageId.make("message-cpf-user"),
+          runtimeMode: "full-access",
+          createdAt: askedAt,
+        },
+      });
+      // The checkpoint, first in the store although it happened last.
+      yield* appendAndProject({
+        type: "thread.turn-diff-completed",
+        ...meta("3", "2026-01-01T00:00:05.000Z"),
+        payload: {
+          threadId,
+          turnId,
+          checkpointTurnCount: 1,
+          checkpointRef: CheckpointRef.make("refs/t3/checkpoints/thread-checkpoint-first/turn/1"),
+          status: "ready",
+          files: [],
+          assistantMessageId: null,
+          completedAt: "2026-01-01T00:00:05.000Z",
+        },
+      });
+      // Then the provider's queued reports: still idle from before the turn,
+      // then running this turn.
+      yield* appendAndProject({
+        type: "thread.session-set",
+        ...meta("4", "2026-01-01T00:00:01.000Z"),
+        payload: session("ready", null, "2026-01-01T00:00:01.000Z"),
+      });
+      yield* appendAndProject({
+        type: "thread.session-set",
+        ...meta("5", "2026-01-01T00:00:02.000Z"),
+        payload: session("running", turnId, "2026-01-01T00:00:02.000Z"),
+      });
+
+
+      assert.deepEqual(yield* readTurn, [
+        { state: "running", requestedAt: askedAt, startedAt: askedAt, completedAt: null },
+      ]);
+
+      // The real turn end still settles it, at the real time.
+      yield* appendAndProject({
+        type: "thread.session-set",
+        ...meta("6", "2026-01-01T00:01:00.000Z"),
+        payload: session("ready", null, "2026-01-01T00:01:00.000Z"),
+      });
+
+
+      assert.deepEqual(yield* readTurn, [
+        {
+          state: "completed",
+          requestedAt: askedAt,
+          startedAt: askedAt,
+          completedAt: "2026-01-01T00:01:00.000Z",
+        },
+      ]);
+    }),
+  );
+
+  // The guard on the reopen above. A turn that was seen running and then
+  // settled must stay settled when its old id is reported running again,
+  // which is what a stale provider snapshot does. Reopening it would leave
+  // the thread looking busy forever with nothing working.
+  it.effect("keeps a turn that ran and ended settled when its old id is reported running again", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+        eventStore
+          .append(event)
+          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+      const threadId = ThreadId.make("thread-stale-running");
+      const turnId = TurnId.make("turn-stale-running");
+      const meta = (n: string, occurredAt: string) => ({
+        eventId: EventId.make(`evt-stale-${n}`),
+        aggregateKind: "thread" as const,
+        aggregateId: threadId,
+        occurredAt,
+        commandId: CommandId.make(`cmd-stale-${n}`),
+        causationEventId: null,
+        correlationId: CorrelationId.make(`cmd-stale-${n}`),
+        metadata: {},
+      });
+      const session = (
+        status: "ready" | "running",
+        activeTurnId: TurnId | null,
+        updatedAt: string,
+      ) => ({
+        threadId,
+        session: {
+          threadId,
+          status,
+          providerName: "claude",
+          runtimeMode: "full-access" as const,
+          activeTurnId,
+          lastError: null,
+          updatedAt,
+        },
+      });
+
+      yield* appendAndProject({
+        type: "thread.created",
+        ...meta("1", "2026-01-01T00:00:00.000Z"),
+        payload: {
+          threadId,
+          projectId: ProjectId.make("project-stale-running"),
+          title: "Stale running",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claude"),
+            model: "claude-opus",
+          },
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      });
+      yield* appendAndProject({
+        type: "thread.session-set",
+        ...meta("2", "2026-01-01T00:00:01.000Z"),
+        payload: session("running", turnId, "2026-01-01T00:00:01.000Z"),
+      });
+      yield* appendAndProject({
+        type: "thread.session-set",
+        ...meta("3", "2026-01-01T00:00:30.000Z"),
+        payload: session("ready", null, "2026-01-01T00:00:30.000Z"),
+      });
+      yield* appendAndProject({
+        type: "thread.session-set",
+        ...meta("4", "2026-01-01T00:05:00.000Z"),
+        payload: session("running", turnId, "2026-01-01T00:05:00.000Z"),
+      });
+
+
+      const rows = yield* sql<{ readonly state: string; readonly completedAt: string | null }>`
+        SELECT state, completed_at AS "completedAt"
+        FROM projection_turns
+        WHERE thread_id = ${threadId} AND turn_id = ${turnId}
+      `;
+      assert.deepEqual(rows, [{ state: "completed", completedAt: "2026-01-01T00:00:30.000Z" }]);
+    }),
+  );
+
   it.effect("settles a superseded running turn when a new turn becomes active", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;
