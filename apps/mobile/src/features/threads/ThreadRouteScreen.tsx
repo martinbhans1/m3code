@@ -1,5 +1,5 @@
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import { pipe } from "effect/Function";
@@ -53,6 +53,23 @@ function firstRouteParam(value: string | string[] | undefined): string | null {
   return value ?? null;
 }
 
+// A thread the catalog does not list yet is usually one that was just created
+// (on this device or another) and whose shell update is still in flight, so
+// keep showing "Opening thread" this long before calling it unavailable.
+const MISSING_THREAD_GRACE_MS = 15_000;
+
+function useMissingThreadGraceElapsed(missingThreadKey: string | null): boolean {
+  const [elapsedKey, setElapsedKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (missingThreadKey === null) {
+      return;
+    }
+    const timer = setTimeout(() => setElapsedKey(missingThreadKey), MISSING_THREAD_GRACE_MS);
+    return () => clearTimeout(timer);
+  }, [missingThreadKey]);
+  return missingThreadKey !== null && elapsedKey === missingThreadKey;
+}
+
 function OpeningThreadLoadingScreen() {
   return <LoadingScreen message="Opening thread…" messagePlacement="above-spinner" />;
 }
@@ -89,6 +106,9 @@ export function ThreadRouteScreen() {
   const routeConnectionState = routeEnvironmentRuntime?.connectionState ?? connectionState;
   const routeConnectionError =
     pendingConnectionError ?? routeEnvironmentRuntime?.connectionError ?? aggregateConnectionError;
+  const missingThreadGraceElapsed = useMissingThreadGraceElapsed(
+    environmentId && threadId && !selectedThread ? `${environmentId}:${threadId}` : null,
+  );
 
   /* ─── Native header theming ──────────────────────────────────────── */
   const iconColor = String(useThemeColor("--color-icon"));
@@ -240,7 +260,8 @@ export function ThreadRouteScreen() {
     const stillHydrating =
       isLoadingSavedConnection ||
       routeConnectionState === "connecting" ||
-      routeConnectionState === "reconnecting";
+      routeConnectionState === "reconnecting" ||
+      !missingThreadGraceElapsed;
 
     if (stillHydrating) {
       return <OpeningThreadLoadingScreen />;
