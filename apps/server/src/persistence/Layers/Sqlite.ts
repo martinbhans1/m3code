@@ -5,6 +5,7 @@ import * as Path from "effect/Path";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { runMigrations } from "../Migrations.ts";
+import * as SqliteReadWorker from "../SqliteReadWorker.ts";
 import { ServerConfig } from "../../config.ts";
 
 type RuntimeSqliteLayerConfig = {
@@ -51,16 +52,20 @@ export const makeSqlitePersistenceLive = Effect.fn("makeSqlitePersistenceLive")(
   const path = yield* Path.Path;
   yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
 
-  return Layer.provideMerge(
+  const spanAttributes = {
+    "db.name": path.basename(dbPath),
+    "service.name": "t3-server",
+  };
+  const persistence = Layer.provideMerge(
     setup,
-    makeRuntimeSqliteLayer({
-      filename: dbPath,
-      spanAttributes: {
-        "db.name": path.basename(dbPath),
-        "service.name": "t3-server",
-      },
-    }),
+    makeRuntimeSqliteLayer({ filename: dbPath, spanAttributes }),
   );
+  // Heavy read-only queries get their own connection on a worker thread (see
+  // SqliteReadWorker). Node only: it is built on node:sqlite. Opened lazily, so
+  // the first read lands after `setup` has migrated the file.
+  return process.versions.bun === undefined
+    ? Layer.merge(persistence, SqliteReadWorker.layer({ filename: dbPath, spanAttributes }))
+    : persistence;
 }, Layer.unwrap);
 
 export const SqlitePersistenceMemory = Layer.provideMerge(

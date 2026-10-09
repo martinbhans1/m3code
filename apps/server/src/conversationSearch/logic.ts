@@ -84,6 +84,51 @@ export function buildConversationSearchChunks(
   return chunks;
 }
 
+export interface StoredSemanticChunk {
+  readonly chunkId: string;
+  readonly text: string;
+  /** Embedded by the current model and index format. */
+  readonly current: boolean;
+}
+
+export interface SemanticReindexPlan {
+  /** Chunks whose stored embedding is still right, by chunk id. */
+  readonly reuse: ReadonlyArray<ConversationSearchChunk>;
+  /** Chunks that are new or whose text changed. */
+  readonly embed: ReadonlyArray<ConversationSearchChunk>;
+  /** Stored rows to delete: changed, gone, or from an older model or format. */
+  readonly staleChunkIds: ReadonlyArray<string>;
+}
+
+/**
+ * Decide what re-indexing a thread actually has to embed.
+ *
+ * Chunking is deterministic and fills a thread front to back, so a new message
+ * rewrites the thread's last chunk and appends new ones; every earlier chunk
+ * comes out byte-identical and keeps its stored embedding. Re-embedding the whole
+ * thread instead cost seconds of model time per message in a long conversation,
+ * again and again while it was active.
+ */
+export function planSemanticReindex(
+  chunks: ReadonlyArray<ConversationSearchChunk>,
+  stored: ReadonlyArray<StoredSemanticChunk>,
+): SemanticReindexPlan {
+  const storedById = new Map(
+    stored.filter((row) => row.current).map((row) => [row.chunkId, row.text] as const),
+  );
+  const reuse: ConversationSearchChunk[] = [];
+  const embed: ConversationSearchChunk[] = [];
+  for (const chunk of chunks) {
+    (storedById.get(chunk.chunkId) === chunk.text ? reuse : embed).push(chunk);
+  }
+  const reusedIds = new Set(reuse.map((chunk) => chunk.chunkId));
+  return {
+    reuse,
+    embed,
+    staleChunkIds: stored.map((row) => row.chunkId).filter((chunkId) => !reusedIds.has(chunkId)),
+  };
+}
+
 /**
  * Terms too common to narrow anything, and ruinous to match on.
  *
@@ -382,6 +427,12 @@ export function querySearchWords(query: string): string[] {
   return meaningful.length > 0 ? meaningful : words;
 }
 
+export interface ThreadLabels {
+  readonly title: string;
+  readonly projectTitle: string;
+  readonly branch: string | null;
+}
+
 /**
  * How well a thread's own labels match the query: 0 for no match, and 3 or more
  * when the thread's title matched rather than its project or branch.
@@ -389,25 +440,31 @@ export function querySearchWords(query: string): string[] {
  * The whole query as one string comes first. Word by word comes after: a title
  * is remembered as a few of its words, rarely in order, so "status fix" has to
  * find "Fix the status bar" — a title holding every word counts as a title hit.
+ *
+ * Prepared once per query and applied to every thread: splitting the query per
+ * thread was most of the cost of a title search.
  */
-export function rankThreadMetadata(
-  query: string,
-  labels: { readonly title: string; readonly projectTitle: string; readonly branch: string | null },
-): number {
+export function makeThreadMetadataRanker(query: string): (labels: ThreadLabels) => number {
   const needle = query.trim().toLowerCase();
-  const title = labels.title.toLowerCase();
-  const projectTitle = labels.projectTitle.toLowerCase();
-  const branch = (labels.branch ?? "").toLowerCase();
-  if (title === needle) return 5;
-  if (title.startsWith(needle)) return 4;
-  if (title.includes(needle)) return 3;
   const words = querySearchWords(needle);
-  if (words.length === 0) return 0;
-  if (words.every((word) => title.includes(word))) return 3;
-  if (projectTitle.includes(needle)) return 2;
-  if (branch.includes(needle)) return 1;
-  const labelText = `${title} ${projectTitle} ${branch}`;
-  return words.every((word) => labelText.includes(word)) ? 2 : 0;
+  return (labels) => {
+    const title = labels.title.toLowerCase();
+    if (title === needle) return 5;
+    if (title.startsWith(needle)) return 4;
+    if (title.includes(needle)) return 3;
+    if (words.length === 0) return 0;
+    if (words.every((word) => title.includes(word))) return 3;
+    const projectTitle = labels.projectTitle.toLowerCase();
+    if (projectTitle.includes(needle)) return 2;
+    const branch = (labels.branch ?? "").toLowerCase();
+    if (branch.includes(needle)) return 1;
+    const labelText = `${title} ${projectTitle} ${branch}`;
+    return words.every((word) => labelText.includes(word)) ? 2 : 0;
+  };
+}
+
+export function rankThreadMetadata(query: string, labels: ThreadLabels): number {
+  return makeThreadMetadataRanker(query)(labels);
 }
 
 /** A result carrying the band it should be read in; internal to search. */

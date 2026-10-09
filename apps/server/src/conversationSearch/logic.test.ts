@@ -7,6 +7,7 @@ import {
   mergeHybridThreadSearchResults,
   MAX_SEMANTIC_THREADS,
   MIN_SEMANTIC_SIMILARITY,
+  planSemanticReindex,
   rankThreadMetadata,
   relaxFtsQuery,
   semanticSimilarityFloor,
@@ -244,5 +245,63 @@ describe("rankThreadMetadata", () => {
 
   it("does not match when any word is missing everywhere", () => {
     expect(rankThreadMetadata("status deploy", labels("Fix the status bar"))).toBe(0);
+  });
+});
+
+describe("planSemanticReindex", () => {
+  const message = (messageId: string, text: string, title = "Search speed") => ({
+    threadId: "thread-1",
+    title,
+    projectTitle: "m3code",
+    branch: null,
+    messageId,
+    role: "user" as const,
+    text,
+  });
+  const stored = (chunks: ReadonlyArray<{ chunkId: string; text: string }>, current = true) =>
+    chunks.map((chunk) => ({ chunkId: chunk.chunkId, text: chunk.text, current }));
+  const history = Array.from({ length: 24 }, (_, index) =>
+    message(`m${index}`, `Message ${index} `.repeat(40)),
+  );
+
+  it("re-embeds only the tail a new message changed, and keeps every earlier chunk", () => {
+    const before = buildConversationSearchChunks(history);
+    const after = buildConversationSearchChunks([...history, message("m12", "One more reply.")]);
+    expect(before.length).toBeGreaterThan(3);
+
+    const plan = planSemanticReindex(after, stored(before));
+
+    expect(plan.reuse.map((chunk) => chunk.chunkId)).toEqual(
+      before.slice(0, -1).map((chunk) => chunk.chunkId),
+    );
+    expect(plan.embed.map((chunk) => chunk.chunkId)).toEqual(
+      after.slice(before.length - 1).map((chunk) => chunk.chunkId),
+    );
+    expect(plan.staleChunkIds).toEqual([before.at(-1)!.chunkId]);
+  });
+
+  it("re-embeds everything when the title, which every chunk carries, changes", () => {
+    const before = buildConversationSearchChunks(history);
+    const renamed = buildConversationSearchChunks(
+      history.map((entry) => ({ ...entry, title: "Renamed" })),
+    );
+    const plan = planSemanticReindex(renamed, stored(before));
+    expect(plan.reuse).toEqual([]);
+    expect(plan.embed).toHaveLength(renamed.length);
+    expect(plan.staleChunkIds).toHaveLength(before.length);
+  });
+
+  it("never reuses rows from an older model or format, and drops chunks the thread lost", () => {
+    const chunks = buildConversationSearchChunks(history);
+    const plan = planSemanticReindex(chunks.slice(0, 2), [
+      ...stored(chunks.slice(0, 1), false),
+      ...stored(chunks.slice(1)),
+    ]);
+    expect(plan.reuse.map((chunk) => chunk.chunkId)).toEqual([chunks[1]!.chunkId]);
+    expect(plan.embed.map((chunk) => chunk.chunkId)).toEqual([chunks[0]!.chunkId]);
+    expect(plan.staleChunkIds).toEqual([
+      chunks[0]!.chunkId,
+      ...chunks.slice(2).map((chunk) => chunk.chunkId),
+    ]);
   });
 });

@@ -14,6 +14,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../config.ts";
+import { readerOr } from "../persistence/SqliteReadWorker.ts";
+import { makeLocalEmbedder } from "./LocalEmbedder.ts";
 import {
   buildConversationSearchChunks,
   buildFtsQuery,
@@ -22,9 +24,10 @@ import {
   dotProduct,
   fromEmbeddingBytes,
   MAX_SEMANTIC_THREADS,
+  makeThreadMetadataRanker,
   mergeHybridThreadSearchResults,
+  planSemanticReindex,
   querySearchWords,
-  rankThreadMetadata,
   relaxFtsQuery,
   semanticSimilarityFloor,
   THREAD_SEARCH_BAND,
@@ -37,8 +40,15 @@ import {
 
 const MAX_SEARCH_RESULTS = 50;
 const DEFAULT_SEARCH_RESULTS = 20;
-const SEMANTIC_BATCH_SIZE = 32;
+/**
+ * Chunks per model call while indexing. A search's query embedding waits for the
+ * batch already running, so this bounds how stale the semantic results get while
+ * the indexer is busy: about 0.15s of model time per chunk.
+ */
+const SEMANTIC_BATCH_SIZE = 8;
 const SEMANTIC_DIRTY_THREAD_BATCH_SIZE = 50;
+/** Index rows per read when loading the semantic index at startup. */
+const SEMANTIC_LOAD_PAGE_SIZE = 2_000;
 const SEMANTIC_CANDIDATE_MULTIPLIER = 4;
 /** A thread containing every search term outranks anything found another way. */
 const STRICT_CONTENT_BASE_SCORE = 700;
@@ -131,24 +141,34 @@ interface DirtyThreadRow {
 interface SemanticChunkRow {
   readonly chunkId: string;
   readonly threadId: string;
+  readonly embedding: Uint8Array;
+}
+
+interface StoredChunkRow {
+  readonly chunkId: string;
   readonly text: string;
   readonly embedding: Uint8Array;
+  /** 1 when the row was embedded by the current model and index format. */
+  readonly current: number;
+}
+
+interface ChunkTextRow {
+  readonly chunkId: string;
+  readonly text: string;
 }
 
 interface SemanticThreadMetadataRow extends ThreadMetadataRow {}
 
-interface LoadedSemanticChunk extends ConversationSearchChunk {
+/**
+ * One chunk of the in-memory semantic index. The chunk's text stays in the
+ * database: ranking needs only the vector, and the handful of chunks that make it
+ * into the results have their text read for the snippet.
+ */
+interface LoadedSemanticChunk {
+  readonly chunkId: string;
+  readonly threadId: string;
   readonly embedding: Float32Array;
 }
-
-interface LocalEmbeddingOutput {
-  readonly tolist: () => unknown;
-}
-
-type LocalEmbeddingPipeline = (
-  texts: ReadonlyArray<string>,
-  options: { readonly pooling: "mean"; readonly normalize: true },
-) => Promise<LocalEmbeddingOutput>;
 
 function clampLimit(limit: number | undefined): number {
   if (limit === undefined || limit <= 0) return DEFAULT_SEARCH_RESULTS;
@@ -218,48 +238,47 @@ function semanticSnippet(text: string): string {
 
 const makeConversationSearch = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  // Heavy reads — message text scans, whole-thread reads for the indexer, the
+  // index load — go to a read-only connection on its own thread when the server
+  // has one, so they no longer hold the event loop. Anything that must see its
+  // own uncommitted writes stays on `sql`.
+  const reader = yield* readerOr(sql);
   const config = yield* ServerConfig;
 
   let semanticStatus: OrchestrationSearchThreadsResult["semanticStatus"] = "indexing";
   let semanticChunks: ReadonlyArray<LoadedSemanticChunk> = [];
+  /**
+   * The persisted index is in memory. Until then there is nothing to rank
+   * against; after it, semantic search answers even while the indexer catches up
+   * — from vectors at most one indexing cycle old for the threads it is busy
+   * with — rather than going dark whenever any conversation is active.
+   */
+  let semanticIndexLoaded = false;
   let semanticBuildStarted = false;
-  let extractor: LocalEmbeddingPipeline | null = null;
-
-  const getExtractor = Effect.fn("ConversationSearch.getExtractor")(function* () {
-    if (extractor) return extractor;
-    const transformers = yield* Effect.tryPromise({
-      try: () => import("@huggingface/transformers"),
-      catch: (cause) =>
-        new ConversationSearchError({ message: "Failed to load local embedding runtime.", cause }),
-    });
-    transformers.env.cacheDir = `${config.providerStatusCacheDir}/conversation-search-models`;
-    transformers.env.allowRemoteModels = true;
-    extractor = (yield* Effect.tryPromise({
-      try: () =>
-        transformers.pipeline("feature-extraction", "Xenova/bge-small-en-v1.5", {
-          dtype: "q8",
-        }),
-      catch: (cause) =>
-        new ConversationSearchError({ message: "Failed to load local embedding model.", cause }),
-    })) as unknown as LocalEmbeddingPipeline;
-    return extractor;
-  });
+  const embedder = yield* Effect.acquireRelease(
+    Effect.sync(() =>
+      makeLocalEmbedder({
+        model: "Xenova/bge-small-en-v1.5",
+        dtype: "q8",
+        cacheDir: `${config.providerStatusCacheDir}/conversation-search-models`,
+      }),
+    ),
+    (embedder) => Effect.promise(() => embedder.close()),
+  );
 
   const embedTexts = Effect.fn("ConversationSearch.embedTexts")(function* (
     texts: ReadonlyArray<string>,
     kind: "query" | "document",
   ) {
-    const model = yield* getExtractor();
     const prefixedTexts =
       kind === "query"
         ? texts.map((text) => `Represent this sentence for searching relevant passages: ${text}`)
-        : [...texts];
-    const output = yield* Effect.tryPromise({
-      try: () => model(prefixedTexts, { pooling: "mean", normalize: true }),
+        : texts;
+    return yield* Effect.tryPromise({
+      try: () => embedder.embed(prefixedTexts, kind),
       catch: (cause) =>
         new ConversationSearchError({ message: "Local embedding inference failed.", cause }),
     });
-    return (output.tolist() as number[][]).map((values) => Float32Array.from(values));
   });
 
   const loadPersistedSemanticChunks = Effect.fn("ConversationSearch.loadPersistedSemanticChunks")(
@@ -309,24 +328,34 @@ const makeConversationSearch = Effect.gen(function* () {
           }),
         );
       }
-      const rows = yield* sql<SemanticChunkRow>`
-      SELECT
-        chunk_id AS "chunkId",
-        thread_id AS "threadId",
-        text,
-        embedding
-      FROM conversation_search_semantic_chunks
-      WHERE model = ${CONVERSATION_SEARCH_MODEL}
-        AND dimensions = ${CONVERSATION_SEARCH_DIMENSIONS}
-        AND source_fingerprint = ${SEMANTIC_INDEX_FORMAT}
-      ORDER BY chunk_id ASC
-    `;
-      semanticChunks = rows.map((row) => ({
-        chunkId: row.chunkId,
-        threadId: row.threadId,
-        text: row.text,
-        embedding: fromEmbeddingBytes(row.embedding),
-      }));
+      // Paged, so no single read or decode holds the server for long: tens of
+      // thousands of rows in one statement froze it for seconds at startup.
+      const loaded: LoadedSemanticChunk[] = [];
+      let after = "";
+      while (true) {
+        const rows = yield* reader<SemanticChunkRow>`
+          SELECT chunk_id AS "chunkId", thread_id AS "threadId", embedding
+          FROM conversation_search_semantic_chunks
+          WHERE chunk_id > ${after}
+            AND model = ${CONVERSATION_SEARCH_MODEL}
+            AND dimensions = ${CONVERSATION_SEARCH_DIMENSIONS}
+            AND source_fingerprint = ${SEMANTIC_INDEX_FORMAT}
+          ORDER BY chunk_id ASC
+          LIMIT ${SEMANTIC_LOAD_PAGE_SIZE}
+        `;
+        for (const row of rows) {
+          loaded.push({
+            chunkId: row.chunkId,
+            threadId: row.threadId,
+            embedding: fromEmbeddingBytes(row.embedding),
+          });
+        }
+        if (rows.length < SEMANTIC_LOAD_PAGE_SIZE) break;
+        after = rows.at(-1)!.chunkId;
+        yield* Effect.yieldNow;
+      }
+      semanticChunks = loaded;
+      semanticIndexLoaded = true;
     },
   );
 
@@ -334,7 +363,6 @@ const makeConversationSearch = Effect.gen(function* () {
     if (semanticBuildStarted) return false;
     semanticBuildStarted = true;
     let claimedThreadIds: ReadonlyArray<string> = [];
-    let messages: ReadonlyArray<SearchableConversationMessage> = [];
     yield* sql.withTransaction(
       Effect.gen(function* () {
         const dirtyRows = yield* sql<DirtyThreadRow>`
@@ -356,24 +384,6 @@ const makeConversationSearch = Effect.gen(function* () {
           DELETE FROM conversation_search_semantic_dirty_threads
           WHERE thread_id IN (SELECT thread_id FROM conversation_search_semantic_processing_threads)
         `;
-        messages = yield* sql<SearchableConversationMessage>`
-          SELECT
-            thread.thread_id AS "threadId",
-            thread.title,
-            project.title AS "projectTitle",
-            thread.branch,
-            message.message_id AS "messageId",
-            message.role,
-            message.text
-          FROM conversation_search_semantic_processing_threads AS processing
-          JOIN projection_threads AS thread ON thread.thread_id = processing.thread_id
-          JOIN projection_projects AS project ON project.project_id = thread.project_id
-          JOIN projection_thread_messages AS message ON message.thread_id = thread.thread_id
-          WHERE message.is_streaming = 0
-            AND thread.deleted_at IS NULL
-            AND project.deleted_at IS NULL
-          ORDER BY thread.thread_id ASC, message.created_at ASC, message.message_id ASC
-        `;
       }),
     );
     if (claimedThreadIds.length === 0) {
@@ -382,10 +392,65 @@ const makeConversationSearch = Effect.gen(function* () {
       return false;
     }
     semanticStatus = "indexing";
-    const chunks = buildConversationSearchChunks(messages);
-    const nextChunks: LoadedSemanticChunk[] = [];
-    for (let offset = 0; offset < chunks.length; offset += SEMANTIC_BATCH_SIZE) {
-      const batch = chunks.slice(offset, offset + SEMANTIC_BATCH_SIZE);
+    // Read outside the claim, on the reader: a long thread is megabytes of text
+    // and its stored chunks as much again, read every time it gets a message. A
+    // message landing after the claim marks the thread dirty again, so the next
+    // cycle picks it up — the same guarantee the claim always gave.
+    const messages = yield* reader<SearchableConversationMessage>`
+      SELECT
+        thread.thread_id AS "threadId",
+        thread.title,
+        project.title AS "projectTitle",
+        thread.branch,
+        message.message_id AS "messageId",
+        message.role,
+        message.text
+      FROM projection_threads AS thread
+      JOIN projection_projects AS project ON project.project_id = thread.project_id
+      JOIN projection_thread_messages AS message ON message.thread_id = thread.thread_id
+      WHERE thread.thread_id IN ${reader.in(claimedThreadIds)}
+        AND message.is_streaming = 0
+        AND thread.deleted_at IS NULL
+        AND project.deleted_at IS NULL
+      ORDER BY thread.thread_id ASC, message.created_at ASC, message.message_id ASC
+    `;
+    const storedChunks = yield* reader<StoredChunkRow>`
+      SELECT
+        chunk_id AS "chunkId",
+        text,
+        embedding,
+        (
+          model = ${CONVERSATION_SEARCH_MODEL}
+          AND dimensions = ${CONVERSATION_SEARCH_DIMENSIONS}
+          AND source_fingerprint = ${SEMANTIC_INDEX_FORMAT}
+        ) AS "current"
+      FROM conversation_search_semantic_chunks
+      WHERE thread_id IN ${reader.in(claimedThreadIds)}
+    `;
+    // Only embed what changed (see `planSemanticReindex`). Stored rows are the
+    // reference, not memory, so another backend sharing the database cannot leave
+    // this one trusting an embedding that is not there.
+    const plan = planSemanticReindex(
+      buildConversationSearchChunks(messages),
+      storedChunks.map((row) => ({
+        chunkId: row.chunkId,
+        text: row.text,
+        current: row.current === 1,
+      })),
+    );
+    const storedEmbeddingById = new Map(
+      storedChunks.map((row) => [row.chunkId, row.embedding] as const),
+    );
+    const reusedChunks: LoadedSemanticChunk[] = plan.reuse.map((chunk) => ({
+      chunkId: chunk.chunkId,
+      threadId: chunk.threadId,
+      embedding: fromEmbeddingBytes(storedEmbeddingById.get(chunk.chunkId)!),
+    }));
+    const chunksToEmbed = plan.embed;
+    const staleChunkIds = plan.staleChunkIds;
+    const embeddedChunks: Array<{ chunk: ConversationSearchChunk; embedding: Float32Array }> = [];
+    for (let offset = 0; offset < chunksToEmbed.length; offset += SEMANTIC_BATCH_SIZE) {
+      const batch = chunksToEmbed.slice(offset, offset + SEMANTIC_BATCH_SIZE);
       const embeddings = yield* embedTexts(
         batch.map((chunk) => chunk.text),
         "document",
@@ -393,21 +458,22 @@ const makeConversationSearch = Effect.gen(function* () {
       batch.forEach((chunk, index) => {
         const embedding = embeddings[index];
         if (embedding?.length === CONVERSATION_SEARCH_DIMENSIONS) {
-          nextChunks.push({ ...chunk, embedding });
+          embeddedChunks.push({ chunk, embedding });
         }
       });
-      yield* Effect.yieldNow;
     }
 
     yield* sql.withTransaction(
       Effect.gen(function* () {
-        yield* sql`
-          DELETE FROM conversation_search_semantic_chunks
-          WHERE thread_id IN (SELECT thread_id FROM conversation_search_semantic_processing_threads)
-        `;
         yield* Effect.forEach(
-          nextChunks,
-          (chunk) =>
+          staleChunkIds,
+          (chunkId) =>
+            sql`DELETE FROM conversation_search_semantic_chunks WHERE chunk_id = ${chunkId}`,
+          { concurrency: 1, discard: true },
+        );
+        yield* Effect.forEach(
+          embeddedChunks,
+          ({ chunk, embedding }) =>
             sql`
               INSERT INTO conversation_search_semantic_chunks (
                 chunk_id,
@@ -424,7 +490,7 @@ const makeConversationSearch = Effect.gen(function* () {
                 ${CONVERSATION_SEARCH_DIMENSIONS},
                 ${SEMANTIC_INDEX_FORMAT},
                 ${chunk.text},
-                ${toEmbeddingBytes(chunk.embedding)}
+                ${toEmbeddingBytes(embedding)}
               )
             `,
           { concurrency: 1, discard: true },
@@ -447,7 +513,12 @@ const makeConversationSearch = Effect.gen(function* () {
     const claimedThreadIdSet = new Set(claimedThreadIds);
     semanticChunks = [
       ...semanticChunks.filter((chunk) => !claimedThreadIdSet.has(chunk.threadId)),
-      ...nextChunks,
+      ...reusedChunks,
+      ...embeddedChunks.map(({ chunk, embedding }) => ({
+        chunkId: chunk.chunkId,
+        threadId: chunk.threadId,
+        embedding,
+      })),
     ];
     semanticBuildStarted = false;
     return true;
@@ -491,7 +562,8 @@ const makeConversationSearch = Effect.gen(function* () {
   ) {
     // Every live thread's labels, ranked in JS: a few thousand short rows read in
     // milliseconds, and word-by-word title matching is awkward to express in SQL.
-    const rows = yield* sql<ThreadMetadataRow>`
+    const rankThread = makeThreadMetadataRanker(query);
+    const rows = yield* reader<ThreadMetadataRow>`
       SELECT
         thread.thread_id AS "threadId",
         thread.project_id AS "projectId",
@@ -509,7 +581,7 @@ const makeConversationSearch = Effect.gen(function* () {
       ORDER BY thread.updated_at DESC
     `;
     return rows
-      .map((row) => ({ row, rank: rankThreadMetadata(query, row) }))
+      .map((row) => ({ row, rank: rankThread(row) }))
       .filter((entry) => entry.rank > 0)
       .toSorted((left, right) => right.rank - left.rank)
       .slice(0, candidateLimit)
@@ -541,7 +613,7 @@ const makeConversationSearch = Effect.gen(function* () {
     // entire server, since SQLite runs on its thread. Ranking needs only the index
     // and `thread_id`, which sits ahead of the text, so only the rows that make the
     // cut have their text read. Rowid stands in for creation order as tiebreak.
-    return yield* sql<ContentSearchRow>`
+    return yield* reader<ContentSearchRow>`
       WITH ranked AS (
         SELECT
           projection_thread_messages_fts.rowid AS "hitRowid",
@@ -645,7 +717,7 @@ const makeConversationSearch = Effect.gen(function* () {
     // which rows get that check, so its two blind spots — queries under three
     // characters, and its case-insensitivity — cost speed rather than accuracy.
     const useTrigram = query.length >= TRIGRAM_MIN_QUERY_CHARS;
-    const rows = yield* sql<ExactSearchRow>`
+    const rows = yield* reader<ExactSearchRow>`
       SELECT
         thread.thread_id AS "threadId",
         thread.project_id AS "projectId",
@@ -707,8 +779,8 @@ const makeConversationSearch = Effect.gen(function* () {
     candidateLimit: number,
     updatedSince: string | null,
   ) {
-    if (semanticStatus !== "ready" || semanticChunks.length === 0) return [];
-    const threadRows = yield* sql<SemanticThreadMetadataRow>`
+    if (!semanticIndexLoaded || semanticChunks.length === 0) return [];
+    const threadRows = yield* reader<SemanticThreadMetadataRow>`
       SELECT
         thread.thread_id AS "threadId",
         thread.project_id AS "projectId",
@@ -738,16 +810,29 @@ const makeConversationSearch = Effect.gen(function* () {
     const rankedChunks = scoredChunks.filter((entry) => entry.similarity >= floor);
     const threadLimit = Math.min(candidateLimit, MAX_SEMANTIC_THREADS);
     const seenThreadIds = new Set<string>();
-    const results: BandedThreadSearchResult[] = [];
+    const picked: Array<{ entry: (typeof rankedChunks)[number]; metadata: ThreadMetadataRow }> = [];
     for (const entry of rankedChunks) {
-      if (results.length >= threadLimit) break;
+      if (picked.length >= threadLimit) break;
       if (seenThreadIds.has(entry.chunk.threadId)) continue;
       const metadata = metadataByThreadId.get(entry.chunk.threadId);
       if (!metadata) continue;
       seenThreadIds.add(entry.chunk.threadId);
+      picked.push({ entry, metadata });
+    }
+    if (picked.length === 0) return [];
+    const textByChunkId = new Map(
+      (yield* reader<ChunkTextRow>`
+        SELECT chunk_id AS "chunkId", text
+        FROM conversation_search_semantic_chunks
+        WHERE chunk_id IN ${reader.in(picked.map(({ entry }) => entry.chunk.chunkId))}
+      `).map((row) => [row.chunkId, row.text] as const),
+    );
+    const results: BandedThreadSearchResult[] = [];
+    for (const { entry, metadata } of picked) {
+      const text = textByChunkId.get(entry.chunk.chunkId);
       results.push({
         ...toBaseResult(metadata),
-        snippet: semanticSnippet(entry.chunk.text),
+        snippet: text === undefined ? null : semanticSnippet(text),
         matchedRole: null,
         // A chunk spans several messages, so there is no one message to point
         // at. Reporting the first would be a guess, and the caller would read
