@@ -90,6 +90,7 @@ describe("orchestrator access cleanup", () => {
                 OrchestrationEngineService,
                 OrchestrationEngineService.of({
                   streamDomainEvents: Stream.fromIterable(events),
+                  subscribeDomainEvents: Effect.succeed(Stream.fromIterable(events)),
                 } as unknown as OrchestrationEngineService["Service"]),
               ),
               Layer.succeed(

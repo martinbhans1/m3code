@@ -720,6 +720,7 @@ const buildAppUnderTest = (options?: {
           readEvents: () => Stream.empty,
           dispatch: () => Effect.succeed({ sequence: 0 }),
           streamDomainEvents: Stream.empty,
+          subscribeDomainEvents: Effect.succeed(Stream.empty),
           ...options?.layers?.orchestrationEngine,
         }),
       ),
@@ -5590,6 +5591,71 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       assertTrue(result.failure._tag === "OrchestrationGetSnapshotError");
       assertTrue(result.failure.cause instanceof Error);
       assert.include(result.failure.cause.message, projectionError.message);
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
+  it.effect("delivers shell events committed while the shell snapshot loads", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread-created-during-snapshot");
+      const domainEvents = yield* PubSub.unbounded<OrchestrationEvent>();
+      const metaUpdated = (sequence: number) =>
+        ({
+          sequence,
+          eventId: EventId.make(`event-${sequence}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: "2026-04-05T00:00:00.000Z",
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.meta-updated",
+          payload: { threadId, title: "New thread", updatedAt: "2026-04-05T00:00:00.000Z" },
+        }) satisfies Extract<OrchestrationEvent, { type: "thread.meta-updated" }>;
+
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            streamDomainEvents: Stream.fromPubSub(domainEvents),
+            subscribeDomainEvents: PubSub.subscribe(domainEvents).pipe(
+              Effect.map(Stream.fromSubscription),
+            ),
+          },
+          projectionSnapshotQuery: {
+            // Events land while the snapshot is being read: sequence 1 is
+            // already in the snapshot, sequence 2 is not.
+            getShellSnapshot: () =>
+              PubSub.publishAll(domainEvents, [metaUpdated(1), metaUpdated(2)]).pipe(
+                Effect.as({
+                  snapshotSequence: 1,
+                  projects: [],
+                  threads: [],
+                  updatedAt: "2026-04-05T00:00:00.000Z",
+                }),
+              ),
+            getThreadShellById: () =>
+              Effect.succeed(Option.some(makeDefaultOrchestrationThreadShell({ id: threadId }))),
+          },
+        },
+      });
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const items = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.subscribeShell]({}).pipe(
+            Stream.take(2),
+            Stream.runCollect,
+          ),
+        ),
+      );
+
+      const [snapshotItem, liveItem] = Array.from(items);
+      assert.equal(snapshotItem?.kind, "snapshot");
+      assert.equal(liveItem?.kind, "thread-upserted");
+      if (liveItem?.kind === "thread-upserted") {
+        assert.equal(liveItem.sequence, 2);
+        assert.equal(liveItem.thread.id, threadId);
+      }
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

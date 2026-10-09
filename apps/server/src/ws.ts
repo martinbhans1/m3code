@@ -940,6 +940,11 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeShell,
             Effect.gen(function* () {
+              // Subscribe before reading the snapshot: anything committed while
+              // it loads (e.g. the thread a client just created) would
+              // otherwise fall between the snapshot and the live stream and
+              // never reach the client.
+              const domainEvents = yield* orchestrationEngine.subscribeDomainEvents;
               const snapshot = yield* projectionSnapshotQuery.getShellSnapshot().pipe(
                 Effect.tapError((cause) =>
                   Effect.logError("orchestration shell snapshot load failed", { cause }),
@@ -953,7 +958,8 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
                 ),
               );
 
-              const liveStream = orchestrationEngine.streamDomainEvents.pipe(
+              const liveStream = domainEvents.pipe(
+                Stream.filter((event) => event.sequence > snapshot.snapshotSequence),
                 Stream.mapEffect(toShellStreamEvent),
                 Stream.flatMap((event) =>
                   Option.isSome(event) ? Stream.succeed(event.value) : Stream.empty,
@@ -991,6 +997,10 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeThread,
             Effect.gen(function* () {
+              // Subscribe before reading the snapshot so events committed while
+              // it loads are not lost; the sequence filter below drops the
+              // ones the snapshot already includes.
+              const domainEvents = yield* orchestrationEngine.subscribeDomainEvents;
               const [threadDetail, snapshotSequence] = yield* Effect.all([
                 projectionSnapshotQuery
                   .getThreadDetailById(input.threadId, { includeArchived: true })
@@ -1022,9 +1032,10 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
                 });
               }
 
-              const liveStream = orchestrationEngine.streamDomainEvents.pipe(
+              const liveStream = domainEvents.pipe(
                 Stream.filter(
                   (event) =>
+                    event.sequence > snapshotSequence &&
                     event.aggregateKind === "thread" &&
                     event.aggregateId === input.threadId &&
                     isThreadDetailEvent(event),
