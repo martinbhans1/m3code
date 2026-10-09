@@ -1,4 +1,4 @@
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { describe, expect, it } from "vite-plus/test";
 import { resolveNewThreadModelSelection } from "./newThreadModel";
@@ -62,6 +62,61 @@ describe("new thread model", () => {
         defaultSelection: null,
         currentThreadSelection: null,
         currentComposer: null,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("new thread model with nothing to inherit", () => {
+  const offering = (instanceId: string, models: ReadonlyArray<string>) =>
+    ({
+      instanceId: ProviderInstanceId.make(instanceId),
+      driver: instanceId,
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-10-09T10:00:00.000Z",
+      models: models.map((slug) => ({ slug, name: slug, isCustom: false, capabilities: null })),
+      slashCommands: [],
+      skills: [],
+    }) as unknown as ServerProvider;
+  const providers = [
+    offering("codex", ["gpt-6.1-sol"]),
+    offering("claudeAgent", ["claude-opus-5-5"]),
+  ];
+  const favorites = [
+    { provider: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+    { provider: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-5-5" },
+  ];
+  const base = { defaultSelection: null, currentThreadSelection: null, currentComposer: null };
+
+  it("starts on the first starred model the account can run", () => {
+    expect(resolveNewThreadModelSelection({ ...base, favorites, providers })).toEqual({
+      instanceId: "claudeAgent",
+      model: "claude-opus-5-5",
+    });
+  });
+
+  it("steps over a project default the account cannot run", () => {
+    expect(
+      resolveNewThreadModelSelection({
+        ...base,
+        projectDefault: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4"),
+        favorites,
+        providers,
+      }),
+    ).toEqual({ instanceId: "claudeAgent", model: "claude-opus-5-5" });
+  });
+
+  it("leaves a runnable project default in charge", () => {
+    expect(
+      resolveNewThreadModelSelection({
+        ...base,
+        projectDefault: createModelSelection(ProviderInstanceId.make("codex"), "gpt-6.1-sol"),
+        favorites,
+        providers,
       }),
     ).toBeNull();
   });

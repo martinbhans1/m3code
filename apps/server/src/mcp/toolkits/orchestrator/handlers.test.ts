@@ -663,9 +663,19 @@ let defaultAccess: OrchestratorThreadAccess = "none";
 let accessOverride: OrchestratorAccessOverride = "per-conversation";
 let defaultModelSelection: ModelSelection | null = null;
 let defaultModelEnabled = false;
+// The models starred in the picker, and where the orchestrator's allow-list
+// comes from. Mutable so a test can star models or switch to the custom list.
+let favorites: Array<{ provider: ProviderInstanceId; model: string }> = [];
+let orchestratorModelSource: "favorites" | "custom" = "favorites";
+// Provider snapshots beyond the two plan-limit accounts, so a test can say
+// which models the connected accounts are actually offering.
+let extraProviders: Array<Record<string, unknown>> = [];
 const resetAccess = () => {
   defaultModelSelection = null;
   defaultModelEnabled = false;
+  favorites = [];
+  orchestratorModelSource = "favorites";
+  extraProviders = [];
   gitLocalStatus = { isRepo: true, refName: "staging" };
   worktreeFailure = null;
   setupScriptStatus = "started";
@@ -685,6 +695,21 @@ const resetAccess = () => {
   };
 };
 resetAccess();
+
+/** A connected account offering exactly these models. */
+const offering = (instanceId: string, driver: string, models: ReadonlyArray<string>) => ({
+  instanceId,
+  driver,
+  enabled: true,
+  installed: true,
+  version: "1.0.0",
+  status: "ready",
+  auth: { status: "authenticated" },
+  checkedAt: "2026-09-09T10:00:00.000Z",
+  models: models.map((slug) => ({ slug, name: slug, isCustom: false, capabilities: null })),
+  slashCommands: [],
+  skills: [],
+});
 
 /**
  * Two accounts on the same provider: one with room, one nearly spent on its
@@ -1016,6 +1041,8 @@ const TestServicesLive = Layer.mergeAll(
         ...DEFAULT_SERVER_SETTINGS,
         defaultModelEnabled,
         defaultModelSelection,
+        favorites,
+        orchestratorModelSource,
         orchestratorProjectId: designatedProjectId,
         defaultOrchestratorThreadAccess: defaultAccess,
         orchestratorThreadAccess: threadAccess,
@@ -1114,7 +1141,7 @@ const TestServicesLive = Layer.mergeAll(
   Layer.succeed(
     ProviderRegistry,
     ProviderRegistry.of({
-      getProviders: Effect.succeed(planLimitProviders),
+      getProviders: Effect.sync(() => [...planLimitProviders, ...extraProviders]),
     } as unknown as ProviderRegistry["Service"]),
   ),
 );
@@ -2518,29 +2545,62 @@ it.effect("creates a new conversation and starts it, keeping control of what it 
   ).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect("lets the orchestrator choose GPT-5.6 Sol or GPT-6 Astra by default", () =>
+it.effect("lets the orchestrator choose from the models the user has starred", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      for (const model of ["gpt-5.6-sol", "gpt-6-astra"]) {
-        resetAccess();
-        dispatched.length = 0;
+      resetAccess();
+      dispatched.length = 0;
+      extraProviders = [
+        offering("claudeAgent", "claudeAgent", ["claude-opus-5-5"]),
+        offering("codex", "codex", ["gpt-6.1-sol", "gpt-6-astra"]),
+      ];
+      favorites = [
+        { provider: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-5-5" },
+        { provider: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" },
+        // Starred, but the ChatGPT-backed Codex account no longer offers it.
+        { provider: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      ];
 
+      // It can see the list before choosing, rather than guessing.
+      const limits = yield* callTool("read_plan_limits", {});
+      expect(limits.isError).toBe(false);
+      expect((limits.structuredContent as { selectableModels: unknown }).selectableModels).toEqual([
+        { instanceId: "claudeAgent", model: "claude-opus-5-5" },
+        { instanceId: "codex", model: "gpt-6.1-sol" },
+      ]);
+
+      for (const [instanceId, model] of [
+        ["claudeAgent", "claude-opus-5-5"],
+        ["codex", "gpt-6.1-sol"],
+      ] as const) {
+        dispatched.length = 0;
         const result = yield* callTool("create_thread", {
           projectTitle: "dealjourney",
-          title: "Run the Codex task",
-          message: "Handle this with Codex.",
+          title: "Run the task",
+          message: "Handle this.",
           model,
         });
-
         expect(result.isError).toBe(false);
+        expect(result.structuredContent).toMatchObject({ model, modelNote: null });
         expect(dispatched[0]).toMatchObject({
           type: "thread.create",
-          modelSelection: {
-            instanceId: "codex",
-            model,
-            options: [{ id: "reasoningEffort", value: "medium" }],
-          },
+          modelSelection: { instanceId, model },
         });
+      }
+
+      // Offered but not starred, and starred but not offered: both refused.
+      for (const model of ["gpt-6-astra", "gpt-5.4"]) {
+        dispatched.length = 0;
+        const refused = yield* callTool("create_thread", {
+          projectTitle: "dealjourney",
+          title: "Run the task",
+          message: "Handle this.",
+          model,
+        });
+        expect(refused.isError).toBe(true);
+        expect(dispatched).toHaveLength(0);
+        const text = refused.content.map((entry) => ("text" in entry ? entry.text : "")).join(" ");
+        expect(text).toContain("starred");
       }
 
       resetAccess();
@@ -2549,11 +2609,13 @@ it.effect("lets the orchestrator choose GPT-5.6 Sol or GPT-6 Astra by default", 
   ).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect("refuses an unsanctioned model and says where the list is set", () =>
+it.effect("keeps the custom orchestrator list working and says where it is set", () =>
   Effect.scoped(
     Effect.gen(function* () {
       resetAccess();
       dispatched.length = 0;
+      orchestratorModelSource = "custom";
+      extraProviders = [offering("codex", "codex", ["gpt-6-astra"])];
 
       const result = yield* callTool("create_thread", {
         projectTitle: "dealjourney",
@@ -2566,7 +2628,55 @@ it.effect("refuses an unsanctioned model and says where the list is set", () =>
       expect(dispatched).toHaveLength(0);
       const text = result.content.map((entry) => ("text" in entry ? entry.text : "")).join(" ");
       expect(text).toContain('"gpt-6-astra"');
+      // In the custom set, but no connected account offers it.
+      expect(text).not.toContain('"gpt-5.6-sol"');
       expect(text).toContain("Settings > Orchestrator > Orchestrator model choices");
+
+      const accepted = yield* callTool("create_thread", {
+        projectTitle: "dealjourney",
+        title: "Run the Codex task",
+        message: "Handle this with Codex.",
+        model: "gpt-6-astra",
+      });
+      expect(accepted.isError).toBe(false);
+      // The custom list carries its own reasoning options; they survive.
+      expect(dispatched[0]).toMatchObject({
+        type: "thread.create",
+        modelSelection: {
+          instanceId: "codex",
+          model: "gpt-6-astra",
+          options: [{ id: "reasoningEffort", value: "medium" }],
+        },
+      });
+
+      resetAccess();
+      dispatched.length = 0;
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("steps over a model the account cannot run and tells the orchestrator", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      resetAccess();
+      dispatched.length = 0;
+      // The orchestrator conversation runs on claude-opus-5 under the default
+      // Claude instance, which now only offers claude-opus-5-5.
+      extraProviders = [offering("claudeAgent", "claudeAgent", ["claude-opus-5-5"])];
+      favorites = [{ provider: ProviderInstanceId.make("claudeAgent"), model: "claude-opus-5-5" }];
+
+      const result = yield* callTool("create_thread", {
+        projectTitle: "dealjourney",
+        title: "Inherit a model",
+        message: "Do the work.",
+      });
+      expect(result.isError).toBe(false);
+      expect(dispatched[0]).toMatchObject({
+        type: "thread.create",
+        modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" },
+      });
+      const note = (result.structuredContent as { modelNote: string | null }).modelNote;
+      expect(note).toContain("claude-opus-5 is not available");
 
       resetAccess();
       dispatched.length = 0;
@@ -3097,6 +3207,9 @@ it.effect("resolves the configured default on each create_thread call", () =>
       resetAccess();
       dispatched.length = 0;
       defaultModelEnabled = true;
+      extraProviders = [
+        offering("claude-personal", "claudeAgent", ["claude-opus-5-5", "claude-sonnet-5-5"]),
+      ];
       for (const model of [undefined, "default"]) {
         defaultModelSelection = {
           instanceId: ProviderInstanceId.make("claude-personal"),

@@ -21,7 +21,6 @@ const clientSettings: ClientSettings = {
   providerUsageAlertAutoDismissSeconds: 10,
   diffIgnoreWhitespace: true,
   diffWordWrap: true,
-  favorites: [],
   providerModelPreferences: {},
   showThreadChangeRequestStatus: false,
   showGitCounts: true,

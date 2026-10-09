@@ -33,6 +33,7 @@ function useNewThreadState() {
   const projects = useStore(useShallow((store) => selectProjectsAcrossEnvironments(store)));
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
   const defaultModelSelection = useSettings(getDefaultModelSelection);
+  const favorites = useSettings((settings) => settings.favorites);
   const router = useRouter();
   const getCurrentRouteTarget = useCallback(() => {
     const currentRouteParams = router.state.matches[router.state.matches.length - 1]?.params ?? {};
@@ -159,22 +160,25 @@ function useNewThreadState() {
               )
             : null;
         const primaryConfig = getServerConfig();
-        const remoteSettings =
-          useSavedEnvironmentRuntimeStore.getState().byId[projectRef.environmentId]?.serverConfig
-            ?.settings;
+        const remoteConfig =
+          useSavedEnvironmentRuntimeStore.getState().byId[projectRef.environmentId]?.serverConfig;
+        const remoteSettings = remoteConfig?.settings;
+        const isPrimary = primaryConfig?.environment.environmentId === projectRef.environmentId;
         const selection =
           options?.modelSelection ??
           resolveNewThreadModelSelection({
-            defaultSelection:
-              primaryConfig?.environment.environmentId === projectRef.environmentId
-                ? defaultModelSelection
-                : remoteSettings
-                  ? getDefaultModelSelection(remoteSettings)
-                  : null,
+            defaultSelection: isPrimary
+              ? defaultModelSelection
+              : remoteSettings
+                ? getDefaultModelSelection(remoteSettings)
+                : null,
             currentComposer,
             currentThreadSelection: sameEnvironment
               ? (currentThread?.modelSelection ?? null)
               : null,
+            projectDefault: project?.defaultModelSelection ?? null,
+            favorites: isPrimary ? favorites : (remoteSettings?.favorites ?? []),
+            providers: (isPrimary ? primaryConfig?.providers : remoteConfig?.providers) ?? [],
           });
         if (selection) {
           setModelSelection(draftId, { ...selection, options: selection.options ?? [] });
@@ -186,7 +190,14 @@ function useNewThreadState() {
         });
       })();
     },
-    [getCurrentRouteTarget, projectGroupingSettings, router, projects, defaultModelSelection],
+    [
+      getCurrentRouteTarget,
+      projectGroupingSettings,
+      router,
+      projects,
+      defaultModelSelection,
+      favorites,
+    ],
   );
 }
 

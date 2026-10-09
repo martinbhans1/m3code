@@ -124,22 +124,11 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   diffIgnoreWhitespace: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffWordWrap: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  // Model favorites. Historically keyed by provider kind, now
-  // widened to `ProviderInstanceId` so users can favorite a specific model
-  // on a custom provider instance (e.g. "Codex Personal · gpt-5") without
-  // the UI collapsing it into the same bucket as the default Codex. The
-  // widening is backward-compatible by construction: prior provider-kind
-  // strings satisfy the `ProviderInstanceId` slug schema, so previously
-  // persisted favorites decode unchanged and continue to point at the
-  // default instance for their kind (because `defaultInstanceIdForDriver(kind)`
-  // uses the same slug). The field name is kept as `provider` for storage
-  // stability; new call sites should treat the value as an instance id.
-  favorites: Schema.Array(
-    Schema.Struct({
-      provider: ProviderInstanceId,
-      model: TrimmedNonEmptyString,
-    }),
-  ).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  // `favorites` used to live here, per-device. It moved to `ServerSettings`
+  // so server-side callers — chiefly the orchestrator deciding which model to
+  // open a conversation on — read the same starred set the model picker
+  // writes. An existing `client-settings.json` still decodes (excess keys are
+  // ignored) and `readLegacyClientFavorites` lifts the old value across once.
   providerModelPreferences: Schema.Record(
     ProviderInstanceId,
     Schema.Struct({
@@ -516,6 +505,31 @@ export type OrchestratorAccessOverride = typeof OrchestratorAccessOverride.Type;
 export const DEFAULT_ORCHESTRATOR_ACCESS_OVERRIDE =
   "per-conversation" as const satisfies OrchestratorAccessOverride;
 
+/**
+ * Which list bounds the models the orchestrator may open a conversation on.
+ * Defaults to the starred models so there is one list to curate rather than
+ * two that drift apart.
+ */
+export const OrchestratorModelSource = Schema.Literals(["favorites", "custom"]);
+export type OrchestratorModelSource = typeof OrchestratorModelSource.Type;
+export const DEFAULT_ORCHESTRATOR_MODEL_SOURCE =
+  "favorites" as const satisfies OrchestratorModelSource;
+
+/**
+ * The models starred in the model picker.
+ *
+ * `provider` holds a `ProviderInstanceId`; the key keeps its old name for
+ * storage stability, so favorites persisted before the driver/instance split
+ * decode unchanged. See the `favorites` field on `ServerSettings`.
+ */
+export const ModelFavorites = Schema.Array(
+  Schema.Struct({
+    provider: ProviderInstanceId,
+    model: TrimmedNonEmptyString,
+  }),
+);
+export type ModelFavorites = typeof ModelFavorites.Type;
+
 export const ServerSettings = Schema.Struct({
   defaultModelEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   defaultModelSelection: Schema.NullOr(ModelSelection).pipe(
@@ -558,12 +572,39 @@ export const ServerSettings = Schema.Struct({
   orchestratorAccessOverride: OrchestratorAccessOverride.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_ORCHESTRATOR_ACCESS_OVERRIDE)),
   ),
-  // Models the orchestrator may pick from when it opens a new conversation.
-  // Empty — the default — means it cannot choose at all and new conversations
-  // inherit their project's default model, which is the safe starting point.
+  // Model favorites — the models starred in the model picker.
+  //
+  // Historically keyed by provider kind, now widened to `ProviderInstanceId`
+  // so users can favorite a specific model on a custom provider instance
+  // (e.g. "Codex Personal · gpt-5") without the UI collapsing it into the
+  // same bucket as the default Codex. The widening is backward-compatible by
+  // construction: prior provider-kind strings satisfy the `ProviderInstanceId`
+  // slug schema, so previously persisted favorites decode unchanged and
+  // continue to point at the default instance for their kind (because
+  // `defaultInstanceIdForDriver(kind)` uses the same slug). The field name is
+  // kept as `provider` for storage stability; new call sites should treat the
+  // value as an instance id.
+  //
+  // Server-side rather than per-device because the orchestrator runs on the
+  // server and needs the same list, and because a star is a statement about
+  // the account, not about the browser you happened to set it from.
+  favorites: ModelFavorites.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  // Where the orchestrator's allowed model list comes from.
+  //
+  // "favorites" — the default — means it may open conversations on any model
+  // you have starred, so curating the picker curates the orchestrator too and
+  // there is only one list to keep up to date. "custom" switches it to
+  // `orchestratorModelChoices` below, for the case where the set you want it
+  // to route between is not the set you want starred in your own picker (a
+  // cheap model you would never star, or a deliberately narrower list).
+  orchestratorModelSource: OrchestratorModelSource.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_ORCHESTRATOR_MODEL_SOURCE)),
+  ),
+  // The explicit list used when `orchestratorModelSource` is "custom".
   // Populating it is how you let the orchestrator route work to a cheaper or a
   // stronger model, across providers, without letting it reach for anything you
-  // have not sanctioned.
+  // have not sanctioned. Empty means it cannot choose at all and new
+  // conversations inherit their project's default model.
   orchestratorModelChoices: Schema.Array(ModelSelection).pipe(
     Schema.withDecodingDefault(
       Effect.succeed([
@@ -731,9 +772,12 @@ export const ServerSettingsPatch = Schema.Struct({
     }),
   ),
   orchestratorAccessOverride: Schema.optionalKey(OrchestratorAccessOverride),
+  orchestratorModelSource: Schema.optionalKey(OrchestratorModelSource),
   // Whole-list replacement: the UI always sends the complete curated set, and a
   // merge could not express removing a model.
   orchestratorModelChoices: Schema.optionalKey(Schema.Array(ModelSelection)),
+  // Whole-list replacement too: starring and unstarring both send the full set.
+  favorites: Schema.optionalKey(ModelFavorites),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   observability: Schema.optionalKey(
     Schema.Struct({

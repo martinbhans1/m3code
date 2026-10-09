@@ -8,6 +8,50 @@ import { createModelSelection } from "./model.ts";
 const ServerSettingsJson = fromLenientJson(ServerSettings);
 const decodeServerSettingsJson = Schema.decodeUnknownOption(ServerSettingsJson);
 
+/**
+ * Lift model favorites out of a legacy `client-settings.json`.
+ *
+ * Favorites used to be a per-device client setting. They are now a server
+ * setting, because the orchestrator picks models server-side and a star is a
+ * statement about the account rather than about one browser. The client file
+ * is read as raw JSON rather than through `ClientSettingsSchema`, which no
+ * longer has the field and would drop it — and would drop it permanently the
+ * next time the desktop app rewrote that file.
+ *
+ * Shape-tolerant on purpose: anything that is not a usable `{provider, model}`
+ * pair is skipped rather than failing the whole read, because the alternative
+ * is a boot that cannot see settings at all.
+ */
+export function parseLegacyClientFavorites(
+  raw: string,
+): ReadonlyArray<{ readonly provider: string; readonly model: string }> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== "object" || parsed === null) return [];
+  const candidate = (parsed as { favorites?: unknown }).favorites;
+  if (!Array.isArray(candidate)) return [];
+
+  const seen = new Set<string>();
+  const favorites: Array<{ provider: string; model: string }> = [];
+  for (const entry of candidate) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const { provider, model } = entry as { provider?: unknown; model?: unknown };
+    if (typeof provider !== "string" || typeof model !== "string") continue;
+    const trimmedProvider = provider.trim();
+    const trimmedModel = model.trim();
+    if (trimmedProvider.length === 0 || trimmedModel.length === 0) continue;
+    const key = `${trimmedProvider}\u0000${trimmedModel}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    favorites.push({ provider: trimmedProvider, model: trimmedModel });
+  }
+  return favorites;
+}
+
 export interface PersistedServerObservabilitySettings {
   readonly otlpTracesUrl: string | undefined;
   readonly otlpMetricsUrl: string | undefined;
@@ -118,6 +162,8 @@ export function applyServerSettingsPatch(
     ...(patch.orchestratorModelChoices !== undefined
       ? { orchestratorModelChoices: patch.orchestratorModelChoices }
       : {}),
+    // Same reason: un-starring a model has to be able to shorten the list.
+    ...(patch.favorites !== undefined ? { favorites: patch.favorites } : {}),
     // Replaced wholesale rather than deep-merged: revoking a thread's access
     // means removing its key, and a merge would silently keep the old entry.
     ...(patch.orchestratorThreadAccess !== undefined

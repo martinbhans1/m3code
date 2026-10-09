@@ -15,6 +15,8 @@ import { parseBase64DataUrl } from "../imageMime.ts";
 import { WorkspacePaths } from "../workspace/Services/WorkspacePaths.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { getDefaultModelSelection } from "@t3tools/shared/model";
+import { resolveModelSelection } from "@t3tools/shared/modelResolution";
+import { readRunnableModels, runnableToSelection } from "../startingModel.ts";
 
 export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
   Effect.gen(function* () {
@@ -28,14 +30,35 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
             }),
         ),
       );
-      const modelSelection = getDefaultModelSelection(settings);
-      if (!modelSelection) {
+      const configuredDefault = getDefaultModelSelection(settings);
+      if (!configuredDefault) {
         return yield* new OrchestrationDispatchCommandError({
           message:
             "Choose and enable a default model in Settings > Chat before using the default model.",
         });
       }
-      return { ...command, modelSelection } satisfies OrchestrationCommand;
+      // "default" is a request for the user's choice, so only their default
+      // or, when the account cannot run it, one of their starred models will
+      // do. Starting on whatever a provider happens to list first would be the
+      // silent substitution this path exists to avoid.
+      const resolution = resolveModelSelection({
+        runnable: yield* readRunnableModels,
+        configuredDefault,
+        favorites: settings.favorites,
+        toSelection: runnableToSelection,
+      });
+      if (resolution.outcome === "unsupported" || resolution.source === "available") {
+        return yield* new OrchestrationDispatchCommandError({
+          message: `The default model in Settings > Chat (${configuredDefault.model}) is not available on the connected accounts, and none of your starred models are either. Pick another default, or check the provider is signed in.`,
+        });
+      }
+      if (resolution.skipped.length > 0) {
+        yield* Effect.logInfo("default model unavailable; started on a starred model instead", {
+          configured: configuredDefault.model,
+          started: resolution.selection.model,
+        });
+      }
+      return { ...command, modelSelection: resolution.selection } satisfies OrchestrationCommand;
     }
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;

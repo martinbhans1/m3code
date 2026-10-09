@@ -23,6 +23,7 @@ import {
   type ProviderInstanceEnvironmentVariable,
   ProviderDriverKind,
   ProviderInstanceId,
+  ModelFavorites,
   ServerSettings,
   ServerSettingsError,
   type ServerSettingsPatch,
@@ -49,7 +50,10 @@ import { writeFileStringAtomically } from "./atomicWrite.ts";
 import { ServerConfig } from "./config.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
-import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
+import {
+  applyServerSettingsPatch,
+  parseLegacyClientFavorites,
+} from "@t3tools/shared/serverSettings";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 
 const encodeServerSettings = Schema.encodeEffect(ServerSettings);
@@ -217,6 +221,7 @@ export class ServerSettingsService extends Context.Service<
 
 const ServerSettingsJson = fromLenientJson(ServerSettings);
 const decodeServerSettingsJsonExit = Schema.decodeUnknownExit(ServerSettingsJson);
+const decodeModelFavoritesExit = Schema.decodeUnknownExit(ModelFavorites);
 
 type LegacyProviderSettings = ServerSettings["providers"][keyof ServerSettings["providers"]];
 
@@ -347,9 +352,45 @@ const makeServerSettings = Effect.gen(function* () {
     ),
   );
 
+  // Favorites moved from `client-settings.json` (per-device) into
+  // `settings.json` (server-side) so the orchestrator can read the same
+  // starred set the model picker writes. Adopting them at read time rather
+  // than rewriting the file on boot keeps this idempotent and keeps the user's
+  // stars working the first time they launch the new build — the moment they
+  // star or unstar anything, the server value is written and takes over.
+  const legacyClientFavorites = Effect.gen(function* () {
+    const clientSettingsPath = pathService.join(
+      pathService.dirname(settingsPath),
+      "client-settings.json",
+    );
+    if (!(yield* fs.exists(clientSettingsPath).pipe(Effect.orElseSucceed(() => false)))) {
+      return [];
+    }
+    const raw = yield* fs.readFileString(clientSettingsPath).pipe(Effect.orElseSucceed(() => ""));
+    return parseLegacyClientFavorites(raw);
+  });
+
+  const adoptLegacyFavorites = (settings: ServerSettings) =>
+    Effect.gen(function* () {
+      if (settings.favorites.length > 0) return settings;
+      const favorites = yield* legacyClientFavorites;
+      if (favorites.length === 0) return settings;
+      const decodedFavorites = decodeModelFavoritesExit(favorites);
+      if (decodedFavorites._tag === "Failure") {
+        yield* Effect.logWarning("ignoring unusable favorites in client-settings.json", {
+          issues: Cause.pretty(decodedFavorites.cause),
+        });
+        return settings;
+      }
+      yield* Effect.logInfo("adopted model favorites from client-settings.json", {
+        count: decodedFavorites.value.length,
+      });
+      return { ...settings, favorites: decodedFavorites.value } satisfies ServerSettings;
+    });
+
   const loadSettingsFromDisk = Effect.gen(function* () {
     if (!(yield* readConfigExists)) {
-      return DEFAULT_SERVER_SETTINGS;
+      return yield* adoptLegacyFavorites(DEFAULT_SERVER_SETTINGS);
     }
 
     const raw = yield* readRawConfig;
@@ -359,9 +400,9 @@ const makeServerSettings = Effect.gen(function* () {
         path: settingsPath,
         issues: Cause.pretty(decoded.cause),
       });
-      return DEFAULT_SERVER_SETTINGS;
+      return yield* adoptLegacyFavorites(DEFAULT_SERVER_SETTINGS);
     }
-    return decoded.value;
+    return yield* adoptLegacyFavorites(decoded.value);
   });
 
   const settingsCache = yield* Cache.make<typeof cacheKey, ServerSettings, ServerSettingsError>({

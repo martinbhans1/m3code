@@ -22,6 +22,13 @@ import {
 } from "@t3tools/contracts";
 import { projectThreadAwareness } from "@t3tools/shared/agentAwareness";
 import { getDefaultModelSelection } from "@t3tools/shared/model";
+import {
+  describeModelFallback,
+  listOrchestratorModelChoices,
+  listRunnableModels,
+  resolveModelSelection,
+  type RunnableModel,
+} from "@t3tools/shared/modelResolution";
 import { resolveOrchestratorThreadAccess } from "@t3tools/shared/orchestratorAccess";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/git";
 import { isThreadCold, threadQuietDays } from "@t3tools/shared/threadDisposition";
@@ -1866,17 +1873,37 @@ const handlers = {
         ),
       );
       const defaultModel = getDefaultModelSelection(currentSettings);
-      const inheritedModel =
-        defaultModel ??
-        project.defaultModelSelection ??
-        (Option.isSome(callerThread) ? callerThread.value.modelSelection : null);
 
-      // Choosing a model is allow-listed: the defaults cover the current
-      // primary Claude and Codex models, and the user can curate or clear the
-      // set in settings. Anything outside it is refused rather than guessed.
-      const allowedModels = currentSettings.orchestratorModelChoices;
+      // What the connected accounts can actually start a turn on. Without
+      // this the orchestrator inherited whatever a project record happened to
+      // name — including models retired from the account, which fail the
+      // first message with a provider 400 instead of falling back.
+      const providerRegistry = yield* ProviderRegistry;
+      const providers = yield* providerRegistry.getProviders;
+      const runnable = listRunnableModels(providers);
+      const toSelection = (model: RunnableModel): ModelSelection => ({
+        instanceId: model.instanceId,
+        model: model.slug,
+      });
+
+      // Choosing a model is allow-listed. By default the list is the models
+      // the user has starred in the model picker, so there is one list to
+      // curate rather than two that drift; `orchestratorModelSource: "custom"`
+      // switches to the explicit `orchestratorModelChoices` set.
+      const allowedModels = listOrchestratorModelChoices({
+        source: currentSettings.orchestratorModelSource,
+        favorites: currentSettings.favorites,
+        customChoices: currentSettings.orchestratorModelChoices,
+        runnable,
+        toSelection,
+      });
       const requestedModel = input.model?.trim();
-      let modelSelection: ModelSelection | null = inheritedModel;
+      const explicitlyRequested =
+        requestedModel !== undefined &&
+        requestedModel.length > 0 &&
+        requestedModel.toLowerCase() !== "default";
+
+      let explicit: ModelSelection | null = null;
       if (requestedModel?.toLowerCase() === "default") {
         if (!defaultModel) {
           return yield* new OrchestratorToolError({
@@ -1884,8 +1911,12 @@ const handlers = {
               "Choose and enable a default model in Settings > Chat before using the default model.",
           });
         }
-        modelSelection = defaultModel;
-      } else if (requestedModel !== undefined && requestedModel.length > 0) {
+        explicit = defaultModel;
+      } else if (explicitlyRequested) {
+        const sourceHint =
+          currentSettings.orchestratorModelSource === "favorites"
+            ? "The list is the models the user has starred in the model picker; star another one to widen it."
+            : "The list lives under Settings > Orchestrator > Orchestrator model choices.";
         const allowedList =
           allowedModels.length === 0
             ? "none — the user has not sanctioned any models for you to choose from, so omit `model` and let the conversation inherit its project's default"
@@ -1895,17 +1926,34 @@ const handlers = {
         );
         if (match === undefined) {
           return yield* new OrchestratorToolError({
-            message: `"${requestedModel}" is not a model you may choose. Allowed: ${allowedList}. Pick one of those or omit \`model\`; do not ask the user to widen the list unless they raise it. If they do, it lives under Settings > Orchestrator > Orchestrator model choices.`,
+            message: `"${requestedModel}" is not a model you may choose. Allowed: ${allowedList}. Pick one of those or omit \`model\`; do not ask the user to widen the list unless they raise it. ${sourceHint}`,
           });
         }
-        modelSelection = match;
+        explicit = match;
       }
 
-      if (modelSelection === null) {
+      // The user's enabled default outranks the project's stored default,
+      // which outranks this orchestrator conversation's own model. Each is
+      // checked against `runnable`, so a retired model is stepped over rather
+      // than started and failed.
+      const resolution = resolveModelSelection({
+        runnable,
+        explicit,
+        configuredDefault: defaultModel,
+        projectDefault: project.defaultModelSelection,
+        inherited: Option.isSome(callerThread) ? callerThread.value.modelSelection : null,
+        favorites:
+          currentSettings.orchestratorModelSource === "custom" ? [] : currentSettings.favorites,
+        toSelection,
+      });
+
+      if (resolution.outcome === "unsupported") {
         return yield* new OrchestratorToolError({
-          message: `"${project.title}" has no default model and none could be inferred. Ask the user to pick a model for that project first.`,
+          message: `Could not start "${project.title}" on any model. ${resolution.message}`,
         });
       }
+      const modelSelection = resolution.selection;
+      const modelFallbackNote = describeModelFallback(resolution);
 
       // Deliberately not `DEFAULT_RUNTIME_MODE`. That default is for a thread
       // the user just typed into and is sitting in front of; this one was
@@ -2119,6 +2167,7 @@ const handlers = {
         threadTitle: title,
         projectTitle: project.title,
         model: modelSelection.model,
+        modelNote: modelFallbackNote,
         runtimeMode,
         branch,
         worktreePath,
@@ -2884,7 +2933,23 @@ const handlers = {
           };
         });
 
-      return { accounts };
+      // The models create_thread will accept, so the orchestrator can pick
+      // what the user prefers instead of guessing and being refused.
+      const serverSettings = yield* ServerSettingsService;
+      const settings = yield* serverSettings.getSettings.pipe(
+        Effect.mapError(
+          () => new OrchestratorToolError({ message: "Could not read model settings." }),
+        ),
+      );
+      const selectableModels = listOrchestratorModelChoices({
+        source: settings.orchestratorModelSource,
+        favorites: settings.favorites,
+        customChoices: settings.orchestratorModelChoices,
+        runnable: listRunnableModels(providers),
+        toSelection: (model) => ({ instanceId: model.instanceId, model: model.slug }),
+      }).map((choice) => ({ instanceId: choice.instanceId, model: choice.model }));
+
+      return { accounts, selectableModels };
     }),
 } satisfies Parameters<typeof OrchestratorToolkit.toLayer>[0];
 

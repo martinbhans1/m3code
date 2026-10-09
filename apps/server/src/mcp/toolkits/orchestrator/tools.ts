@@ -787,7 +787,7 @@ export const CreateThreadInput = Schema.Struct({
 
 export const CreateThreadTool = Tool.make("create_thread", {
   description:
-    "Open a brand new conversation in one of the user's projects and start it with an opening prompt. Use this when the work does not belong to any existing thread — a separate task, a clean slate after a thread has gone long, or a second track the user wants running alongside the first. When an existing thread already owns the context, prefer send_to_thread; starting fresh means the new agent rediscovers everything.\n\nAsk first, every time. Show the user the project, the title and the exact opening prompt, and wait for them to say yes in that turn — one conversation per approval. The new conversation is shared with you afterwards so you can check on it with read_thread and read_thread_changes. A successful result means the turn was accepted, not that it has run.\n\nBy default the conversation works in the project's own checkout, which is fine when nothing else is running there. If another conversation is already working in that project, pass envMode:'worktree' so the new one gets its own branch and checkout instead of editing the same files underneath it.\n\nCheck read_plan_limits before settling on the model: an hour of work started against an account whose session window is nearly spent stops partway through, and a different account or a short wait usually costs nothing.",
+    "Open a brand new conversation in one of the user's projects and start it with an opening prompt. Use this when the work does not belong to any existing thread — a separate task, a clean slate after a thread has gone long, or a second track the user wants running alongside the first. When an existing thread already owns the context, prefer send_to_thread; starting fresh means the new agent rediscovers everything.\n\nAsk first, every time. Show the user the project, the title and the exact opening prompt, and wait for them to say yes in that turn — one conversation per approval. The new conversation is shared with you afterwards so you can check on it with read_thread and read_thread_changes. A successful result means the turn was accepted, not that it has run.\n\nBy default the conversation works in the project's own checkout, which is fine when nothing else is running there. If another conversation is already working in that project, pass envMode:'worktree' so the new one gets its own branch and checkout instead of editing the same files underneath it.\n\nCheck read_plan_limits before settling on the model: an hour of work started against an account whose session window is nearly spent stops partway through, and a different account or a short wait usually costs nothing. It also reports `selectableModels` — the models you may pass as `model`, which are the ones the user has starred, narrowed to what their accounts are currently offering. Pick from that list rather than naming a model from memory; anything outside it is refused.",
   parameters: CreateThreadInput,
   success: Schema.Struct({
     threadId: ThreadId,
@@ -795,6 +795,13 @@ export const CreateThreadTool = Tool.make("create_thread", {
     projectTitle: Schema.String,
     /** The model it actually started on, resolved or inherited. */
     model: Schema.String,
+    /**
+     * Set when the model this conversation would have started on was not
+     * available on the connected accounts, so something else was used. Report
+     * it to the user — a silent substitution is how a conversation ends up on
+     * a model they did not choose.
+     */
+    modelNote: Schema.NullOr(Schema.String),
     /**
      * The permissions it started with. Report this to the user: a conversation
      * on "approval-required" stops at its first command and waits for them.
@@ -1151,6 +1158,18 @@ export const ReadPlanLimitsTool = Tool.make("read_plan_limits", {
   parameters: ReadPlanLimitsInput,
   success: Schema.Struct({
     accounts: Schema.Array(OrchestratorPlanLimits),
+    /**
+     * The models `create_thread` will accept right now — by default the ones
+     * the user has starred in the model picker, narrowed to what the connected
+     * accounts are actually offering. Pick from here rather than guessing: a
+     * model outside this list is refused.
+     */
+    selectableModels: Schema.Array(
+      Schema.Struct({
+        instanceId: Schema.String,
+        model: Schema.String,
+      }),
+    ),
   }),
   failure: OrchestratorToolError,
   dependencies,

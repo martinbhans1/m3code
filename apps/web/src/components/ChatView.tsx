@@ -4250,9 +4250,18 @@ function ChatViewContent(props: ChatViewProps) {
         }
       }
       const title = truncate(titleSeed);
+      // No code-constant tail: starting on a model nobody chose is how a
+      // retired one kept being sent. With nothing to start on, say so and keep
+      // the message in the composer.
+      const threadCreateModel = ctxSelectedModel || activeProject.defaultModelSelection?.model;
+      if (!threadCreateModel) {
+        throw new Error(
+          "No model is available to start this conversation on. Pick one in the composer, or check that a provider is enabled and signed in.",
+        );
+      }
       const threadCreateModelSelection = createModelSelection(
         ctxSelectedModelSelection.instanceId,
-        ctxSelectedModel || activeProject.defaultModelSelection?.model || DEFAULT_MODEL,
+        threadCreateModel,
         ctxSelectedModelSelection.options,
       );
 

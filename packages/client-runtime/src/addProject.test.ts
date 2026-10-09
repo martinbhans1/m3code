@@ -122,7 +122,10 @@ describe("add project shared logic", () => {
     );
   });
 
-  it("builds the existing project.create command shape", () => {
+  it("builds the project.create command without pinning a model", () => {
+    // A pinned model is how gpt-5.4 got frozen into projects and kept being
+    // started after the account could no longer run it. New projects carry no
+    // model; their conversations follow the configured default instead.
     expect(
       buildProjectCreateCommand({
         commandId: CommandId.make("command"),
@@ -137,10 +140,7 @@ describe("add project shared logic", () => {
       title: "repo",
       workspaceRoot: "/work/repo",
       createWorkspaceRootIfMissing: true,
-      defaultModelSelection: {
-        instanceId: "codex",
-        model: "gpt-5.4",
-      },
+      defaultModelSelection: null,
     });
   });
 });

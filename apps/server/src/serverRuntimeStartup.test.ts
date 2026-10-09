@@ -1,16 +1,18 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { DEFAULT_MODEL, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PlatformError from "effect/PlatformError";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
 import { ServerConfig } from "./config.ts";
+import { ServerSettingsService } from "./serverSettings.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -18,20 +20,39 @@ import {
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import {
-  getAutoBootstrapDefaultModelSelection,
   launchStartupHeartbeat,
   makeCommandGate,
+  resolveAutoBootstrapModelSelection,
   resolveAutoBootstrapWelcomeTargets,
   resolveWelcomeBase,
   ServerRuntimeStartupError,
 } from "./serverRuntimeStartup.ts";
 
-it("uses the canonical Codex default for auto-bootstrapped model selection", () => {
-  assert.deepStrictEqual(getAutoBootstrapDefaultModelSelection(), {
-    instanceId: ProviderInstanceId.make("codex"),
-    model: DEFAULT_MODEL,
-  });
-});
+it.effect("auto-bootstrap follows the configured default, not a code constant", () =>
+  Effect.gen(function* () {
+    const configured = {
+      instanceId: ProviderInstanceId.make("claudeAgent"),
+      model: "claude-opus-5-5",
+    };
+    const chosen = yield* resolveAutoBootstrapModelSelection(null).pipe(
+      Effect.provide(
+        ServerSettingsService.layerTest({
+          defaultModelEnabled: true,
+          defaultModelSelection: configured,
+        }),
+      ),
+    );
+    assert.deepStrictEqual(chosen, configured);
+  }),
+);
+
+it.effect("auto-bootstrap creates no conversation when nothing can be chosen", () =>
+  Effect.gen(function* () {
+    // No default, no project default, no stars, no providers: the old code
+    // started a Codex conversation on a fixed model here regardless.
+    assert.strictEqual(yield* resolveAutoBootstrapModelSelection(null), null);
+  }),
+);
 
 it.effect("enqueueCommand waits for readiness and then drains queued work", () =>
   Effect.scoped(
@@ -165,7 +186,10 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
               id: bootstrapProjectId,
               title: "Startup Project",
               workspaceRoot: "/tmp/startup-project",
-              defaultModelSelection: getAutoBootstrapDefaultModelSelection(),
+              defaultModelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-6-astra",
+              },
               scripts: [],
               createdAt: "2026-01-01T00:00:00.000Z",
               updatedAt: "2026-01-01T00:00:00.000Z",
@@ -255,7 +279,18 @@ it.effect("resolveAutoBootstrapWelcomeTargets creates a project and thread when 
           ),
         streamDomainEvents: Stream.empty,
       } satisfies OrchestrationEngineShape),
-      Effect.provide(NodeServices.layer),
+      Effect.provide(
+        Layer.mergeAll(
+          ServerSettingsService.layerTest({
+            defaultModelEnabled: true,
+            defaultModelSelection: {
+              instanceId: ProviderInstanceId.make("claudeAgent"),
+              model: "claude-opus-5-5",
+            },
+          }),
+          NodeServices.layer,
+        ),
+      ),
     );
 
     assert.equal(typeof targets.bootstrapProjectId, "string");

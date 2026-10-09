@@ -1,12 +1,13 @@
 import {
   CommandId,
-  DEFAULT_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   type ModelSelection,
   ProjectId,
-  ProviderInstanceId,
+  type ServerSettings,
   ThreadId,
 } from "@t3tools/contracts";
+import { getDefaultModelSelection } from "@t3tools/shared/model";
+import { resolveModelSelection } from "@t3tools/shared/modelResolution";
 import * as Data from "effect/Data";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
@@ -30,6 +31,7 @@ import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnap
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor.ts";
 import { ServerLifecycleEvents } from "./serverLifecycleEvents.ts";
 import { ServerSettingsService } from "./serverSettings.ts";
+import { readRunnableModels, runnableToSelection } from "./startingModel.ts";
 import { ServerEnvironment } from "./environment/Services/ServerEnvironment.ts";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
@@ -154,10 +156,42 @@ export const launchStartupHeartbeat = recordStartupHeartbeat.pipe(
   Effect.asVoid,
 );
 
-export const getAutoBootstrapDefaultModelSelection = (): ModelSelection => ({
-  instanceId: ProviderInstanceId.make("codex"),
-  model: DEFAULT_MODEL,
-});
+/**
+ * The model an auto-bootstrapped first conversation starts on.
+ *
+ * This used to be a fixed Codex model, which is how a retired model ended up
+ * written into projects and started on long after the account stopped being
+ * able to run it. Now it is the same choice a new conversation gets
+ * elsewhere — the configured default, the project's own default, then a
+ * starred or otherwise runnable model — or null when nothing can be chosen,
+ * in which case no conversation is created rather than one that fails.
+ */
+export const resolveAutoBootstrapModelSelection = (
+  projectDefault: ModelSelection | null,
+): Effect.Effect<ModelSelection | null> =>
+  Effect.gen(function* () {
+    const settingsService = yield* Effect.serviceOption(ServerSettingsService);
+    const settings = Option.isSome(settingsService)
+      ? yield* settingsService.value.getSettings.pipe(
+          Effect.map(Option.some),
+          Effect.orElseSucceed(() => Option.none<ServerSettings>()),
+        )
+      : Option.none<ServerSettings>();
+    const resolution = resolveModelSelection({
+      runnable: yield* readRunnableModels,
+      configuredDefault: Option.isSome(settings) ? getDefaultModelSelection(settings.value) : null,
+      projectDefault,
+      favorites: Option.isSome(settings) ? settings.value.favorites : [],
+      toSelection: runnableToSelection,
+    });
+    if (resolution.outcome === "unsupported") {
+      yield* Effect.logWarning("auto-bootstrap skipped its first conversation", {
+        reason: resolution.message,
+      });
+      return null;
+    }
+    return resolution.selection;
+  });
 
 export const resolveWelcomeBase = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig;
@@ -187,13 +221,14 @@ export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
         serverConfig.cwd,
       );
       let nextProjectId: ProjectId;
-      let nextProjectDefaultModelSelection: ModelSelection;
+      let nextProjectDefaultModelSelection: ModelSelection | null;
 
       if (Option.isNone(existingProject)) {
         const createdAt = DateTime.formatIso(yield* DateTime.now);
         nextProjectId = ProjectId.make(yield* randomUUID);
         const bootstrapProjectTitle = path.basename(serverConfig.cwd) || "project";
-        nextProjectDefaultModelSelection = getAutoBootstrapDefaultModelSelection();
+        // No pinned model — see `resolveAutoBootstrapModelSelection`.
+        nextProjectDefaultModelSelection = null;
         yield* orchestrationEngine.dispatch({
           type: "project.create",
           commandId: CommandId.make(yield* randomUUID),
@@ -205,13 +240,15 @@ export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
         });
       } else {
         nextProjectId = existingProject.value.id;
-        nextProjectDefaultModelSelection =
-          existingProject.value.defaultModelSelection ?? getAutoBootstrapDefaultModelSelection();
+        nextProjectDefaultModelSelection = existingProject.value.defaultModelSelection;
       }
 
       const existingThreadId =
         yield* projectionReadModelQuery.getFirstActiveThreadIdByProjectId(nextProjectId);
-      if (Option.isNone(existingThreadId)) {
+      const firstThreadModelSelection = Option.isNone(existingThreadId)
+        ? yield* resolveAutoBootstrapModelSelection(nextProjectDefaultModelSelection)
+        : null;
+      if (Option.isNone(existingThreadId) && firstThreadModelSelection !== null) {
         const createdAt = DateTime.formatIso(yield* DateTime.now);
         const createdThreadId = ThreadId.make(yield* randomUUID);
         yield* orchestrationEngine.dispatch({
@@ -220,7 +257,7 @@ export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
           threadId: createdThreadId,
           projectId: nextProjectId,
           title: "New thread",
-          modelSelection: nextProjectDefaultModelSelection,
+          modelSelection: firstThreadModelSelection,
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "full-access",
           branch: null,
@@ -229,9 +266,11 @@ export const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
         });
         bootstrapProjectId = nextProjectId;
         bootstrapThreadId = createdThreadId;
-      } else {
+      } else if (Option.isSome(existingThreadId)) {
         bootstrapProjectId = nextProjectId;
         bootstrapThreadId = existingThreadId.value;
+      } else {
+        bootstrapProjectId = nextProjectId;
       }
     });
   }
