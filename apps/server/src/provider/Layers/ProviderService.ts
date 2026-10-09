@@ -961,18 +961,17 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         ),
       );
       const activeSessions = sessionsByProvider.flatMap((sessions) => sessions);
-      const persistedBindings = yield* directory.listThreadIds().pipe(
-        Effect.flatMap((threadIds) =>
-          Effect.forEach(
-            threadIds,
-            (threadId) =>
-              directory
-                .getBinding(threadId)
-                .pipe(Effect.orElseSucceed(() => Option.none<ProviderRuntimeBinding>())),
-            { concurrency: "unbounded" },
-          ),
-        ),
-        Effect.orElseSucceed(() => [] as Array<Option.Option<ProviderRuntimeBinding>>),
+      // Only the active sessions' bindings are consulted below. Reading every
+      // persisted binding instead cost one query per thread ever created
+      // (thousands), and this runs on the serial reactor paths for every
+      // turn start, so it throttled every conversation at once.
+      const persistedBindings = yield* Effect.forEach(
+        new Set(activeSessions.map((session) => session.threadId)),
+        (threadId) =>
+          directory
+            .getBinding(threadId)
+            .pipe(Effect.orElseSucceed(() => Option.none<ProviderRuntimeBinding>())),
+        { concurrency: "unbounded" },
       );
       const bindingsByThreadId = new Map<ThreadId, ProviderRuntimeBinding>();
       for (const bindingOption of persistedBindings) {
