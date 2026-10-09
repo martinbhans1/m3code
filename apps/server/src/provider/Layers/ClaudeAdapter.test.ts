@@ -4751,5 +4751,288 @@ describe("ClaudeAdapterLive", () => {
         );
       },
     );
+    it.effect("publishes the replacement's resume cursor as soon as the rebuild happens", () => {
+      const { configDir, cwd } = makeConfigDir({ withTranscript: true });
+      const harness = makeHarness({
+        environment: { CLAUDE_CONFIG_DIR: configDir },
+        freshQueryPerCall: true,
+      });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const runtimeEventsFiber = yield* Stream.takeUntil(
+          adapter.streamEvents,
+          (event) => event.type === "session.resume-cursor.updated",
+        ).pipe(Stream.runCollect, Effect.forkChild);
+
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+          cwd,
+          seedHistory: SEED_HISTORY,
+          resumeCursor: { threadId: THREAD_ID, resume: RESUMED_SESSION_ID, turnCount: 3 },
+        });
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "picking this back up" });
+
+        harness.queries[0]?.fail(
+          new Error(
+            `Claude Code returned an error result: No conversation found with session ID: ${RESUMED_SESSION_ID}`,
+          ),
+        );
+
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        const published = runtimeEvents.find(
+          (event) => event.type === "session.resume-cursor.updated",
+        );
+        assert.notEqual(published, undefined);
+        if (published?.type !== "session.resume-cursor.updated") {
+          return;
+        }
+
+        const cursor = published.payload.resumeCursor as { readonly resume?: string };
+        const replacementSessionId = harness.getCreateQueryInputs()[1]?.options.sessionId;
+        assert.notEqual(replacementSessionId, undefined);
+        // The cursor names the session that now holds the conversation, not the
+        // one that could not be opened.
+        assert.equal(cursor.resume, replacementSessionId);
+        assert.notEqual(cursor.resume, RESUMED_SESSION_ID);
+        assert.include(published.payload.reason ?? "", "unresumable");
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+        Effect.ensuring(Effect.sync(() => rmSync(configDir, { recursive: true, force: true }))),
+      );
+    });
+
+    it.effect("publishes the cursor when the provider resumes into a different session", () => {
+      const { configDir, cwd } = makeConfigDir({ withTranscript: true });
+      const FORKED_SESSION_ID = "33333333-3333-4333-8333-333333333333";
+      const harness = makeHarness({ environment: { CLAUDE_CONFIG_DIR: configDir } });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const runtimeEventsFiber = yield* Stream.takeUntil(
+          adapter.streamEvents,
+          (event) => event.type === "session.resume-cursor.updated",
+        ).pipe(Stream.runCollect, Effect.forkChild);
+
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+          cwd,
+          resumeCursor: { threadId: THREAD_ID, resume: RESUMED_SESSION_ID, turnCount: 3 },
+        });
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "carry on" });
+
+        // Claude Code accepted the resume but forked a new session id for it.
+        // Nothing failed, so there is no rebuild — but the stored cursor is now
+        // stale and a restart would reopen the wrong transcript.
+        harness.query.emit({
+          type: "assistant",
+          session_id: FORKED_SESSION_ID,
+          uuid: "assistant-forked-1",
+          parent_tool_use_id: null,
+          message: {
+            id: "assistant-message-forked-1",
+            content: [{ type: "text", text: "Carrying on" }],
+          },
+        } as unknown as SDKMessage);
+
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        const published = runtimeEvents.find(
+          (event) => event.type === "session.resume-cursor.updated",
+        );
+        if (published?.type !== "session.resume-cursor.updated") {
+          assert.fail("expected the forked session id to be published");
+          return;
+        }
+        assert.equal(
+          (published.payload.resumeCursor as { readonly resume?: string }).resume,
+          FORKED_SESSION_ID,
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+        Effect.ensuring(Effect.sync(() => rmSync(configDir, { recursive: true, force: true }))),
+      );
+    });
+
+    it.effect("does not publish a cursor for an ordinary turn on a healthy session", () => {
+      const { configDir, cwd } = makeConfigDir({ withTranscript: true });
+      const harness = makeHarness({ environment: { CLAUDE_CONFIG_DIR: configDir } });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const runtimeEventsFiber = yield* Stream.takeUntil(
+          adapter.streamEvents,
+          (event) => event.type === "turn.completed",
+        ).pipe(Stream.runCollect, Effect.forkChild);
+
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+          cwd,
+          resumeCursor: { threadId: THREAD_ID, resume: RESUMED_SESSION_ID, turnCount: 3 },
+        });
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "carry on" });
+
+        harness.query.emit({
+          type: "assistant",
+          session_id: RESUMED_SESSION_ID,
+          uuid: "assistant-healthy-1",
+          parent_tool_use_id: null,
+          message: {
+            id: "assistant-message-healthy-1",
+            content: [{ type: "text", text: "Carrying on" }],
+          },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          errors: [],
+          session_id: RESUMED_SESSION_ID,
+          uuid: "result-healthy-1",
+        } as unknown as SDKMessage);
+
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        // Every turn already returns its cursor through `sendTurn`; republishing
+        // it per message would be a database write per assistant reply.
+        assert.equal(
+          runtimeEvents.some((event) => event.type === "session.resume-cursor.updated"),
+          false,
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+        Effect.ensuring(Effect.sync(() => rmSync(configDir, { recursive: true, force: true }))),
+      );
+    });
+
+    it.effect(
+      "a restart after a rebuild resumes the replacement instead of rebuilding again",
+      () => {
+        const { configDir, cwd } = makeConfigDir({ withTranscript: true });
+        const beforeRestart = makeHarness({
+          environment: { CLAUDE_CONFIG_DIR: configDir },
+          freshQueryPerCall: true,
+        });
+        const afterRestart = makeHarness({ environment: { CLAUDE_CONFIG_DIR: configDir } });
+        const projectDir = path.join(configDir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+
+        // Phase one: the resume is rejected mid-turn, the session is rebuilt, and
+        // the replacement's cursor is published.
+        const rebuildAndPublish = Effect.gen(function* () {
+          const adapter = yield* ClaudeAdapter;
+          const runtimeEventsFiber = yield* Stream.takeUntil(
+            adapter.streamEvents,
+            (event) => event.type === "session.resume-cursor.updated",
+          ).pipe(Stream.runCollect, Effect.forkChild);
+
+          yield* adapter.startSession({
+            threadId: THREAD_ID,
+            provider: ProviderDriverKind.make("claudeAgent"),
+            runtimeMode: "full-access",
+            cwd,
+            seedHistory: SEED_HISTORY,
+            resumeCursor: { threadId: THREAD_ID, resume: RESUMED_SESSION_ID, turnCount: 3 },
+          });
+          yield* adapter.sendTurn({ threadId: THREAD_ID, input: "picking this back up" });
+          beforeRestart.queries[0]?.fail(
+            new Error(
+              `Claude Code returned an error result: No conversation found with session ID: ${RESUMED_SESSION_ID}`,
+            ),
+          );
+
+          const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+          const published = runtimeEvents.find(
+            (event) => event.type === "session.resume-cursor.updated",
+          );
+          if (published?.type !== "session.resume-cursor.updated") {
+            assert.fail("expected a published resume cursor");
+            return undefined;
+          }
+          return published.payload.resumeCursor;
+        });
+
+        // Phase two: a brand-new adapter, as a restarted backend would have,
+        // handed the cursor that was stored in phase one.
+        const resumeAfterRestart = (storedCursor: unknown) =>
+          Effect.gen(function* () {
+            const adapter = yield* ClaudeAdapter;
+            const runtimeEventsFiber = yield* Stream.takeUntil(
+              adapter.streamEvents,
+              (event) => event.type === "turn.started",
+            ).pipe(Stream.runCollect, Effect.forkChild);
+
+            yield* adapter.startSession({
+              threadId: THREAD_ID,
+              provider: ProviderDriverKind.make("claudeAgent"),
+              runtimeMode: "full-access",
+              cwd,
+              seedHistory: SEED_HISTORY,
+              resumeCursor: storedCursor,
+            });
+            const createInput = afterRestart.getLastCreateQueryInput();
+            yield* adapter.sendTurn({ threadId: THREAD_ID, input: "and again" });
+            const promptText = yield* Effect.promise(() => readFirstPromptText(createInput));
+            const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+            return { createInput, promptText, runtimeEvents };
+          });
+
+        return Effect.gen(function* () {
+          const storedCursor = yield* rebuildAndPublish.pipe(Effect.provide(beforeRestart.layer));
+          const replacementSessionId = beforeRestart.getCreateQueryInputs()[1]?.options.sessionId;
+          assert.notEqual(replacementSessionId, undefined);
+
+          // The replacement ran, so Claude Code wrote its transcript. This is the
+          // state a restart actually finds on disk.
+          writeFileSync(path.join(projectDir, `${String(replacementSessionId)}.jsonl`), "{}");
+
+          const restarted = yield* resumeAfterRestart(storedCursor).pipe(
+            Effect.provide(afterRestart.layer),
+          );
+
+          // One interruption, one rebuild. The restarted backend resumes the
+          // replacement: no second rebuild, no second memory notice, and the
+          // history is not pasted in front of the user's message again.
+          assert.equal(restarted.createInput?.options.resume, replacementSessionId);
+          assert.equal(restarted.createInput?.options.sessionId, undefined);
+          assert.equal(restarted.promptText, "and again");
+          assert.equal(
+            restarted.runtimeEvents.some((event) => event.type === "runtime.warning"),
+            false,
+          );
+          assert.equal(afterRestart.getCreateQueryInputs().length, 1);
+        }).pipe(
+          Effect.provideService(Random.Random, makeDeterministicRandomService()),
+          Effect.ensuring(Effect.sync(() => rmSync(configDir, { recursive: true, force: true }))),
+        );
+      },
+    );
+
+    it.effect("still rebuilds after a restart that only has the dead cursor", () => {
+      // The control for the test above: without the published cursor, a restart
+      // is back to the stale one and has to rebuild — which is exactly the
+      // repeated rebuild that publishing prevents.
+      const { configDir, cwd } = makeConfigDir({ withTranscript: false });
+      const harness = makeHarness({ environment: { CLAUDE_CONFIG_DIR: configDir } });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: ProviderDriverKind.make("claudeAgent"),
+          runtimeMode: "full-access",
+          cwd,
+          seedHistory: SEED_HISTORY,
+          resumeCursor: { threadId: THREAD_ID, resume: RESUMED_SESSION_ID, turnCount: 3 },
+        });
+        assert.equal(harness.getLastCreateQueryInput()?.options.resume, undefined);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+        Effect.ensuring(Effect.sync(() => rmSync(configDir, { recursive: true, force: true }))),
+      );
+    });
   });
 });

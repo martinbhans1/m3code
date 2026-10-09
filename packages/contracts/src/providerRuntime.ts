@@ -149,6 +149,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "session.started",
   "session.configured",
   "session.state.changed",
+  "session.resume-cursor.updated",
   "session.exited",
   "thread.started",
   "thread.state.changed",
@@ -200,6 +201,7 @@ export type ProviderRuntimeEventType = typeof ProviderRuntimeEventType.Type;
 const SessionStartedType = Schema.Literal("session.started");
 const SessionConfiguredType = Schema.Literal("session.configured");
 const SessionStateChangedType = Schema.Literal("session.state.changed");
+const SessionResumeCursorUpdatedType = Schema.Literal("session.resume-cursor.updated");
 const SessionExitedType = Schema.Literal("session.exited");
 const ThreadStartedType = Schema.Literal("thread.started");
 const ThreadStateChangedType = Schema.Literal("thread.state.changed");
@@ -612,6 +614,23 @@ const ToolDeniedPayload = Schema.Struct({
 });
 export type ToolDeniedPayload = typeof ToolDeniedPayload.Type;
 
+/**
+ * A session's resume state changed while it was already running.
+ *
+ * Normally the cursor is known when the session starts and is persisted from
+ * there. This event is for the cases where it is not: a session the provider
+ * replaced mid-stream (a resume it accepted and then rejected), or a resume the
+ * provider honoured by forking a new session id. Without it, the stored cursor
+ * still names a session that no longer holds the conversation, and the next
+ * cold start has to discover that all over again.
+ */
+const SessionResumeCursorUpdatedPayload = Schema.Struct({
+  resumeCursor: Schema.Unknown,
+  /** Why it changed, for the log. Never shown to the user. */
+  reason: Schema.optional(TrimmedNonEmptyStringSchema),
+});
+export type SessionResumeCursorUpdatedPayload = typeof SessionResumeCursorUpdatedPayload.Type;
+
 const RuntimeWarningPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
   detail: Schema.optional(Schema.Unknown),
@@ -647,6 +666,14 @@ const ProviderRuntimeSessionStateChangedEvent = Schema.Struct({
 });
 export type ProviderRuntimeSessionStateChangedEvent =
   typeof ProviderRuntimeSessionStateChangedEvent.Type;
+
+const ProviderRuntimeSessionResumeCursorUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SessionResumeCursorUpdatedType,
+  payload: SessionResumeCursorUpdatedPayload,
+});
+export type ProviderRuntimeSessionResumeCursorUpdatedEvent =
+  typeof ProviderRuntimeSessionResumeCursorUpdatedEvent.Type;
 
 const ProviderRuntimeSessionExitedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
@@ -990,6 +1017,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeSessionStartedEvent,
   ProviderRuntimeSessionConfiguredEvent,
   ProviderRuntimeSessionStateChangedEvent,
+  ProviderRuntimeSessionResumeCursorUpdatedEvent,
   ProviderRuntimeSessionExitedEvent,
   ProviderRuntimeThreadStartedEvent,
   ProviderRuntimeThreadStateChangedEvent,

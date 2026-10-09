@@ -39,6 +39,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
+  ProviderSessionDirectoryPersistenceError,
   ProviderUnsupportedError,
   ProviderValidationError,
   type ProviderAdapterError,
@@ -1870,6 +1871,188 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
       }),
   );
 });
+
+const resumeCursorUpdates = makeProviderServiceLayer();
+resumeCursorUpdates.layer("ProviderServiceLive resume cursor updates", (it) => {
+  const threadId = asThreadId("thread-resume-cursor");
+
+  const startCodexSession = Effect.fn("startCodexSession")(function* () {
+    const provider = yield* ProviderService;
+    return yield* provider.startSession(threadId, {
+      provider: CODEX_DRIVER,
+      providerInstanceId: codexInstanceId,
+      threadId,
+      cwd: "/tmp/resume-cursor-project",
+      runtimeMode: "full-access",
+      resumeCursor: { opaque: "cursor-before" },
+    });
+  });
+
+  const readBinding = Effect.fn("readBinding")(function* () {
+    const directory = yield* ProviderSessionDirectory;
+    return Option.getOrThrow(yield* directory.getBinding(threadId));
+  });
+
+  it.effect("stores a cursor a running session reports mid-stream", () =>
+    Effect.gen(function* () {
+      yield* startCodexSession();
+      yield* advanceTestClock(50);
+      assert.deepEqual((yield* readBinding()).resumeCursor, { opaque: "cursor-before" });
+
+      resumeCursorUpdates.codex.emit({
+        type: "session.resume-cursor.updated",
+        eventId: asEventId("evt-resume-cursor-1"),
+        provider: CODEX_DRIVER,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId,
+        payload: {
+          resumeCursor: { opaque: "cursor-after-rebuild" },
+          reason: "replaced an unresumable session",
+        },
+      });
+      yield* advanceTestClock(50);
+
+      // The whole point: durable before the next turn, not after it.
+      assert.deepEqual((yield* readBinding()).resumeCursor, { opaque: "cursor-after-rebuild" });
+    }),
+  );
+
+  it.effect("leaves the rest of the binding alone when only the cursor changed", () =>
+    Effect.gen(function* () {
+      yield* startCodexSession();
+      yield* advanceTestClock(50);
+      const before = yield* readBinding();
+
+      resumeCursorUpdates.codex.emit({
+        type: "session.resume-cursor.updated",
+        eventId: asEventId("evt-resume-cursor-2"),
+        provider: CODEX_DRIVER,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId,
+        payload: { resumeCursor: { opaque: "cursor-after-fork" } },
+      });
+      yield* advanceTestClock(50);
+
+      const after = yield* readBinding();
+      assert.equal(after.provider, before.provider);
+      assert.equal(after.providerInstanceId, before.providerInstanceId);
+      assert.equal(after.runtimeMode, before.runtimeMode);
+      assert.equal(after.status, before.status);
+      // cwd lives in the runtime payload and recovery depends on it surviving.
+      assert.equal(
+        (after.runtimePayload as { readonly cwd?: string } | null)?.cwd,
+        "/tmp/resume-cursor-project",
+      );
+    }),
+  );
+
+  it.effect("does not forward the bookkeeping event to subscribers", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      yield* startCodexSession();
+      const eventsRef = yield* Ref.make<Array<ProviderRuntimeEvent>>([]);
+      const consumer = yield* Stream.runForEach(provider.streamEvents, (event) =>
+        Ref.update(eventsRef, (current) => [...current, event]),
+      ).pipe(Effect.forkChild);
+      yield* advanceTestClock(50);
+
+      resumeCursorUpdates.codex.emit({
+        type: "session.resume-cursor.updated",
+        eventId: asEventId("evt-resume-cursor-5"),
+        provider: CODEX_DRIVER,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId,
+        payload: { resumeCursor: { opaque: "cursor-quiet" } },
+      });
+      yield* advanceTestClock(50);
+
+      const events = yield* Ref.get(eventsRef);
+      yield* Fiber.interrupt(consumer);
+      // An event type a longer-lived client build has never heard of would be a
+      // decode failure on the wire, and there is nothing here for the UI to show.
+      assert.equal(
+        events.some((entry) => entry.type === "session.resume-cursor.updated"),
+        false,
+      );
+      assert.deepEqual((yield* readBinding()).resumeCursor, { opaque: "cursor-quiet" });
+    }),
+  );
+});
+
+it.effect("ProviderServiceLive keeps the event stream alive when a cursor cannot be stored", () =>
+  Effect.gen(function* () {
+    const codex = makeFakeCodexAdapter();
+    const registry = makeAdapterRegistryMock({ [CODEX_DRIVER]: codex.adapter });
+    const upsertCalls: Array<unknown> = [];
+    // A cursor update that cannot be written must cost the thread one extra
+    // memory rebuild later, not the whole runtime event stream now.
+    const failingDirectory = Layer.succeed(ProviderSessionDirectory, {
+      upsert: (binding: unknown) =>
+        Effect.sync(() => {
+          upsertCalls.push(binding);
+        }).pipe(
+          Effect.andThen(
+            Effect.fail(
+              new ProviderSessionDirectoryPersistenceError({
+                operation: "ProviderSessionDirectory.upsert",
+                detail: "simulated persistence failure",
+              }),
+            ),
+          ),
+        ),
+      getProvider: () => Effect.succeed(CODEX_DRIVER),
+      getBinding: () => Effect.succeed(Option.none()),
+      listThreadIds: () => Effect.succeed([]),
+      listBindings: () => Effect.succeed([]),
+    });
+
+    const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+      Layer.provide(failingDirectory),
+      Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(AnalyticsService.layerTest),
+      Layer.provide(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+    );
+
+    yield* Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const eventsRef = yield* Ref.make<Array<ProviderRuntimeEvent>>([]);
+      const consumer = yield* Stream.runForEach(provider.streamEvents, (event) =>
+        Ref.update(eventsRef, (current) => [...current, event]),
+      ).pipe(Effect.forkChild);
+      yield* advanceTestClock(50);
+
+      codex.emit({
+        type: "session.resume-cursor.updated",
+        eventId: asEventId("evt-resume-cursor-unwritable"),
+        provider: CODEX_DRIVER,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId: asThreadId("thread-resume-cursor-unwritable"),
+        payload: { resumeCursor: { opaque: "cursor-lost" } },
+      });
+      yield* advanceTestClock(50);
+
+      codex.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-after-unwritable-cursor"),
+        provider: CODEX_DRIVER,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        threadId: asThreadId("thread-resume-cursor-unwritable"),
+        turnId: asTurnId("turn-after-failure"),
+        payload: { state: "completed" },
+      });
+      yield* advanceTestClock(50);
+
+      const events = yield* Ref.get(eventsRef);
+      yield* Fiber.interrupt(consumer);
+      assert.equal(upsertCalls.length, 1);
+      assert.equal(
+        events.some((entry) => entry.type === "turn.completed"),
+        true,
+      );
+    }).pipe(Effect.provide(providerLayer));
+  }).pipe(Effect.provide(NodeServices.layer)),
+);
 
 const validation = makeProviderServiceLayer();
 validation.layer("ProviderServiceLive validation", (it) => {

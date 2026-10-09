@@ -283,6 +283,48 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       });
     });
 
+  /**
+   * Store the cursor of a session whose resume state changed while running.
+   *
+   * Narrow on purpose: the directory merges runtime payloads, so this writes the
+   * cursor and the bookkeeping stamp and leaves cwd, model selection and status
+   * alone. It also swallows its own failures — losing one cursor update costs a
+   * thread one extra memory rebuild, while failing here would take down the
+   * whole runtime event stream.
+   */
+  const persistUpdatedResumeCursor = (input: {
+    readonly instanceId: ProviderInstanceId;
+    readonly provider: ProviderDriverKind;
+    readonly threadId: ThreadId;
+    readonly resumeCursor: unknown;
+    readonly reason: string | undefined;
+  }): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      yield* directory.upsert({
+        threadId: input.threadId,
+        provider: input.provider,
+        providerInstanceId: input.instanceId,
+        resumeCursor: input.resumeCursor,
+        runtimePayload: {
+          lastRuntimeEvent: "provider.resumeCursorUpdated",
+          lastRuntimeEventAt: yield* nowIso,
+        },
+      });
+      yield* Effect.logInfo("provider.resume-cursor.persisted", {
+        threadId: input.threadId,
+        providerInstanceId: input.instanceId,
+        ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("provider.resume-cursor.persist-failed", {
+          threadId: input.threadId,
+          providerInstanceId: input.instanceId,
+          cause,
+        }),
+      ),
+    );
+
   const processRuntimeEvent = (
     source: {
       readonly instanceId: ProviderInstanceId;
@@ -295,7 +337,23 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         increment(providerRuntimeEventsTotal, {
           provider: canonicalEvent.provider,
           eventType: canonicalEvent.type,
-        }).pipe(Effect.andThen(publishRuntimeEvent(canonicalEvent))),
+        }).pipe(
+          Effect.andThen(
+            // Bookkeeping between an adapter and this service, with no consumer
+            // downstream. Deliberately not republished: an event type a
+            // longer-lived client build has never heard of is a decode failure
+            // waiting to happen, and there is nothing here for the UI to show.
+            canonicalEvent.type === "session.resume-cursor.updated"
+              ? persistUpdatedResumeCursor({
+                  instanceId: source.instanceId,
+                  provider: canonicalEvent.provider,
+                  threadId: canonicalEvent.threadId,
+                  resumeCursor: canonicalEvent.payload.resumeCursor,
+                  reason: canonicalEvent.payload.reason,
+                })
+              : publishRuntimeEvent(canonicalEvent),
+          ),
+        ),
       ),
     );
 

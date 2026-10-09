@@ -231,6 +231,23 @@ interface ClaudeSessionContext {
   /** True when this session was started from a saved resume cursor. */
   readonly startedFromResume: boolean;
   /**
+   * The provider session id whose cursor is already known outside this adapter —
+   * either because `startSession` returned it to the caller that persists it, or
+   * because we published a change. A mismatch against `resumeSessionId` means the
+   * stored cursor names a session that no longer holds the conversation.
+   */
+  lastPublishedResumeSessionId: string | undefined;
+  /**
+   * Whether a mid-stream change of provider session id is worth announcing.
+   *
+   * Only two kinds of session can drift from the stored cursor: one that resumed
+   * a transcript it did not create (Claude Code may honour a resume by forking a
+   * new session id) and one that replaced an unresumable session. A session that
+   * generated its own id proposed that id to the CLI and has already had it
+   * returned to the caller that stores it.
+   */
+  readonly tracksResumeCursorDrift: boolean;
+  /**
    * The last turn handed to this session, so a rebuild can re-deliver it. A
    * dead resume announces itself only once the SDK is already running the
    * user's prompt, and that prompt must not be lost with the session.
@@ -1889,6 +1906,49 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       resumeCursor,
       updatedAt: yield* nowIso,
     };
+
+    // Claude Code does not always resume into the session id we asked for — a
+    // resume can be honoured by forking a new one. Whoever persists our cursor
+    // has to hear about that now, not on the next turn: a restart in between
+    // would send them back to a session id that no longer has the conversation.
+    if (
+      context.tracksResumeCursorDrift &&
+      context.resumeSessionId !== context.lastPublishedResumeSessionId
+    ) {
+      yield* publishResumeCursor(context, "provider reported a different session id");
+    }
+  });
+
+  /**
+   * Tell the outside world this session's resume cursor, so it can be stored.
+   *
+   * Emitted only on a real change of provider session id, which is rare: a
+   * mid-stream rebuild, or a resume the CLI forked. Every other cursor update
+   * (a new assistant message, a new turn) rides the next turn's return value,
+   * as before.
+   */
+  const publishResumeCursor = Effect.fn("publishResumeCursor")(function* (
+    context: ClaudeSessionContext,
+    reason: string,
+  ) {
+    const resumeCursor = context.session.resumeCursor;
+    if (resumeCursor === undefined) return;
+    context.lastPublishedResumeSessionId = context.resumeSessionId;
+
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "session.resume-cursor.updated",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
+      payload: {
+        resumeCursor,
+        reason,
+      },
+      providerRefs: {},
+    });
   });
 
   const ensureAssistantTextBlock = Effect.fn("ensureAssistantTextBlock")(function* (
@@ -3531,6 +3591,12 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
     rebuilt.turnState = carriedTurnState;
 
+    // Nobody outside this adapter saw the replacement start, so its cursor
+    // would otherwise live only in memory until some later turn returned one.
+    // Publishing it here is what stops a restart mid-turn from sending the
+    // thread back to the dead session and rebuilding all over again.
+    yield* publishResumeCursor(rebuilt, `replaced an unresumable session: ${reason}`);
+
     if (pendingTurn) {
       yield* sendTurn(pendingTurn).pipe(
         Effect.mapError(
@@ -4377,6 +4443,11 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         pendingSeedHistory,
         seedHistory: seedHistory && seedHistory.length > 0 ? seedHistory : undefined,
         startedFromResume: existingResumeSessionId !== undefined,
+        // `startSession` returns this cursor to its caller, which persists it,
+        // so it counts as already published.
+        lastPublishedResumeSessionId: sessionId,
+        tracksResumeCursorDrift:
+          existingResumeSessionId !== undefined || seedHistoryReason !== undefined,
         lastTurnInput: undefined,
         rebuildWithoutResume: undefined,
       };
