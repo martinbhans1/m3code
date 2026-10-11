@@ -35,7 +35,7 @@ import {
 import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
-import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
+import { buildModelOptions, describeModelOption, groupByProvider } from "../../lib/modelOptions";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import {
   insertRankedSearchResult,
@@ -792,7 +792,11 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                   iconNode={
                     <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
                   }
-                  label={currentModelOption?.label ?? currentModelSelection.model}
+                  label={
+                    currentModelOption
+                      ? describeModelOption(currentModelOption, modelOptions)
+                      : currentModelSelection.model
+                  }
                 />
               </ControlPillMenu>
               <ControlPillMenu

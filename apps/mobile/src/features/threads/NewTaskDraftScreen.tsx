@@ -19,6 +19,7 @@ import { ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 
 import { convertPastedImagesToAttachments, pickComposerImages } from "../../lib/composerImages";
+import { describeModelOption } from "../../lib/modelOptions";
 import { buildThreadRoutePath } from "../../lib/routes";
 import { useRemoteCatalog } from "../../state/use-remote-catalog";
 import { CLAUDE_AGENT_EFFORT_OPTIONS } from "./claudeEffortOptions";
@@ -518,7 +519,11 @@ export function NewTaskDraftScreen(props: {
                   iconNode={
                     <ProviderIcon provider={flow.selectedModelOption?.providerDriver} size={16} />
                   }
-                  label={flow.selectedModelOption?.label ?? "Model"}
+                  label={
+                    flow.selectedModelOption
+                      ? describeModelOption(flow.selectedModelOption, flow.modelOptions)
+                      : "Model"
+                  }
                 />
               </ControlPillMenu>
               <ControlPillMenu

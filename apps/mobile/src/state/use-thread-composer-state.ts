@@ -260,6 +260,10 @@ export function useThreadComposerState() {
             text: queuedMessage.text,
             attachments: queuedMessage.attachments,
           },
+          // A model, account or option change is only stored on the thread;
+          // the server applies it to the live session only when the turn
+          // itself carries the selection, so always send the current one.
+          modelSelection: thread.modelSelection,
           runtimeMode: thread.runtimeMode,
           interactionMode: thread.interactionMode,
           createdAt: queuedMessage.createdAt,

@@ -1,4 +1,10 @@
-import type { ModelSelection, ServerConfig as T3ServerConfig } from "@t3tools/contracts";
+import {
+  defaultInstanceIdForDriver,
+  PROVIDER_DISPLAY_NAMES,
+  type ModelSelection,
+  type ProviderDriverKind,
+  type ServerConfig as T3ServerConfig,
+} from "@t3tools/contracts";
 
 export type ModelOption = {
   readonly key: string;
@@ -16,15 +22,51 @@ export type ProviderGroup = {
   readonly models: ReadonlyArray<ModelOption>;
 };
 
-function providerDisplayLabel(provider: {
+function humanizeInstanceId(instanceId: string): string {
+  return instanceId
+    .replace(/[_-]+/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .split(" ")
+    .filter((token) => token.length > 0)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1))
+    .join(" ");
+}
+
+// Same tiers as the web picker: a configured name wins; an unnamed second
+// account of a driver falls back to its slug so two "Claude" groups never
+// read identically.
+export function providerDisplayLabel(provider: {
   readonly displayName?: string | undefined;
-  readonly driver: string;
+  readonly driver: ProviderDriverKind;
   readonly instanceId: string;
 }): string {
-  if (provider.displayName) return provider.displayName;
-  if (provider.driver === "codex") return "Codex";
-  if (provider.driver === "claudeAgent") return "Claude";
-  return provider.instanceId;
+  const kindLabel = PROVIDER_DISPLAY_NAMES[provider.driver] ?? humanizeInstanceId(provider.driver);
+  const name = provider.displayName?.trim();
+  if (name && name !== kindLabel) return name;
+  if (provider.instanceId !== defaultInstanceIdForDriver(provider.driver)) {
+    const humanized = humanizeInstanceId(provider.instanceId);
+    if (humanized.length > 0) return humanized;
+  }
+  return name || kindLabel;
+}
+
+/**
+ * Instance ids whose driver has more than one selectable account, so the UI
+ * knows when a bare model name ("Opus 5.5") is ambiguous about which account
+ * runs it.
+ */
+function instancesSharingDriver(options: ReadonlyArray<ModelOption>): ReadonlySet<string> {
+  const instancesByDriver = new Map<string, Set<string>>();
+  for (const option of options) {
+    const instances = instancesByDriver.get(option.providerDriver) ?? new Set<string>();
+    instances.add(option.providerKey);
+    instancesByDriver.set(option.providerDriver, instances);
+  }
+  const shared = new Set<string>();
+  for (const instances of instancesByDriver.values()) {
+    if (instances.size > 1) for (const instance of instances) shared.add(instance);
+  }
+  return shared;
 }
 
 export function buildModelOptions(
@@ -94,4 +136,17 @@ export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyAr
     providerLabel: group.providerLabel,
     models: group.models,
   }));
+}
+
+/**
+ * The model's name, plus the account that runs it whenever another account of
+ * the same driver is also selectable ("Opus 5.5 · Claude Max 5x").
+ */
+export function describeModelOption(
+  option: ModelOption,
+  options: ReadonlyArray<ModelOption>,
+): string {
+  return instancesSharingDriver(options).has(option.providerKey)
+    ? `${option.label} · ${option.providerLabel}`
+    : option.label;
 }
