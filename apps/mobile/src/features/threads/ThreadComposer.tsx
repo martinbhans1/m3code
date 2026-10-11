@@ -35,7 +35,11 @@ import {
 import { ControlPill, ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
-import { buildModelOptions, describeModelOption, groupByProvider } from "../../lib/modelOptions";
+import {
+  buildModelOptions,
+  modelOptionAccountBadge,
+  groupByProvider,
+} from "../../lib/modelOptions";
 import type { RemoteClientConnectionState } from "../../lib/connection";
 import {
   insertRankedSearchResult,
@@ -789,13 +793,17 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
               >
                 <ComposerToolbarTrigger
                   accessibilityLabel="Model"
+                  badge={
+                    currentModelOption
+                      ? modelOptionAccountBadge(currentModelOption, modelOptions)
+                      : null
+                  }
+                  maxWidth={220}
                   iconNode={
                     <ProviderIcon provider={currentModelOption?.providerDriver} size={16} />
                   }
                   label={
-                    currentModelOption
-                      ? describeModelOption(currentModelOption, modelOptions)
-                      : currentModelSelection.model
+                    currentModelOption ? currentModelOption.label : currentModelSelection.model
                   }
                 />
               </ControlPillMenu>

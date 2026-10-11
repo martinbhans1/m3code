@@ -148,6 +148,8 @@ export function ComposerToolbarButton(props: {
   readonly minWidth?: number;
   readonly onPress?: () => void;
   readonly showChevron?: boolean;
+  /** Short text shown in place of the icon, e.g. which account runs a model. */
+  readonly badge?: string | null;
   readonly textTransform?: "none" | "uppercase";
   readonly variant?: "default" | "primary" | "danger";
   readonly style?: StyleProp<ViewStyle>;
@@ -215,7 +217,13 @@ export function ComposerToolbarButton(props: {
         props.style,
       ]}
     >
-      {props.iconNode ? (
+      {props.badge ? (
+        <View className="rounded-md bg-subtle-strong px-1.5 py-0.5">
+          <Text className="text-[11px] font-t3-bold text-foreground" numberOfLines={1}>
+            {props.badge}
+          </Text>
+        </View>
+      ) : props.iconNode ? (
         <View className="h-4 w-4 items-center justify-center">{props.iconNode}</View>
       ) : props.icon ? (
         <SymbolView name={props.icon} size={16} tintColor={iconTintColor} type="monochrome" />

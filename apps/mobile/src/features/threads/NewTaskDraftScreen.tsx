@@ -19,7 +19,7 @@ import { ControlPillMenu } from "../../components/ControlPill";
 import { ProviderIcon } from "../../components/ProviderIcon";
 
 import { convertPastedImagesToAttachments, pickComposerImages } from "../../lib/composerImages";
-import { describeModelOption } from "../../lib/modelOptions";
+import { modelOptionAccountBadge } from "../../lib/modelOptions";
 import { buildThreadRoutePath } from "../../lib/routes";
 import { useRemoteCatalog } from "../../state/use-remote-catalog";
 import { CLAUDE_AGENT_EFFORT_OPTIONS } from "./claudeEffortOptions";
@@ -516,14 +516,16 @@ export function NewTaskDraftScreen(props: {
               >
                 <ComposerToolbarTrigger
                   accessibilityLabel="Model"
+                  badge={
+                    flow.selectedModelOption
+                      ? modelOptionAccountBadge(flow.selectedModelOption, flow.modelOptions)
+                      : null
+                  }
+                  maxWidth={220}
                   iconNode={
                     <ProviderIcon provider={flow.selectedModelOption?.providerDriver} size={16} />
                   }
-                  label={
-                    flow.selectedModelOption
-                      ? describeModelOption(flow.selectedModelOption, flow.modelOptions)
-                      : "Model"
-                  }
+                  label={flow.selectedModelOption ? flow.selectedModelOption.label : "Model"}
                 />
               </ControlPillMenu>
               <ControlPillMenu

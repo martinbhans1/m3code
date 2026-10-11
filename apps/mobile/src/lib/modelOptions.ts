@@ -139,14 +139,31 @@ export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyAr
 }
 
 /**
- * The model's name, plus the account that runs it whenever another account of
- * the same driver is also selectable ("Opus 5.5 · Claude Max 5x").
+ * A few characters that identify an account in a tight spot: the multiplier
+ * of a plan name ("Claude Max 20x" -> "20x"), otherwise the name minus the
+ * driver's own brand word, shortened to initials when long.
  */
-export function describeModelOption(
+export function accountShorthand(label: string, driver: ProviderDriverKind): string {
+  const kindLabel = PROVIDER_DISPLAY_NAMES[driver]?.toLowerCase();
+  const words = label.split(/\s+/).filter((word) => word.length > 0);
+  const rest = kindLabel && words[0]?.toLowerCase() === kindLabel ? words.slice(1) : words;
+  if (rest.length === 0) return label;
+  const multiplier = rest.find((word) => /^\d+x$/i.test(word));
+  if (multiplier) return multiplier.toLowerCase();
+  const joined = rest.join(" ");
+  if (joined.length <= 8) return joined;
+  if (rest.length > 1) return rest.map((word) => word.charAt(0).toUpperCase()).join("");
+  return joined.slice(0, 6);
+}
+
+/**
+ * The account shorthand to show beside a model, or null when only one account
+ * of its driver is selectable and the model name alone is unambiguous.
+ */
+export function modelOptionAccountBadge(
   option: ModelOption,
   options: ReadonlyArray<ModelOption>,
-): string {
-  return instancesSharingDriver(options).has(option.providerKey)
-    ? `${option.label} · ${option.providerLabel}`
-    : option.label;
+): string | null {
+  if (!instancesSharingDriver(options).has(option.providerKey)) return null;
+  return accountShorthand(option.providerLabel, option.providerDriver as ProviderDriverKind);
 }
