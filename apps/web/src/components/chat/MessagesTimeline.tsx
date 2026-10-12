@@ -13,6 +13,7 @@ import {
   memo,
   use,
   useCallback,
+  useDeferredValue,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -82,6 +83,16 @@ import {
 } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { TimelineMinimap } from "./TimelineMinimap";
+import { TimelineFindBar } from "./TimelineFindBar";
+import {
+  collectTextMatchRanges,
+  findTimelineMatches,
+  normalizeTimelineFindQuery,
+  stepTimelineFindIndex,
+  TIMELINE_FIND_CURRENT_HIGHLIGHT,
+  TIMELINE_FIND_HIGHLIGHT,
+  type TimelineFindMatch,
+} from "./timelineFind";
 import {
   deriveTimelineMinimapItems,
   resolveTimelineMinimapCurrentIndex,
@@ -175,6 +186,9 @@ const EMPTY_TIMELINE_SKILLS: ReadonlyArray<Pick<ServerProviderSkill, "name" | "d
 const NOOP_OPEN_THREAD = (): void => {};
 const NOOP_OPEN_MESSAGE_THREAD = (): void => {};
 const EMPTY_MESSAGE_THREADS: ReadonlyMap<MessageId, MessageThreadSummary> = new Map();
+const NOOP_FIND_CLOSE = (): void => {};
+const NOOP_FIND_QUERY_CHANGE = (): void => {};
+const EMPTY_FIND_MATCHES: ReadonlyArray<TimelineFindMatch> = [];
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -216,6 +230,15 @@ interface MessagesTimelineProps {
   messageThreadsByAnchorId?: ReadonlyMap<MessageId, MessageThreadSummary> | undefined;
   openMessageThreadAnchorId?: MessageId | null | undefined;
   onOpenMessageThread?: ((anchorMessageId: MessageId) => void) | undefined;
+  /** Find-in-conversation bar. Only the main timeline gets one. */
+  findOpen?: boolean | undefined;
+  findQuery?: string | undefined;
+  onFindQueryChange?: ((query: string) => void) | undefined;
+  /** Row to land on when the query first matches it — the message a search hit. */
+  findPreferredRowId?: string | null | undefined;
+  /** Bumped on every find shortcut so a repeat press refocuses the input. */
+  findFocusRequest?: number | undefined;
+  onFindClose?: (() => void) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +294,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   messageThreadsByAnchorId = EMPTY_MESSAGE_THREADS,
   openMessageThreadAnchorId = null,
   onOpenMessageThread = NOOP_OPEN_MESSAGE_THREAD,
+  findOpen = false,
+  findQuery = "",
+  onFindQueryChange = NOOP_FIND_QUERY_CHANGE,
+  findPreferredRowId = null,
+  findFocusRequest = 0,
+  onFindClose = NOOP_FIND_CLOSE,
 }: MessagesTimelineProps) {
   const [expandedTurnIds, setExpandedTurnIds] = useState<ReadonlySet<TurnId>>(new Set());
 
@@ -534,16 +563,124 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const showOverlayRow = Boolean(latestChangedFilesSummary);
 
   const scrollToTimelineRow = useCallback(
-    (index: number) => {
+    (index: number, animated = true) => {
       void listRef.current?.scrollToIndex?.({
         index,
-        animated: true,
+        animated,
         viewPosition: 0.12,
         viewOffset: 12,
       });
     },
     [listRef],
   );
+
+  // Long threads re-scan every message per keystroke; let typing stay ahead.
+  const deferredFindQuery = useDeferredValue(findQuery);
+  const findMatches = useMemo(
+    () => (findOpen ? findTimelineMatches(rows, deferredFindQuery) : EMPTY_FIND_MATCHES),
+    [findOpen, rows, deferredFindQuery],
+  );
+  // Tracked by row id, not position, so rows streaming in below keep the place.
+  const [findCurrentRowId, setFindCurrentRowId] = useState<string | null>(null);
+  const findCurrentIndex = findMatches.findIndex((match) => match.rowId === findCurrentRowId);
+  const findMatchesRef = useRef(findMatches);
+  findMatchesRef.current = findMatches;
+  // Re-land once matches appear, for a thread whose messages load after find opened.
+  const hasFindMatches = findMatches.length > 0;
+
+  const goToFindMatch = useCallback(
+    (match: TimelineFindMatch | undefined) => {
+      setFindCurrentRowId(match?.rowId ?? null);
+      // Jump, like a browser's find: an animated scroll still in flight from
+      // the previous keystroke's match swallows the next one. Two frames out,
+      // so it lands after the opening scroll-to-end of a freshly mounted list.
+      if (match) {
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => scrollToTimelineRow(match.rowIndex, false)),
+        );
+      }
+    },
+    [scrollToTimelineRow],
+  );
+
+  // A new query lands on the message a search hit, else on the first match at
+  // or below the top of the viewport, falling back to the latest one, so it
+  // starts from where the user is reading.
+  useEffect(() => {
+    if (!findOpen) {
+      return;
+    }
+    const matches = findMatchesRef.current;
+    const preferred = matches.find((match) => match.rowId === findPreferredRowId);
+    if (preferred) {
+      goToFindMatch(preferred);
+      return;
+    }
+    const state = listRef.current?.getState?.();
+    const scrollTop = state?.scroll ?? 0;
+    const firstBelow = matches.find((match) => {
+      const top = finiteOrNull(state?.positionAtIndex?.(match.rowIndex));
+      const height = finiteOrNull(state?.sizeAtIndex?.(match.rowIndex)) ?? 0;
+      return top !== null && top + height > scrollTop;
+    });
+    goToFindMatch(firstBelow ?? matches.at(-1));
+  }, [deferredFindQuery, findOpen, findPreferredRowId, goToFindMatch, hasFindMatches, listRef]);
+
+  const onFindStep = useCallback(
+    (direction: 1 | -1) => {
+      const matches = findMatchesRef.current;
+      const current = matches.findIndex((match) => match.rowId === findCurrentRowId);
+      goToFindMatch(matches[stepTimelineFindIndex(current, matches.length, direction)]);
+    },
+    [findCurrentRowId, goToFindMatch],
+  );
+
+  // Paint every occurrence in the rows currently mounted. The list virtualizes,
+  // so this re-runs whenever rows mount, re-render or stream.
+  useEffect(() => {
+    if (!findOpen || !timelineViewportElement || !supportsCssHighlights()) {
+      return;
+    }
+    const needle = normalizeTimelineFindQuery(deferredFindQuery);
+    const matchedRowIds = new Set(findMatches.map((match) => match.rowId));
+    let frame: number | null = null;
+    const paint = () => {
+      frame = null;
+      const others: Range[] = [];
+      const current: Range[] = [];
+      for (const rowElement of timelineViewportElement.querySelectorAll<HTMLElement>(
+        "[data-timeline-row-id]",
+      )) {
+        const rowId = rowElement.dataset.timelineRowId;
+        if (!rowId || !matchedRowIds.has(rowId)) {
+          continue;
+        }
+        (rowId === findCurrentRowId ? current : others).push(
+          ...collectTextMatchRanges(rowElement, needle),
+        );
+      }
+      CSS.highlights.set(TIMELINE_FIND_HIGHLIGHT, new Highlight(...others));
+      CSS.highlights.set(TIMELINE_FIND_CURRENT_HIGHLIGHT, new Highlight(...current));
+    };
+    const schedulePaint = () => {
+      frame ??= requestAnimationFrame(paint);
+    };
+    schedulePaint();
+    const observer = new MutationObserver(schedulePaint);
+    observer.observe(timelineViewportElement, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+    return () => {
+      observer.disconnect();
+      if (frame !== null) {
+        cancelAnimationFrame(frame);
+      }
+      CSS.highlights.delete(TIMELINE_FIND_HIGHLIGHT);
+      CSS.highlights.delete(TIMELINE_FIND_CURRENT_HIGHLIGHT);
+    };
+  }, [deferredFindQuery, findCurrentRowId, findMatches, findOpen, timelineViewportElement]);
 
   const onMinimapSelect = useCallback(
     (item: TimelineMinimapItem) => scrollToTimelineRow(item.rowIndex),
@@ -561,6 +698,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     [],
   );
 
+  const showOverlay = showOverlayRow || findOpen;
+
   if (rows.length === 0 && !isWorking) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -575,9 +714,20 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     <TimelineRowCtx value={sharedState}>
       <TimelineRowActivityCtx value={activityState}>
         <div ref={setTimelineViewportElement} className="relative h-full min-h-0">
-          {showOverlayRow ? (
+          {showOverlay ? (
             <div className="pointer-events-none absolute inset-x-3 top-2 z-20 flex justify-center sm:inset-x-5">
               <div className="flex w-full max-w-3xl items-start justify-end gap-2">
+                {findOpen ? (
+                  <TimelineFindBar
+                    query={findQuery}
+                    onQueryChange={onFindQueryChange}
+                    currentIndex={findCurrentIndex}
+                    matchCount={findMatches.length}
+                    onStep={onFindStep}
+                    onClose={onFindClose}
+                    focusRequest={findFocusRequest}
+                  />
+                ) : null}
                 {latestChangedFilesSummary ? (
                   changedFilesHidden ? (
                     <ChangedFilesRestoreButton
@@ -629,6 +779,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
 function keyExtractor(item: MessagesTimelineRow) {
   return item.id;
+}
+
+function supportsCssHighlights(): boolean {
+  return typeof CSS !== "undefined" && "highlights" in CSS && typeof Highlight === "function";
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 "use client";
 
-import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
+import { scopedThreadKey, scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
 import {
   type EnvironmentId,
   type FilesystemBrowseResult,
@@ -39,6 +39,7 @@ import {
 } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useCommandPaletteStore } from "../commandPaletteStore";
+import { useTimelineFindRequestStore } from "../timelineFindStore";
 import { readEnvironmentApi } from "../environmentApi";
 import { readPrimaryEnvironmentDescriptor, usePrimaryEnvironmentId } from "../environments/primary";
 import {
@@ -794,9 +795,17 @@ function OpenCommandPaletteDialog() {
             }
           : {}),
         run: async () => {
+          const threadRef = scopeThreadRef(result.environmentId, result.threadId);
+          if (result.matchedMessageId) {
+            useTimelineFindRequestStore.getState().requestFind({
+              threadKey: scopedThreadKey(threadRef),
+              query: normalizedQuery,
+              messageId: result.matchedMessageId,
+            });
+          }
           await navigate({
             to: "/$environmentId/$threadId",
-            params: buildThreadRouteParams(scopeThreadRef(result.environmentId, result.threadId)),
+            params: buildThreadRouteParams(threadRef),
           });
         },
       } satisfies CommandPaletteActionItem;

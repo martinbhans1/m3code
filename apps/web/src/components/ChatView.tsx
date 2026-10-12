@@ -249,6 +249,7 @@ import {
 import { isTransportConnectionError, sanitizeThreadErrorMessage } from "~/rpc/transportError";
 import { retainThreadDetailSubscription } from "../environments/runtime/service";
 import { RightPanelSheet } from "./RightPanelSheet";
+import { useTimelineFindRequestStore } from "../timelineFindStore";
 import { Button } from "./ui/button";
 import {
   buildVersionMismatchDismissalKey,
@@ -1196,6 +1197,26 @@ function ChatViewContent(props: ChatViewProps) {
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const messagesWrapperRef = useRef<HTMLDivElement | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [timelineFindOpen, setTimelineFindOpen] = useState(false);
+  const [timelineFindQuery, setTimelineFindQuery] = useState("");
+  const [timelineFindPreferredRowId, setTimelineFindPreferredRowId] = useState<string | null>(null);
+  const [timelineFindFocusRequest, setTimelineFindFocusRequest] = useState(0);
+  const closeTimelineFind = useCallback(() => {
+    setTimelineFindOpen(false);
+    setTimelineFindPreferredRowId(null);
+    composerRef.current?.focusAtEnd();
+  }, [composerRef]);
+  const timelineFindRequest = useTimelineFindRequestStore((state) => state.request);
+  useEffect(() => {
+    if (!timelineFindRequest || timelineFindRequest.threadKey !== routeThreadKey) {
+      return;
+    }
+    useTimelineFindRequestStore.getState().clearRequest();
+    setTimelineFindQuery(timelineFindRequest.query);
+    setTimelineFindPreferredRowId(timelineFindRequest.messageId);
+    setTimelineFindOpen(true);
+    setTimelineFindFocusRequest((request) => request + 1);
+  }, [routeThreadKey, timelineFindRequest]);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
   /** Quote from a text selection, waiting for its side thread to open. */
@@ -3874,6 +3895,14 @@ function ChatViewContent(props: ChatViewProps) {
         return;
       }
 
+      if (command === "chat.find") {
+        event.preventDefault();
+        event.stopPropagation();
+        setTimelineFindOpen(true);
+        setTimelineFindFocusRequest((request) => request + 1);
+        return;
+      }
+
       if (command === "modelPicker.toggle") {
         event.preventDefault();
         event.stopPropagation();
@@ -5883,6 +5912,12 @@ function ChatViewContent(props: ChatViewProps) {
                   messageThreadsByAnchorId={messageThreadPartition.threadsByAnchorId}
                   openMessageThreadAnchorId={openMessageThreadAnchorId}
                   onOpenMessageThread={openMessageThread}
+                  findOpen={timelineFindOpen}
+                  findQuery={timelineFindQuery}
+                  onFindQueryChange={setTimelineFindQuery}
+                  findPreferredRowId={timelineFindPreferredRowId}
+                  findFocusRequest={timelineFindFocusRequest}
+                  onFindClose={closeTimelineFind}
                 />
 
                 {/* scroll to bottom pill — shown when user has scrolled away from the bottom */}
