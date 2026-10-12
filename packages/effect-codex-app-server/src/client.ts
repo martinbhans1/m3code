@@ -1,6 +1,8 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stdio from "effect/Stdio";
@@ -255,9 +257,28 @@ export const layerChildProcess = (
 ): Layer.Layer<CodexAppServerClient> =>
   Layer.effect(CodexAppServerClient, makeChildProcessClient(handle, options));
 
+// Enough to hold a Node stack trace's error line plus context. Stderr is
+// still drained in full (so a chatty CLI cannot block responses); only the
+// tail is kept for reporting why the process exited.
+const STDERR_TAIL_MAX_CHARS = 4_000;
+
 const makeChildProcessClient = Effect.fn(
   "effect-codex-app-server/CodexAppServerClient.makeChildProcessClient",
 )(function* (handle: ChildProcessSpawner.ChildProcessHandle, options: CodexAppServerClientOptions) {
-  yield* Stream.runDrain(handle.stderr).pipe(Effect.ignore, Effect.forkScoped);
-  return yield* make(makeChildStdio(handle), options, makeTerminationError(handle));
+  const decoder = new TextDecoder();
+  const stderrTail = yield* Ref.make("");
+  const stderrDrain = yield* Stream.runForEach(handle.stderr, (chunk) =>
+    Ref.update(stderrTail, (tail) => {
+      const next = tail + decoder.decode(chunk, { stream: true });
+      return next.length > STDERR_TAIL_MAX_CHARS ? next.slice(-STDERR_TAIL_MAX_CHARS) : next;
+    }),
+  ).pipe(Effect.ignore, Effect.forkScoped);
+  // Joined with a short bound: the stream normally ends when the process
+  // exits, but a grandchild that inherited stderr could keep it open.
+  const readStderr = Fiber.join(stderrDrain).pipe(
+    Effect.timeout("250 millis"),
+    Effect.ignore,
+    Effect.andThen(Ref.get(stderrTail)),
+  );
+  return yield* make(makeChildStdio(handle), options, makeTerminationError(handle, readStderr));
 });

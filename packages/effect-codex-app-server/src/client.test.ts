@@ -155,4 +155,45 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
       assert.equal(initialized.userAgent, "mock-codex-app-server");
     }),
   );
+
+  it.effect("reports why the app server exited, taken from its stderr", () =>
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const handle = yield* spawner.spawn(
+        ChildProcess.make(process.execPath, [
+          "-e",
+          "process.stderr.write('Error: Missing optional dependency @openai/codex-win32-x64\\n'); process.exit(1);",
+        ]),
+      );
+      const scope = yield* Scope.make();
+      const clientLayer = CodexClient.layerChildProcess(handle);
+      const context = yield* Layer.buildWithScope(clientLayer, scope);
+
+      const error = yield* Effect.gen(function* () {
+        const client = yield* CodexClient.CodexAppServerClient;
+        return yield* client.request("initialize", {
+          clientInfo: {
+            name: "effect-codex-app-server-test",
+            title: "Effect Codex App Server Test",
+            version: "0.0.0",
+          },
+          capabilities: {
+            experimentalApi: true,
+            optOutNotificationMethods: null,
+          },
+        });
+      }).pipe(
+        Effect.flip,
+        Effect.timeout("5 seconds"),
+        Effect.provide(context),
+        Effect.ensuring(Scope.close(scope, Exit.void)),
+      );
+
+      assert.equal(error._tag, "CodexAppServerProcessExitedError");
+      assert.equal(
+        error.message,
+        "Codex App Server process exited with code 1: Error: Missing optional dependency @openai/codex-win32-x64",
+      );
+    }),
+  );
 });

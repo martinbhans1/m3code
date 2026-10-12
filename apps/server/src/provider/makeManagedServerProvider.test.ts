@@ -68,6 +68,13 @@ const refreshedSnapshot: ServerProvider = {
   skills: [],
 };
 
+const failedSnapshot: ServerProvider = {
+  ...initialSnapshot,
+  checkedAt: "2026-04-10T00:00:00.500Z",
+  status: "error",
+  message: "Codex app-server provider probe failed: Codex App Server process exited with code 1.",
+};
+
 const enrichedSnapshot: ServerProvider = {
   ...refreshedSnapshot,
   checkedAt: "2026-04-10T00:00:02.000Z",
@@ -283,6 +290,33 @@ describe("makeManagedServerProvider", () => {
           enrichedSnapshotSecond,
         ]);
         assert.deepStrictEqual(latest, enrichedSnapshotSecond);
+      }),
+    ),
+  );
+
+  it.effect("a manual refresh replaces a failed check once the provider recovers", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const healthy = yield* Ref.make(false);
+        const provider = yield* makeManagedServerProvider<TestSettings>({
+          maintenanceCapabilities,
+          getSettings: Effect.succeed({ enabled: true }),
+          streamSettings: Stream.never,
+          haveSettingsChanged: () => false,
+          initialSnapshot: () => Effect.succeed(initialSnapshot),
+          checkProvider: Ref.get(healthy).pipe(
+            Effect.map((isHealthy) => (isHealthy ? refreshedSnapshot : failedSnapshot)),
+          ),
+          refreshInterval: "1 hour",
+        });
+
+        const whileBroken = yield* provider.refresh;
+        yield* Ref.set(healthy, true);
+        const afterRecovery = yield* provider.refresh;
+
+        assert.deepStrictEqual(whileBroken, failedSnapshot);
+        assert.deepStrictEqual(afterRecovery, refreshedSnapshot);
+        assert.deepStrictEqual(yield* provider.getSnapshot, refreshedSnapshot);
       }),
     ),
   );

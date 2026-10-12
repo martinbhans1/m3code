@@ -24,14 +24,38 @@ export class CodexAppServerProcessExitedError extends Schema.TaggedErrorClass<Co
   "CodexAppServerProcessExitedError",
   {
     code: Schema.optional(Schema.Number),
+    stderr: Schema.optional(Schema.String),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message() {
-    return this.code === undefined
-      ? "Codex App Server process exited"
-      : `Codex App Server process exited with code ${this.code}`;
+    const base =
+      this.code === undefined
+        ? "Codex App Server process exited"
+        : `Codex App Server process exited with code ${this.code}`;
+    const reason = this.stderr ? stderrFailureReason(this.stderr) : undefined;
+    return reason ? `${base}: ${reason}` : base;
   }
+}
+
+const STDERR_REASON_MAX_CHARS = 300;
+
+/**
+ * The first stderr line naming an error, trimmed for display. Crash output
+ * from Node-based CLIs is mostly stack frames; the `Error: ...` line is the
+ * part a user can act on.
+ */
+export function stderrFailureReason(stderr: string): string | undefined {
+  const line = stderr
+    .split(/\r?\n/)
+    .map((candidate) => candidate.trim())
+    .find((candidate) => /\bError:/.test(candidate));
+  if (!line) {
+    return undefined;
+  }
+  return line.length > STDERR_REASON_MAX_CHARS
+    ? `${line.slice(0, STDERR_REASON_MAX_CHARS)}...`
+    : line;
 }
 
 export class CodexAppServerProtocolParseError extends Schema.TaggedErrorClass<CodexAppServerProtocolParseError>()(

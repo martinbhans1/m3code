@@ -46,12 +46,26 @@ export const makeInMemoryStdio = Effect.fn("makeInMemoryStdio")(function* () {
 
 export const makeTerminationError = (
   handle: ChildProcessSpawner.ChildProcessHandle,
+  readStderr: Effect.Effect<string> = Effect.succeed(""),
 ): Effect.Effect<CodexError.CodexAppServerError> =>
-  Effect.match(handle.exitCode, {
+  Effect.matchEffect(handle.exitCode, {
     onFailure: (cause) =>
-      new CodexError.CodexAppServerTransportError({
-        detail: "Failed to determine Codex App Server process exit status",
-        cause,
-      }),
-    onSuccess: (code) => new CodexError.CodexAppServerProcessExitedError({ code }),
+      Effect.succeed(
+        new CodexError.CodexAppServerTransportError({
+          detail: "Failed to determine Codex App Server process exit status",
+          cause,
+        }),
+      ),
+    // The CLI explains why it died on stderr (e.g. a half-installed npm
+    // package), so the exit error carries that text instead of a bare code.
+    onSuccess: (code) =>
+      readStderr.pipe(
+        Effect.map(
+          (stderr) =>
+            new CodexError.CodexAppServerProcessExitedError({
+              code,
+              ...(stderr.length > 0 ? { stderr } : {}),
+            }),
+        ),
+      ),
   });
