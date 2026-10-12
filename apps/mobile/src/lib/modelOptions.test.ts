@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { ProviderDriverKind, type ServerConfig } from "@t3tools/contracts";
 
 import {
-  accountShorthand,
+  accountInitials,
   buildModelOptions,
   modelOptionAccountBadge,
   providerDisplayLabel,
@@ -11,7 +11,12 @@ import {
 } from "./modelOptions";
 
 function makeConfig(
-  providers: ReadonlyArray<{ instanceId: string; driver: string; displayName?: string }>,
+  providers: ReadonlyArray<{
+    instanceId: string;
+    driver: string;
+    displayName?: string;
+    accentColor?: string;
+  }>,
 ): ServerConfig {
   return {
     providers: providers.map((provider) => ({
@@ -55,38 +60,51 @@ describe("providerDisplayLabel", () => {
   });
 });
 
-describe("accountShorthand", () => {
-  it("shortens account names to something that fits beside a model", () => {
-    expect(accountShorthand("Claude Max 20x", claudeAgent)).toBe("20x");
-    expect(accountShorthand("Claude Max 5x", claudeAgent)).toBe("5x");
-    expect(accountShorthand("Personal", claudeAgent)).toBe("Personal");
-    expect(accountShorthand("Claude Dj2", claudeAgent)).toBe("Dj2");
-    expect(accountShorthand("Work Team Account", claudeAgent)).toBe("WTA");
-    expect(accountShorthand("Claude", claudeAgent)).toBe("Claude");
+describe("accountInitials", () => {
+  it("matches the initials the web badge shows", () => {
+    expect(accountInitials("Claude Max 20x")).toBe("CM");
+    expect(accountInitials("Personal")).toBe("PE");
+    expect(accountInitials("claude_dj2")).toBe("CD");
   });
 });
 
 describe("modelOptionAccountBadge", () => {
-  it("badges the account when two accounts offer the same model", () => {
+  it("badges each account with its initials and colour", () => {
     const options = buildModelOptions(
       makeConfig([
-        { instanceId: "claudeAgent", driver: "claudeAgent", displayName: "Claude Max 20x" },
-        { instanceId: "claude_dj2", driver: "claudeAgent", displayName: "Claude Max 5x" },
+        {
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          displayName: "Claude Max 20x",
+          accentColor: "#f97316",
+        },
+        { instanceId: "claude_personal", driver: "claudeAgent", displayName: "Personal" },
       ]),
       null,
     );
     expect(options.map((option) => modelOptionAccountBadge(option, options))).toEqual([
-      "20x",
-      "5x",
+      { text: "CM", color: "#f97316" },
+      { text: "PE", color: undefined },
     ]);
   });
 
-  it("shows no badge when only one account exists", () => {
+  it("shows no badge for a lone account without a colour", () => {
     const options = buildModelOptions(
       makeConfig([{ instanceId: "claudeAgent", driver: "claudeAgent" }]),
       null,
     );
     expect(modelOptionAccountBadge(options[0]!, options)).toBeNull();
+  });
+
+  it("still badges a lone account that has a colour", () => {
+    const options = buildModelOptions(
+      makeConfig([{ instanceId: "codex", driver: "codex", accentColor: "#3b82f6" }]),
+      null,
+    );
+    expect(modelOptionAccountBadge(options[0]!, options)).toEqual({
+      text: "CO",
+      color: "#3b82f6",
+    });
   });
 });
 

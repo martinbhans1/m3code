@@ -14,7 +14,14 @@ export type ModelOption = {
   readonly providerKey: string;
   readonly providerLabel: string;
   readonly providerDriver: string;
+  readonly providerAccentColor?: string | undefined;
   readonly selection: ModelSelection;
+};
+
+/** Which account runs a model: initials on the account's colour, as on web. */
+export type AccountBadge = {
+  readonly text: string;
+  readonly color: string | undefined;
 };
 
 export type ProviderGroup = {
@@ -91,6 +98,7 @@ export function buildModelOptions(
         providerKey: provider.instanceId,
         providerLabel,
         providerDriver: provider.driver,
+        providerAccentColor: normalizeAccentColor(provider.accentColor),
         selection: {
           instanceId: provider.instanceId,
           model: model.slug,
@@ -139,34 +147,35 @@ export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyAr
   }));
 }
 
-/**
- * A few characters that identify an account in a tight spot: the multiplier
- * of a plan name ("Claude Max 20x" -> "20x"), otherwise the name minus the
- * driver's own brand word, shortened to initials when long.
- */
-export function accountShorthand(label: string, driver: ProviderDriverKind): string {
-  const kindLabel = PROVIDER_DISPLAY_NAMES[driver]?.toLowerCase();
-  const words = label.split(/\s+/).filter((word) => word.length > 0);
-  const rest = kindLabel && words[0]?.toLowerCase() === kindLabel ? words.slice(1) : words;
-  if (rest.length === 0) return label;
-  const multiplier = rest.find((word) => /^\d+x$/i.test(word));
-  if (multiplier) return multiplier.toLowerCase();
-  const joined = rest.join(" ");
-  if (joined.length <= 8) return joined;
-  if (rest.length > 1) return rest.map((word) => word.charAt(0).toUpperCase()).join("");
-  return joined.slice(0, 6);
+function normalizeAccentColor(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && /^#[0-9a-fA-F]{6}$/u.test(trimmed) ? trimmed : undefined;
+}
+
+/** Same initials the web shows on its provider badge ("Claude Max 5x" -> "CM"). */
+export function accountInitials(label: string): string {
+  const words = label.replace(/[_-]+/g, " ").split(/\s+/u).filter(Boolean);
+  if (words.length === 0) return "";
+  if (words.length === 1) return words[0]!.slice(0, 2).toUpperCase();
+  return words
+    .slice(0, 2)
+    .map((word) => word[0]?.toUpperCase() ?? "")
+    .join("");
 }
 
 /**
- * The account shorthand to show beside a model, or null when only one account
- * of its driver is selectable and the model name alone is unambiguous.
+ * The account badge to show beside a model, following the web picker: shown
+ * when the account has its own colour or shares its driver with another
+ * account, otherwise null and the model name alone is unambiguous.
  */
 export function modelOptionAccountBadge(
   option: ModelOption,
   options: ReadonlyArray<ModelOption>,
-): string | null {
-  if (!instancesSharingDriver(options).has(option.providerKey)) return null;
-  return accountShorthand(option.providerLabel, option.providerDriver as ProviderDriverKind);
+): AccountBadge | null {
+  if (!option.providerAccentColor && !instancesSharingDriver(options).has(option.providerKey)) {
+    return null;
+  }
+  return { text: accountInitials(option.providerLabel), color: option.providerAccentColor };
 }
 
 /**
