@@ -42,7 +42,16 @@ export function listRunnableModels(
 ): ReadonlyArray<RunnableModel> {
   const runnable: Array<RunnableModel> = [];
   for (const provider of providers) {
-    if (!provider.enabled || !isProviderAvailable(provider)) continue;
+    // Same test the model pickers use for "accessible", so the list a default
+    // is chosen from and the list it is checked against are one list.
+    if (
+      !provider.enabled ||
+      !provider.installed ||
+      provider.auth.status === "unauthenticated" ||
+      !isProviderAvailable(provider)
+    ) {
+      continue;
+    }
     for (const model of provider.models) {
       runnable.push({ instanceId: provider.instanceId, slug: model.slug });
     }
@@ -149,6 +158,13 @@ export interface ResolveModelSelectionInput {
   readonly favorites?: ReadonlyArray<StarredModel>;
   /** Turn a runnable model into a full selection (options, effort, …). */
   readonly toSelection: (model: RunnableModel) => ModelSelection;
+  /**
+   * Where `inherited` ranks. Defaults to after the project's default, which
+   * suits server callers whose "inherited" is an orchestrator conversation.
+   * A chat the user is sitting in ranks higher — see
+   * `resolveNewConversationModel`.
+   */
+  readonly inheritedRank?: "before-default" | "after-default" | "after-project";
 }
 
 /**
@@ -163,10 +179,13 @@ export function resolveModelSelection(input: ResolveModelSelectionInput): ModelR
     if (selection) candidates.push({ source, selection });
   };
 
+  const inheritedRank = input.inheritedRank ?? "after-project";
   push("explicit", input.explicit);
+  if (inheritedRank === "before-default") push("inherited", input.inherited);
   push("default", input.configuredDefault);
+  if (inheritedRank === "after-default") push("inherited", input.inherited);
   push("project", input.projectDefault);
-  push("inherited", input.inherited);
+  if (inheritedRank === "after-project") push("inherited", input.inherited);
 
   // Starred models are a standing statement of what the user prefers, so they
   // come before "whatever the provider happens to list first".
@@ -207,6 +226,48 @@ export function resolveModelSelection(input: ResolveModelSelectionInput): ModelR
         : "No provider is offering a model right now, so there is nothing to start this conversation on. Check that a provider is enabled and signed in.",
     skipped,
   };
+}
+
+/** The settings every surface reads to choose a new conversation's model. */
+export interface NewConversationModelSettings {
+  readonly defaultModelEnabled: boolean;
+  readonly defaultModelSelection: ModelSelection | null;
+  readonly favorites: ReadonlyArray<StarredModel>;
+}
+
+/**
+ * The one rule for "which model does a new conversation start on", shared by
+ * the web composer, the mobile app, the orchestrator and integrations so they
+ * cannot drift apart again.
+ *
+ * Settings > Chat > Default model is the user's default everywhere. Its
+ * switch only decides whether that default also beats the chat they are
+ * sitting in (`inherited`): on, the default wins; off, the current chat wins
+ * and the default is the fallback. Either way the default outranks a
+ * project's stored model, which in practice is whatever the code pinned the
+ * day the project was added rather than anything chosen.
+ *
+ * Everything is checked against what the connected accounts offer — the same
+ * list the default is picked from — so a new model works the moment it is
+ * chosen, and a retired one is stepped over instead of started.
+ */
+export function resolveNewConversationModel(input: {
+  readonly settings: NewConversationModelSettings | null | undefined;
+  readonly providers: ReadonlyArray<ServerProvider>;
+  readonly explicit?: ModelSelection | null;
+  readonly inherited?: ModelSelection | null;
+  readonly projectDefault?: ModelSelection | null;
+}): ModelResolution {
+  return resolveModelSelection({
+    runnable: listRunnableModels(input.providers),
+    explicit: input.explicit ?? null,
+    configuredDefault: input.settings?.defaultModelSelection ?? null,
+    inherited: input.inherited ?? null,
+    inheritedRank: input.settings?.defaultModelEnabled ? "after-default" : "before-default",
+    projectDefault: input.projectDefault ?? null,
+    favorites: input.settings?.favorites ?? [],
+    toSelection: (model) => ({ instanceId: model.instanceId, model: model.slug }),
+  });
 }
 
 /**

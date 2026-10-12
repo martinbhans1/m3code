@@ -54,9 +54,15 @@ it.effect("resolves the API default token at creation and keeps explicit choices
       expect(
         yield* normalizeDispatchCommand({ ...create, modelSelection: selection }),
       ).toMatchObject({ modelSelection: selection });
+      // The switch only governs whether the default beats the chat someone is
+      // in; an integration asking for "default" still gets it.
       yield* settings.updateSettings({ defaultModelEnabled: false });
+      expect(yield* normalizeDispatchCommand(create)).toMatchObject({
+        modelSelection: replacement,
+      });
+      yield* settings.updateSettings({ defaultModelSelection: null });
       const failure = yield* normalizeDispatchCommand(create).pipe(Effect.flip);
-      expect(failure.message).toContain("Choose and enable a default model");
+      expect(failure.message).toContain("Choose a default model");
     }),
   ).pipe(Effect.provide(TestLayer)),
 );

@@ -21,7 +21,6 @@ import {
   UserInputQuestion,
 } from "@t3tools/contracts";
 import { projectThreadAwareness } from "@t3tools/shared/agentAwareness";
-import { getDefaultModelSelection } from "@t3tools/shared/model";
 import {
   describeModelFallback,
   listOrchestratorModelChoices,
@@ -1872,7 +1871,10 @@ const handlers = {
           () => new OrchestratorToolError({ message: "Could not read model settings." }),
         ),
       );
-      const defaultModel = getDefaultModelSelection(currentSettings);
+      // The user's default applies here whether or not its switch is on: the
+      // switch only decides whether it beats the chat someone is sitting in,
+      // and a conversation the orchestrator opens has no such chat.
+      const defaultModel = currentSettings.defaultModelSelection;
 
       // What the connected accounts can actually start a turn on. Without
       // this the orchestrator inherited whatever a project record happened to
@@ -1907,8 +1909,7 @@ const handlers = {
       if (requestedModel?.toLowerCase() === "default") {
         if (!defaultModel) {
           return yield* new OrchestratorToolError({
-            message:
-              "Choose and enable a default model in Settings > Chat before using the default model.",
+            message: "Choose a default model in Settings > Chat before using the default model.",
           });
         }
         explicit = defaultModel;

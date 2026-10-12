@@ -919,8 +919,8 @@ export function GeneralSettingsPanel() {
       {activeTab === "chat" ? (
         <SettingsSection title="Composer">
           <SettingsRow
-            title="Use a default model"
-            description="Start new threads with your chosen model and account. When off, new threads inherit the current chat's model and reasoning options. Existing chats and drafts keep their selections."
+            title="Always start on the default model"
+            description="On: every new chat starts on the default model below. Off: a new chat opened from another one keeps that chat's model, and the default is used everywhere else. Existing chats and drafts keep their selections."
             control={
               <Switch
                 checked={settings.defaultModelEnabled}
@@ -930,13 +930,13 @@ export function GeneralSettingsPanel() {
                     defaultModelSelection,
                   })
                 }
-                aria-label="Use a default model"
+                aria-label="Always start on the default model"
               />
             }
           />
           <SettingsRow
             title="Default model"
-            description="Choose the model, account, and reasoning options to use when the default is enabled. Integrations can follow this choice when they create a thread."
+            description="The model new conversations start on — here, in the mobile app, and when the orchestrator or an integration opens one. If your accounts cannot run it, a starred model is used instead."
             control={
               <div className="flex flex-wrap items-center justify-end gap-1.5">
                 <ProviderModelPicker

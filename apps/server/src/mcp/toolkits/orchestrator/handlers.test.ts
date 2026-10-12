@@ -3236,29 +3236,59 @@ it.effect("resolves the configured default on each create_thread call", () =>
   ).pipe(Effect.provide(TestLayer)),
 );
 
-it.effect("refuses an explicit default request when disabled without creating a thread", () =>
+it.effect("uses the saved default even when its switch is off", () =>
   Effect.scoped(
     Effect.gen(function* () {
+      // The switch only decides whether the default beats the chat someone is
+      // sitting in. A conversation the orchestrator opens has no such chat, so
+      // the default applies — omitted or asked for by name.
+      for (const model of [undefined, "default"]) {
+        resetAccess();
+        dispatched.length = 0;
+        extraProviders = [offering("claudeAgent", "claudeAgent", ["claude-opus-5-5"])];
+        defaultModelSelection = {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus-5-5",
+        };
+        const result = yield* callTool("create_thread", {
+          projectTitle: "dealjourney",
+          title: "Saved default",
+          message: "Do the work.",
+          ...(model ? { model } : {}),
+        });
+        expect(result.isError).toBe(false);
+        expect(dispatched[0]).toMatchObject({
+          type: "thread.create",
+          modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" },
+        });
+      }
       resetAccess();
       dispatched.length = 0;
-      defaultModelSelection = {
-        instanceId: ProviderInstanceId.make("claudeAgent"),
-        model: "claude-opus-5-5",
-      };
-      const result = yield* callTool("create_thread", {
-        projectTitle: "dealjourney",
-        title: "No default",
-        message: "Do the work.",
-        model: "default",
-      });
-      expect(result.isError).toBe(true);
-      expect(
-        result.content.map((entry) => ("text" in entry ? entry.text : "")).join(" "),
-      ).toContain("Choose and enable a default model");
-      expect(dispatched).toEqual([]);
-      resetAccess();
     }),
   ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect(
+  "refuses an explicit default request when none is chosen, without creating a thread",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        resetAccess();
+        dispatched.length = 0;
+        const result = yield* callTool("create_thread", {
+          projectTitle: "dealjourney",
+          title: "No default",
+          message: "Do the work.",
+          model: "default",
+        });
+        expect(result.isError).toBe(true);
+        expect(
+          result.content.map((entry) => ("text" in entry ? entry.text : "")).join(" "),
+        ).toContain("Choose a default model");
+        expect(dispatched).toEqual([]);
+        resetAccess();
+      }),
+    ).pipe(Effect.provide(TestLayer)),
 );
 
 it.effect("gives a worktree conversation its own branch and checkout", () =>

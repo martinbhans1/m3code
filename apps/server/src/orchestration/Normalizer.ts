@@ -14,7 +14,6 @@ import { ServerConfig } from "../config.ts";
 import { parseBase64DataUrl } from "../imageMime.ts";
 import { WorkspacePaths } from "../workspace/Services/WorkspacePaths.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
-import { getDefaultModelSelection } from "@t3tools/shared/model";
 import { resolveModelSelection } from "@t3tools/shared/modelResolution";
 import { readRunnableModels, runnableToSelection } from "../startingModel.ts";
 
@@ -30,11 +29,12 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
             }),
         ),
       );
-      const configuredDefault = getDefaultModelSelection(settings);
+      // "default" asks for the user's chosen default. Its switch only decides
+      // whether it beats the chat someone is in, which does not apply here.
+      const configuredDefault = settings.defaultModelSelection;
       if (!configuredDefault) {
         return yield* new OrchestrationDispatchCommandError({
-          message:
-            "Choose and enable a default model in Settings > Chat before using the default model.",
+          message: "Choose a default model in Settings > Chat before using the default model.",
         });
       }
       // "default" is a request for the user's choice, so only their default

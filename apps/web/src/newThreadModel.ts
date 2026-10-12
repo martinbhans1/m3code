@@ -1,9 +1,19 @@
 import type { ModelSelection, ProviderInstanceId, ServerProvider } from "@t3tools/contracts";
-import { listRunnableModels, resolveModelSelection } from "@t3tools/shared/modelResolution";
+import {
+  type NewConversationModelSettings,
+  resolveNewConversationModel,
+} from "@t3tools/shared/modelResolution";
 
-/** The current composer's pending model choice wins over its persisted thread. */
+/**
+ * The model a new chat opens on: the shared rule in
+ * `resolveNewConversationModel`, fed with what only the web knows — the
+ * composer's pending pick, which wins over its persisted thread.
+ *
+ * Null leaves the choice to the composer, which happens only when no account
+ * is offering anything to choose from.
+ */
 export function resolveNewThreadModelSelection(input: {
-  defaultSelection: ModelSelection | null;
+  settings: NewConversationModelSettings | null;
   currentThreadSelection: ModelSelection | null;
   currentComposer: {
     activeProvider?: ProviderInstanceId | null;
@@ -11,31 +21,22 @@ export function resolveNewThreadModelSelection(input: {
   } | null;
   /** The target project's stored default, if it has one. */
   projectDefault?: ModelSelection | null;
-  /** The models starred in the picker, in the user's order. */
-  favorites?: ReadonlyArray<{ readonly provider: ProviderInstanceId; readonly model: string }>;
   /** What the connected accounts are offering. Empty means not known yet. */
   providers?: ReadonlyArray<ServerProvider>;
 }): ModelSelection | null {
-  if (input.defaultSelection) return input.defaultSelection;
   const instanceId =
     input.currentComposer?.activeProvider ?? input.currentThreadSelection?.instanceId;
   const inherited =
     (instanceId ? input.currentComposer?.modelSelectionByProvider[instanceId] : null) ??
     input.currentThreadSelection;
-  if (inherited) return inherited;
 
-  // Nothing to inherit — the first chat in a fresh window, or a project with
-  // no stored model. The project's own default stays in charge when the
-  // account can run it (returning null lets the composer use it). Otherwise
-  // start on a starred model rather than on whatever a provider lists first,
-  // which is how a retired model kept coming back.
-  const resolution = resolveModelSelection({
-    runnable: listRunnableModels(input.providers ?? []),
+  const resolution = resolveNewConversationModel({
+    settings: input.settings,
+    providers: input.providers ?? [],
+    inherited,
     projectDefault: input.projectDefault ?? null,
-    favorites: input.favorites ?? [],
-    toSelection: (model) => ({ instanceId: model.instanceId, model: model.slug }),
   });
-  return resolution.outcome === "resolved" && resolution.source === "favorite"
+  return resolution.outcome === "resolved" && resolution.source !== "available"
     ? resolution.selection
     : null;
 }

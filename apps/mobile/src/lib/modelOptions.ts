@@ -5,6 +5,7 @@ import {
   type ProviderDriverKind,
   type ServerConfig as T3ServerConfig,
 } from "@t3tools/contracts";
+import { resolveNewConversationModel } from "@t3tools/shared/modelResolution";
 
 export type ModelOption = {
   readonly key: string;
@@ -166,4 +167,29 @@ export function modelOptionAccountBadge(
 ): string | null {
   if (!instancesSharingDriver(options).has(option.providerKey)) return null;
   return accountShorthand(option.providerLabel, option.providerDriver as ProviderDriverKind);
+}
+
+/**
+ * The model a new conversation from the phone starts on.
+ *
+ * The same rule the web composer, the orchestrator and integrations use, read
+ * from the server's own settings: the default chosen in Settings > Chat, the
+ * chat being continued, the project's stored model, then a starred model —
+ * each checked against what the connected accounts offer. Null when nothing
+ * can run, so the caller can say so instead of starting a dead model.
+ */
+export function resolveStartingModel(
+  config: T3ServerConfig | null | undefined,
+  input: {
+    readonly projectDefault?: ModelSelection | null;
+    readonly inherited?: ModelSelection | null;
+  } = {},
+): ModelSelection | null {
+  const resolution = resolveNewConversationModel({
+    settings: config?.settings ?? null,
+    providers: config?.providers ?? [],
+    projectDefault: input.projectDefault ?? null,
+    inherited: input.inherited ?? null,
+  });
+  return resolution.outcome === "resolved" ? resolution.selection : null;
 }

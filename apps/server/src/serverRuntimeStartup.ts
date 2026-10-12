@@ -6,7 +6,6 @@ import {
   type ServerSettings,
   ThreadId,
 } from "@t3tools/contracts";
-import { getDefaultModelSelection } from "@t3tools/shared/model";
 import { resolveModelSelection } from "@t3tools/shared/modelResolution";
 import * as Data from "effect/Data";
 import * as Crypto from "effect/Crypto";
@@ -179,7 +178,7 @@ export const resolveAutoBootstrapModelSelection = (
       : Option.none<ServerSettings>();
     const resolution = resolveModelSelection({
       runnable: yield* readRunnableModels,
-      configuredDefault: Option.isSome(settings) ? getDefaultModelSelection(settings.value) : null,
+      configuredDefault: Option.isSome(settings) ? settings.value.defaultModelSelection : null,
       projectDefault,
       favorites: Option.isSome(settings) ? settings.value.favorites : [],
       toSelection: runnableToSelection,

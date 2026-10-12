@@ -4,7 +4,6 @@ import {
   type ModelSelection,
   type ScopedProjectRef,
 } from "@t3tools/contracts";
-import { getDefaultModelSelection } from "@t3tools/shared/model";
 import { useParams, useRouter } from "@tanstack/react-router";
 import { useCallback, useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -32,7 +31,8 @@ import { resolveNewThreadModelSelection } from "../newThreadModel";
 function useNewThreadState() {
   const projects = useStore(useShallow((store) => selectProjectsAcrossEnvironments(store)));
   const projectGroupingSettings = useSettings(selectProjectGroupingSettings);
-  const defaultModelSelection = useSettings(getDefaultModelSelection);
+  const defaultModelEnabled = useSettings((settings) => settings.defaultModelEnabled);
+  const defaultModelSelection = useSettings((settings) => settings.defaultModelSelection);
   const favorites = useSettings((settings) => settings.favorites);
   const router = useRouter();
   const getCurrentRouteTarget = useCallback(() => {
@@ -167,17 +167,14 @@ function useNewThreadState() {
         const selection =
           options?.modelSelection ??
           resolveNewThreadModelSelection({
-            defaultSelection: isPrimary
-              ? defaultModelSelection
-              : remoteSettings
-                ? getDefaultModelSelection(remoteSettings)
-                : null,
+            settings: isPrimary
+              ? { defaultModelEnabled, defaultModelSelection, favorites }
+              : (remoteSettings ?? null),
             currentComposer,
             currentThreadSelection: sameEnvironment
               ? (currentThread?.modelSelection ?? null)
               : null,
             projectDefault: project?.defaultModelSelection ?? null,
-            favorites: isPrimary ? favorites : (remoteSettings?.favorites ?? []),
             providers: (isPrimary ? primaryConfig?.providers : remoteConfig?.providers) ?? [],
           });
         if (selection) {
@@ -195,6 +192,7 @@ function useNewThreadState() {
       projectGroupingSettings,
       router,
       projects,
+      defaultModelEnabled,
       defaultModelSelection,
       favorites,
     ],

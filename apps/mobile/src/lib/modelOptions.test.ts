@@ -7,6 +7,7 @@ import {
   buildModelOptions,
   modelOptionAccountBadge,
   providerDisplayLabel,
+  resolveStartingModel,
 } from "./modelOptions";
 
 function makeConfig(
@@ -86,5 +87,71 @@ describe("modelOptionAccountBadge", () => {
       null,
     );
     expect(modelOptionAccountBadge(options[0]!, options)).toBeNull();
+  });
+});
+
+describe("resolveStartingModel", () => {
+  // Codex signed in with ChatGPT no longer offers gpt-5.4; Claude offers Opus.
+  const config = (settings: Record<string, unknown>) =>
+    ({
+      providers: [
+        {
+          instanceId: "codex",
+          driver: "codex",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          models: [
+            { slug: "gpt-6.1-sol", name: "GPT-6.1 Sol", isCustom: false, capabilities: null },
+          ],
+        },
+        {
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          models: [
+            { slug: "claude-opus-5-5", name: "Opus 5.5", isCustom: false, capabilities: null },
+          ],
+        },
+      ],
+      settings: {
+        defaultModelEnabled: false,
+        defaultModelSelection: null,
+        favorites: [],
+        ...settings,
+      },
+    }) as unknown as ServerConfig;
+  const opus = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
+  const retired = { instanceId: "codex", model: "gpt-5.4" } as never;
+
+  it("starts on the default chosen in Settings, not the project's pinned model", () => {
+    expect(
+      resolveStartingModel(config({ defaultModelSelection: opus }), { projectDefault: retired }),
+    ).toEqual(opus);
+  });
+
+  it("steps over a retired project model to a starred one", () => {
+    expect(
+      resolveStartingModel(
+        config({ favorites: [{ provider: "claudeAgent", model: "claude-opus-5-5" }] }),
+        {
+          projectDefault: retired,
+        },
+      ),
+    ).toEqual(opus);
+  });
+
+  it("follows the chat being continued unless the default is switched on", () => {
+    const sol = { instanceId: "codex", model: "gpt-6.1-sol" } as never;
+    expect(
+      resolveStartingModel(config({ defaultModelSelection: opus }), { inherited: sol }),
+    ).toEqual(sol);
+    expect(
+      resolveStartingModel(config({ defaultModelSelection: opus, defaultModelEnabled: true }), {
+        inherited: sol,
+      }),
+    ).toEqual(opus);
   });
 });

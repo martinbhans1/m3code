@@ -17,6 +17,7 @@ import { uuidv4 } from "../../lib/uuid";
 
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
+import { resolveStartingModel } from "../../lib/modelOptions";
 import { getEnvironmentClient } from "../../state/environment-session-registry";
 import { environmentRuntimeManager } from "../../state/use-environment-runtime";
 import { vcsRefManager } from "../../state/use-vcs-refs";
@@ -74,7 +75,7 @@ function deriveThreadTitleFromPrompt(value: string): string {
 }
 
 export function useProjectActions() {
-  const { threads } = useRemoteCatalog();
+  const { threads, serverConfigByEnvironmentId } = useRemoteCatalog();
   const refreshRemoteData = useRefreshRemoteData();
 
   const onCreateThreadWithOptions = useCallback(
@@ -164,10 +165,17 @@ export function useProjectActions() {
           (thread) =>
             thread.environmentId === project.environmentId && thread.projectId === project.id,
         ) ?? null;
-      const modelSelection =
-        project.defaultModelSelection ?? latestProjectThread?.modelSelection ?? null;
+      const modelSelection = resolveStartingModel(
+        serverConfigByEnvironmentId[project.environmentId] ?? null,
+        {
+          projectDefault: project.defaultModelSelection ?? null,
+          inherited: latestProjectThread?.modelSelection ?? null,
+        },
+      );
       if (!modelSelection) {
-        setPendingConnectionError("This project does not have a default model configured yet.");
+        setPendingConnectionError(
+          "None of the connected accounts is offering a model right now. Check that a provider is enabled and signed in.",
+        );
         return null;
       }
 
@@ -183,7 +191,7 @@ export function useProjectActions() {
         initialAttachments: [],
       });
     },
-    [onCreateThreadWithOptions, threads],
+    [onCreateThreadWithOptions, serverConfigByEnvironmentId, threads],
   );
 
   const onListProjectBranches = useCallback(

@@ -801,7 +801,7 @@ describe("GeneralSettingsPanel observability", () => {
       </AppAtomRegistryProvider>,
     );
     await page.getByRole("tab", { name: "Chat", exact: true }).click();
-    const toggle = page.getByRole("switch", { name: "Use a default model" });
+    const toggle = page.getByRole("switch", { name: "Always start on the default model" });
     await expect.element(toggle).not.toBeChecked();
     await toggle.click();
     await expect.element(toggle).toBeChecked();

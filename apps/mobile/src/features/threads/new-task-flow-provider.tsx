@@ -13,7 +13,7 @@ import { pipe } from "effect/Function";
 
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
-import { buildModelOptions, groupByProvider } from "../../lib/modelOptions";
+import { buildModelOptions, groupByProvider, resolveStartingModel } from "../../lib/modelOptions";
 import { groupProjectsByRepository } from "../../lib/repositoryGroups";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import {
@@ -261,20 +261,27 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const prompt = selectedProjectDraft.text;
   const attachments = selectedProjectDraft.attachments;
 
-  const modelOptions = useMemo(
+  const selectedProjectConfig = selectedProject
+    ? (serverConfigByEnvironmentId[selectedProject.environmentId] ?? null)
+    : null;
+  // The default chosen in Settings > Chat, checked against what the accounts
+  // offer — not the project's stored model, which is usually whatever the
+  // code pinned when the project was added.
+  const startingModel = useMemo(
     () =>
-      buildModelOptions(
-        selectedProject
-          ? (serverConfigByEnvironmentId[selectedProject.environmentId] ?? null)
-          : null,
-        selectedProject?.defaultModelSelection ?? null,
-      ),
-    [selectedProject, serverConfigByEnvironmentId],
+      resolveStartingModel(selectedProjectConfig, {
+        projectDefault: selectedProject?.defaultModelSelection ?? null,
+      }),
+    [selectedProject, selectedProjectConfig],
+  );
+  const modelOptions = useMemo(
+    () => buildModelOptions(selectedProjectConfig, startingModel),
+    [selectedProjectConfig, startingModel],
   );
 
   const selectedModel =
     modelOptions.find((option) => option.key === selectedModelKey)?.selection ??
-    selectedProject?.defaultModelSelection ??
+    startingModel ??
     modelOptions[0]?.selection ??
     null;
 

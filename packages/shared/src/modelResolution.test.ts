@@ -3,12 +3,13 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vite-plus/test";
-import { type ModelSelection, ProviderInstanceId } from "@t3tools/contracts";
+import { type ModelSelection, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 
 import {
   describeModelFallback,
   listOrchestratorModelChoices,
   resolveModelSelection,
+  resolveNewConversationModel,
   type RunnableModel,
 } from "./modelResolution.ts";
 
@@ -174,5 +175,78 @@ describe("new-project entry points", () => {
   it.each(entryPoints)("%s does not pin a code-constant model", (relativePath) => {
     const source = readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), "utf8");
     expect(source).not.toMatch(/\bDEFAULT_MODEL\b/);
+  });
+});
+
+describe("resolveNewConversationModel", () => {
+  const providers = [
+    {
+      instanceId: codex,
+      driver: "codex",
+      enabled: true,
+      installed: true,
+      auth: { status: "authenticated" },
+      models: [{ slug: "gpt-6.1-sol" }],
+    },
+    {
+      instanceId: claude,
+      driver: "claudeAgent",
+      enabled: true,
+      installed: true,
+      auth: { status: "authenticated" },
+      models: [{ slug: "claude-opus-5-5" }],
+    },
+    {
+      // Signed out: what it lists is not something a conversation can start on.
+      instanceId: ProviderInstanceId.make("grok"),
+      driver: "grok",
+      enabled: true,
+      installed: true,
+      auth: { status: "unauthenticated" },
+      models: [{ slug: "grok-4.6" }],
+    },
+  ] as unknown as ReadonlyArray<ServerProvider>;
+  const opus = select(claude, "claude-opus-5-5");
+  const sol = select(codex, "gpt-6.1-sol");
+
+  it("uses the saved default with the switch off when there is no chat to follow", () => {
+    expect(
+      resolveNewConversationModel({
+        settings: { defaultModelEnabled: false, defaultModelSelection: opus, favorites: [] },
+        providers,
+        projectDefault: retiredProjectDefault,
+      }),
+    ).toMatchObject({ source: "default", selection: opus });
+  });
+
+  it("lets the chat being continued win only while the switch is off", () => {
+    const settings = { defaultModelSelection: opus, favorites: [] };
+    expect(
+      resolveNewConversationModel({
+        settings: { ...settings, defaultModelEnabled: false },
+        providers,
+        inherited: sol,
+      }),
+    ).toMatchObject({ source: "inherited", selection: sol });
+    expect(
+      resolveNewConversationModel({
+        settings: { ...settings, defaultModelEnabled: true },
+        providers,
+        inherited: sol,
+      }),
+    ).toMatchObject({ source: "default", selection: opus });
+  });
+
+  it("never picks a model from a signed-out account", () => {
+    expect(
+      resolveNewConversationModel({
+        settings: {
+          defaultModelEnabled: true,
+          defaultModelSelection: select(ProviderInstanceId.make("grok"), "grok-4.6"),
+          favorites: [],
+        },
+        providers,
+      }),
+    ).toMatchObject({ source: "available", selection: sol });
   });
 });

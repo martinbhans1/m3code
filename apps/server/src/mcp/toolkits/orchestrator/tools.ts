@@ -768,7 +768,7 @@ export const CreateThreadInput = Schema.Struct({
   model: Schema.optional(
     Schema.String.annotate({
       description:
-        "Use 'default' to follow the model and account enabled under Settings > Chat > Default model. Omitting this also uses that default when enabled, otherwise the project's model or this conversation's model. An explicit model ID must be in Settings > Orchestrator > Orchestrator model choices; an unrecognised one returns the allowed list.",
+        "Omit this, or pass 'default', to use the user's default model from Settings > Chat > Default model — the same default every other surface uses. If their accounts cannot run it, the conversation starts on one of their starred models and the result's modelNote says so. An explicit model ID must be one of read_plan_limits' selectableModels; an unrecognised one returns the allowed list.",
     }),
   ),
   runtimeMode: Schema.optional(
