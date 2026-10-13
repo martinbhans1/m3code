@@ -655,11 +655,20 @@ export default function FilePreviewPanel({
   );
   const onFilePostRender = useFileLineReveal(relativePath, revealLine, revealRequestId);
 
+  // The open file is the last crumb. Keep it in view when a file opens and
+  // whenever the panel narrows, or a resize leaves its name cut off.
   useEffect(() => {
-    const currentCrumb = breadcrumbRef.current?.querySelector<HTMLElement>(
-      "[data-current-file-crumb='true']",
+    const viewport = breadcrumbRef.current?.querySelector<HTMLElement>(
+      '[data-slot="scroll-area-viewport"]',
     );
-    currentCrumb?.scrollIntoView({ block: "nearest", inline: "end" });
+    if (!viewport) return;
+    const pinToEnd = () => {
+      viewport.scrollLeft = viewport.scrollWidth;
+    };
+    pinToEnd();
+    const observer = new ResizeObserver(pinToEnd);
+    observer.observe(viewport);
+    return () => observer.disconnect();
   }, [relativePath]);
 
   const persistExplorerOpen = (next: boolean) => {

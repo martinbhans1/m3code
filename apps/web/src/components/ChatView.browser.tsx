@@ -66,6 +66,7 @@ import { getServerConfig } from "../rpc/serverState";
 import { getRouter } from "../router";
 import { deriveLogicalProjectKeyFromSettings } from "../logicalProject";
 import { selectThreadRightPanelState, useRightPanelStore } from "../rightPanelStore";
+import { usePendingUserInputDraftStore } from "../pendingUserInputDraftStore";
 import { selectBootstrapCompleteForActiveEnvironment, useStore } from "../store";
 import { terminalSessionManager } from "../terminalSessionState";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
@@ -1176,6 +1177,9 @@ function resolveWsRpc(body: NormalizedWsRpcRequestBody): unknown {
       updatedAt: NOW_ISO,
     };
   }
+  if (tag === ORCHESTRATION_WS_METHODS.searchThreads) {
+    return { results: [], semanticStatus: "unavailable" };
+  }
   return {};
 }
 
@@ -1486,10 +1490,23 @@ function findButtonContainingText(text: string): HTMLElement | null {
   );
 }
 
-async function waitForButtonContainingText(text: string): Promise<HTMLElement> {
+/** Waits until the button is clickable — answer buttons stay disabled until an option is picked. */
+async function clickEnabledButtonContainingText(text: string): Promise<void> {
+  const button = await waitForElement(() => {
+    const candidate = findButtonContainingText(text);
+    return candidate && !(candidate as HTMLButtonElement).disabled ? candidate : null;
+  }, `Unable to find an enabled button containing "${text}".`);
+  button.click();
+}
+
+/** An answer to an agent's question — a radio, or a checkbox when several can be picked. */
+async function waitForAnswerOptionContainingText(text: string): Promise<HTMLElement> {
   return waitForElement(
-    () => findButtonContainingText(text),
-    `Unable to find button containing "${text}".`,
+    () =>
+      Array.from(document.querySelectorAll<HTMLElement>('[role="radio"], [role="checkbox"]')).find(
+        (option) => option.textContent?.includes(text),
+      ) ?? null,
+    `Unable to find answer option containing "${text}".`,
   );
 }
 
@@ -1851,6 +1868,8 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
     useRightPanelStore.persist.clearStorage();
     useRightPanelStore.setState({ byThreadKey: {} });
+    // Half-answered questions are kept per request id, and the fixtures reuse one.
+    usePendingUserInputDraftStore.setState({ byRequestId: {} });
   });
 
   afterEach(() => {
@@ -6718,6 +6737,30 @@ describe("ChatView timeline estimator parity (full app)", () => {
           ],
         };
       },
+      // Thread search is the server's job; it matches a thread by the project it
+      // lives in, as a metadata hit.
+      resolveRpc: (body) => {
+        if (body._tag !== ORCHESTRATION_WS_METHODS.searchThreads) return undefined;
+        return {
+          results: [
+            {
+              threadId: "thread-secondary-project" as ThreadId,
+              projectId: SECOND_PROJECT_ID,
+              title: "Release checklist",
+              projectTitle: "Docs Portal",
+              branch: null,
+              archivedAt: null,
+              updatedAt: NOW_ISO,
+              snippet: null,
+              matchedRole: null,
+              matchedMessageId: null,
+              matchKind: "metadata" as const,
+              score: 1_100,
+            },
+          ],
+          semanticStatus: "unavailable" as const,
+        };
+      },
     });
 
     try {
@@ -6750,6 +6793,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           updatedAt: NOW_ISO,
           snippet: "Please fix the Visma NXT sprint tasks in Deal Journey.",
           matchedRole: "user" as const,
+          matchedMessageId: "msg-user-secondary-project-target" as MessageId,
           matchKind: "content" as const,
           score: 805,
         },
@@ -7150,8 +7194,10 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const firstOption = await waitForButtonContainingText("Tight");
+      // Picking an answer only selects it; moving on is a separate step.
+      const firstOption = await waitForAnswerOptionContainingText("Tight");
       firstOption.click();
+      await clickEnabledButtonContainingText("Next");
 
       await waitForButtonByText("Previous");
       await waitForButtonByText("Submit answers");
@@ -7178,11 +7224,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
     });
 
     try {
-      const firstOption = await waitForButtonContainingText("Tight");
+      const firstOption = await waitForAnswerOptionContainingText("Tight");
       firstOption.click();
+      await clickEnabledButtonContainingText("Next");
 
-      const finalOption = await waitForButtonContainingText("Conservative");
+      const finalOption = await waitForAnswerOptionContainingText("Conservative");
       finalOption.click();
+      await clickEnabledButtonContainingText("Submit");
 
       await vi.waitFor(
         () => {
@@ -7242,8 +7290,13 @@ describe("ChatView timeline estimator parity (full app)", () => {
         "Unable to find implementation actions trigger.",
       );
 
+      // A 440px chat column, not a 440px app: the desktop sidebar stays open
+      // beside it, and counting it in would leave the composer ~140px wide.
+      const sidebarWidth = document
+        .querySelector<HTMLElement>(".app-chat-surface")!
+        .getBoundingClientRect().left;
       await mounted.setContainerSize({
-        width: 440,
+        width: sidebarWidth + 440,
         height: WIDE_FOOTER_VIEWPORT.height,
       });
       await expectComposerActionsContained();
