@@ -203,6 +203,58 @@ const handlers = {
         remainingPending,
       };
     }),
+
+  rename_conversation: (input) =>
+    Effect.gen(function* () {
+      const invocation = yield* McpInvocationContext.McpInvocationContext;
+      const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+      const orchestrationEngine = yield* OrchestrationEngineService;
+      const startup = yield* ServerRuntimeStartup;
+      const crypto = yield* Crypto.Crypto;
+
+      const title = input.title.trim();
+      if (title.length === 0) {
+        return yield* new FollowupToolError({
+          message: "The new name is empty. Pass the name the user asked for.",
+        });
+      }
+
+      const shell = yield* projectionSnapshotQuery
+        .getThreadShellById(invocation.threadId)
+        .pipe(Effect.mapError(snapshotError("read this conversation")));
+      if (Option.isNone(shell)) {
+        return yield* new FollowupToolError({
+          message: "This conversation could not be found, so it was not renamed.",
+        });
+      }
+      const previousTitle = shell.value.title;
+      if (previousTitle === title) {
+        return { previousTitle, title };
+      }
+
+      const commandUuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      yield* startup
+        .enqueueCommand(
+          orchestrationEngine.dispatch({
+            type: "thread.meta.update",
+            commandId: CommandId.make(`rename:${commandUuid}`),
+            threadId: invocation.threadId,
+            title,
+          }),
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new FollowupToolError({
+                message: `Failed to rename the conversation: ${
+                  cause instanceof Error ? cause.message : String(cause)
+                }`,
+              }),
+          ),
+        );
+
+      return { previousTitle, title };
+    }),
 } satisfies Parameters<typeof FollowupToolkit.toLayer>[0];
 
 export const FollowupToolkitHandlersLive = FollowupToolkit.toLayer(handlers);

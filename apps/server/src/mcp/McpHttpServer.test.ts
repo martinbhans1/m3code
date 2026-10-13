@@ -205,6 +205,7 @@ it.effect(
         // and close its own chips without seeing anyone else's.
         expect(sharedTools).toContain("list_followups");
         expect(sharedTools).toContain("resolve_followup");
+        expect(sharedTools).toContain("rename_conversation");
         for (const name of [
           "list_threads",
           "search_threads",
@@ -225,11 +226,14 @@ it.effect(
           "create_thread",
           "list_pending",
           "list_threads",
+          "read_plan_limits",
           "read_thread",
           "read_thread_changes",
           "resolve_followup",
+          "respond_to_approval",
           "search_threads",
           "send_to_thread",
+          "stop_thread",
         ]);
       }),
     ).pipe(

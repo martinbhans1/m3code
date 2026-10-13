@@ -228,7 +228,11 @@ const TestServicesLive = Layer.mergeAll(
       },
       getThreadShellById: (requestedThreadId: ThreadId) =>
         Effect.succeed(
-          requestedThreadId === spinOffThreadId ? Option.some(spinOffThread) : Option.none(),
+          requestedThreadId === spinOffThreadId
+            ? Option.some(spinOffThread)
+            : requestedThreadId === threadId
+              ? Option.some({ ...spinOffThread, id: threadId, title: "Email templates" })
+              : Option.none(),
         ),
     } as unknown as ProjectionSnapshotQuery["Service"]),
   ),
@@ -425,6 +429,35 @@ it.effect("still acknowledges suggest_followup, which the adapter records", () =
       const result = yield* callTool("suggest_followup", { title: "Something else" });
       expect(result.isError).toBe(false);
       expect(result.structuredContent).toEqual({ acknowledged: true });
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("renames the calling conversation, and only that one", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      dispatched.length = 0;
+
+      const result = yield* callTool("rename_conversation", { title: "  Merge-field bug  " });
+      expect(result.isError).toBe(false);
+      expect(result.structuredContent).toEqual({
+        previousTitle: "Email templates",
+        title: "Merge-field bug",
+      });
+      expect(dispatched).toHaveLength(1);
+      expect(dispatched[0]).toMatchObject({
+        type: "thread.meta.update",
+        threadId,
+        title: "Merge-field bug",
+      });
+
+      // Same name again is a no-op, and an empty one is refused.
+      dispatched.length = 0;
+      const same = yield* callTool("rename_conversation", { title: "Email templates" });
+      expect(same.isError).toBe(false);
+      const empty = yield* callTool("rename_conversation", { title: "   " });
+      expect(empty.isError).toBe(true);
+      expect(dispatched).toHaveLength(0);
     }),
   ).pipe(Effect.provide(TestLayer)),
 );

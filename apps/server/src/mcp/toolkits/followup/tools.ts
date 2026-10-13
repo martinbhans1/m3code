@@ -192,8 +192,36 @@ export const ResolveFollowupTool = Tool.make("resolve_followup", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+export const RenameConversationInput = Schema.Struct({
+  title: Schema.String.annotate({
+    description:
+      "The new name, exactly as the user should see it in the sidebar, e.g. 'Telavox dial bug'. Short and plain; no quotes or trailing punctuation.",
+  }),
+});
+
+// Rides on this mount because it is the one every conversation already has,
+// and it shares the same scoping: the credential names the thread, so an agent
+// can only ever rename the conversation it is running in.
+export const RenameConversationTool = Tool.make("rename_conversation", {
+  description:
+    "Rename this conversation — the title the user sees in the sidebar and the header. Use it when the user asks you to rename, retitle or call this conversation something, or agrees when you offer because the work has drifted far from what the current name says.\n\nDo not rename on your own initiative: the name is how the user finds this conversation again, and one that changes under them is lost. Only this conversation can be renamed from here.",
+  parameters: RenameConversationInput,
+  success: Schema.Struct({
+    previousTitle: Schema.String,
+    title: Schema.String,
+  }),
+  failure: FollowupToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Rename this conversation")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const FollowupToolkit = Toolkit.make(
   SuggestFollowupTool,
   ListFollowupsTool,
   ResolveFollowupTool,
+  RenameConversationTool,
 );
