@@ -9,6 +9,7 @@ import * as Stream from "effect/Stream";
 import { RpcClient } from "effect/unstable/rpc";
 
 import {
+  isDeadSocketLoopError,
   isInterruptError,
   isTransportConnectionErrorMessage,
   TransportInterruptedError,
@@ -87,6 +88,7 @@ export class WsTransport {
     (info: { readonly tag: string }) => void
   >();
   private reconnectChain: Promise<void> = Promise.resolve();
+  private readonly deadSessionRebuilds = new WeakMap<TransportSession, Promise<void>>();
   private session: TransportSession;
 
   constructor(
@@ -208,6 +210,11 @@ export class WsTransport {
             continue;
           }
 
+          if (isDeadSocketLoopError(error)) {
+            await this.replaceDeadSession(session);
+            continue;
+          }
+
           const formattedError = formatErrorMessage(error);
           if (!isInterruptError(error) && !isTransportConnectionErrorMessage(formattedError)) {
             this.logWarning("WebSocket RPC subscription failed", { error: formattedError });
@@ -256,6 +263,25 @@ export class WsTransport {
 
     this.reconnectChain = reconnectOperation.catch(() => undefined);
     await reconnectOperation;
+  }
+
+  /**
+   * Replace a session whose socket loop has died. Every subscription and
+   * request on it fails at once, so they share one rebuild per dead session.
+   */
+  private replaceDeadSession(session: TransportSession): Promise<void> {
+    if (this.disposed || this.session !== session) {
+      return Promise.resolve();
+    }
+    let rebuild = this.deadSessionRebuilds.get(session);
+    if (!rebuild) {
+      this.logWarning("WebSocket RPC socket loop died; rebuilding the session", {
+        error: "Unknown socket error",
+      });
+      rebuild = this.reconnect().catch(() => undefined);
+      this.deadSessionRebuilds.set(session, rebuild);
+    }
+    return rebuild;
   }
 
   isHeartbeatFresh(maxAgeMs = 15_000): boolean {
@@ -450,6 +476,11 @@ export class WsTransport {
           throw new Error("Transport disposed", { cause: error });
         }
         if (error instanceof TransportInterruptedError && this.session !== session && attempt < 2) {
+          session = this.session;
+          continue;
+        }
+        if (isDeadSocketLoopError(error) && attempt < 2) {
+          await this.replaceDeadSession(session);
           session = this.session;
           continue;
         }

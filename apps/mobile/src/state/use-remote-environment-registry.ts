@@ -484,7 +484,10 @@ export function connectSavedEnvironment(
               }
             })
             .catch(() => {
-              if (isCurrentAttempt())
+              // One failed renewal on a live socket is a network blip, and the
+              // next tick retries. Flagging it marked a working connection as
+              // broken, and the error stuck until a full resync.
+              if (isCurrentAttempt() && !client.isHeartbeatFresh())
                 setEnvironmentConnectionStatus(
                   connection.environmentId,
                   "disconnected",

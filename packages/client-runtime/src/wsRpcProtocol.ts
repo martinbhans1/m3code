@@ -207,18 +207,27 @@ export function createWsRpcProtocolLayer(
   const backoff = options?.backoff ?? DEFAULT_RECONNECT_BACKOFF;
   const heartbeat = options?.heartbeat ?? DEFAULT_CONNECTION_HEARTBEAT;
   const requestTelemetry = options?.requestTelemetry;
-  const resolvedUrl =
+  // A URL provider that rejects (ticket fetch or credential renewal failing on
+  // a flaky network) must surface as a socket *open* failure, which the RPC
+  // client retries with backoff. As a defect it permanently killed the socket
+  // loop and every later call failed with "RpcClientDefect: Unknown socket
+  // error" until the app was restarted.
+  const resolvedUrl: Effect.Effect<string, Socket.SocketError> =
     typeof url === "function"
-      ? Effect.promise(() => url()).pipe(
-          Effect.map((rawUrl) => resolveWsRpcSocketUrl(rawUrl)),
+      ? Effect.tryPromise({
+          try: async () => resolveWsRpcSocketUrl(await url()),
+          catch: (cause) =>
+            new Socket.SocketError({
+              reason: new Socket.SocketOpenError({ kind: "Unknown", cause }),
+            }),
+        }).pipe(
           Effect.tapError((error) =>
             Effect.sync(() => {
-              lifecycle.onError(formatSocketErrorMessage(error));
+              lifecycle.onError(formatSocketErrorMessage(error.reason.cause));
             }),
           ),
-          Effect.orDie,
         )
-      : resolveWsRpcSocketUrl(url);
+      : Effect.succeed(resolveWsRpcSocketUrl(url));
 
   const trackingWebSocketConstructorLayer = Layer.succeed(
     Socket.WebSocketConstructor,
@@ -269,9 +278,19 @@ export function createWsRpcProtocolLayer(
       return socket;
     },
   );
-  const socketLayer = Socket.layerWebSocket(resolvedUrl).pipe(
-    Layer.provide(trackingWebSocketConstructorLayer),
-  );
+  // Built from `fromWebSocket` rather than `layerWebSocket` because the latter
+  // only accepts a URL effect that cannot fail.
+  const socketLayer = Layer.effect(
+    Socket.Socket,
+    Socket.WebSocketConstructor.use((makeWebSocket) =>
+      Socket.fromWebSocket(
+        Effect.acquireRelease(
+          Effect.map(resolvedUrl, (socketUrl) => makeWebSocket(socketUrl)),
+          (ws) => Effect.sync(() => ws.close(1000)),
+        ),
+      ),
+    ),
+  ).pipe(Layer.provide(trackingWebSocketConstructorLayer));
 
   const baseSchedule =
     backoff.maxRetries === null ? Schedule.forever : Schedule.recurs(backoff.maxRetries);

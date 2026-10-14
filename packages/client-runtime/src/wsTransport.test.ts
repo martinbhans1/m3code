@@ -182,6 +182,85 @@ describe("WsTransport", () => {
     await transport.dispose();
   });
 
+  it("retries the connection when an async websocket url provider rejects", async () => {
+    // A phone renewing its credential or fetching a ticket on a flaky network:
+    // the first lookup fails, the next succeeds. This used to kill the socket
+    // loop for good ("RpcClientDefect: Unknown socket error").
+    const onError = vi.fn();
+    let lookups = 0;
+    const transport = createTransport(
+      async () => {
+        lookups += 1;
+        if (lookups === 1) {
+          throw new Error("Could not renew device authorization.");
+        }
+        return "wss://remote.example.com/?wsTicket=dynamic";
+      },
+      { onError },
+    );
+
+    const requestPromise = transport.request((client) =>
+      client[WS_METHODS.serverUpsertKeybinding]({ command: "terminal.toggle", key: "ctrl+k" }),
+    );
+
+    await waitFor(() => {
+      expect(sockets).toHaveLength(1);
+    }, 5_000);
+    expect(onError).toHaveBeenCalledWith("Could not renew device authorization.");
+
+    const socket = getSocket();
+    socket.open();
+    await waitFor(() => {
+      expect(socket.sent).toHaveLength(1);
+    });
+    const requestMessage = JSON.parse(socket.sent[0] ?? "{}") as { id: string };
+    socket.serverMessage(
+      JSON.stringify({
+        _tag: "Exit",
+        requestId: requestMessage.id,
+        exit: { _tag: "Success", value: { keybindings: [], issues: [] } },
+      }),
+    );
+
+    await expect(requestPromise).resolves.toEqual({ keybindings: [], issues: [] });
+    await transport.dispose();
+  });
+
+  it("rebuilds the session when the RPC socket loop dies", async () => {
+    const warnSpy = vi.fn();
+    const transport = createTransport("ws://localhost:3020", undefined, { logWarning: warnSpy });
+    let attempts = 0;
+    const listener = vi.fn();
+
+    const unsubscribe = transport.subscribe(
+      () =>
+        Stream.suspend(() => {
+          attempts += 1;
+          return attempts === 1
+            ? Stream.fail(new Error("RpcClientDefect: Unknown socket error"))
+            : Stream.concat(Stream.make("live"), Stream.never);
+        }),
+      listener,
+      { retryDelay: 10 },
+    );
+
+    await waitFor(() => {
+      expect(attempts).toBeGreaterThanOrEqual(2);
+      expect(sockets.length).toBeGreaterThanOrEqual(1);
+    });
+    getSocket().open();
+
+    await waitFor(() => {
+      expect(listener).toHaveBeenCalledWith("live");
+    });
+    expect(warnSpy).toHaveBeenCalledWith("WebSocket RPC socket loop died; rebuilding the session", {
+      error: "Unknown socket error",
+    });
+
+    unsubscribe();
+    await transport.dispose();
+  });
+
   it("invokes optional lifecycle handlers when the socket opens and closes", async () => {
     const onOpen = vi.fn();
     const onClose = vi.fn();

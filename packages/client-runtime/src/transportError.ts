@@ -4,7 +4,12 @@ const TRANSPORT_ERROR_PATTERNS = [
   /\bSocket is not connected\b/i,
   /Unable to connect to the T3 server WebSocket\./i,
   /\bping timeout\b/i,
+  /\bUnknown socket error\b/i,
 ] as const;
+
+// Effect's RPC client reports this once its socket loop has died from a defect.
+// It never retries after that, so the whole session must be replaced.
+const DEAD_SOCKET_LOOP_PATTERN = /\bUnknown socket error\b/i;
 
 const EFFECT_INTERRUPT_MESSAGE_PATTERN = /\bAll fibers interrupted without error\b/i;
 const TRANSPORT_INTERRUPTED_MESSAGE = "Transport request interrupted";
@@ -51,6 +56,15 @@ export function isTransportConnectionError(error: unknown): boolean {
   }
 
   return typeof error === "string" && isTransportConnectionErrorMessage(error);
+}
+
+/**
+ * True when the RPC client's socket loop has died for good: every call on that
+ * session fails instantly and only a fresh session recovers.
+ */
+export function isDeadSocketLoopError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : null;
+  return message !== null && DEAD_SOCKET_LOOP_PATTERN.test(message);
 }
 
 export function isInterruptErrorMessage(message: string | null | undefined): boolean {
