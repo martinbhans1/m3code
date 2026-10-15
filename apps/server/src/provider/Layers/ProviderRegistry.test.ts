@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -831,7 +832,9 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
               attempt += 1
             ) {
               yield* TestClock.adjust("10 millis");
-              yield* Effect.yieldNow;
+              // The cache is a real file write, so simulated time alone can
+              // exhaust the polls before it lands on a slow disk.
+              yield* TestClock.withLive(Effect.sleep("20 millis"));
               cachedProvider = yield* readProviderStatusCache(filePath);
             }
 
@@ -1254,7 +1257,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                   return providers;
                 }
                 yield* TestClock.adjust("50 millis");
-                yield* Effect.yieldNow;
+                // The probe spawns a real process. Spawning a missing binary
+                // takes real time on Windows, which simulated time never lets
+                // pass, so give it a little wall-clock time on each poll.
+                yield* TestClock.withLive(Effect.sleep("25 millis"));
               }
               return yield* registry.getProviders;
             });
@@ -1785,9 +1791,12 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
             claudeCapabilities(),
           );
           assert.strictEqual(status.status, "ready");
+          // The configured home is resolved to an absolute path, which adds a
+          // drive letter and backslashes on Windows.
+          const path = yield* Path.Path;
           assert.deepStrictEqual(
             recorded.commands.map((command) => command.env?.HOME),
-            [claudeHome],
+            [path.resolve(claudeHome)],
           );
         }).pipe(Effect.provide(recorded.layer));
       });
