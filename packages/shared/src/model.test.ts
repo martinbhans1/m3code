@@ -71,6 +71,14 @@ const claudeCaps: ModelCapabilities = createModelCapabilities({
 });
 
 describe("normalizeModelSlug", () => {
+  it("resolves Haiku 5.5 aliases without rewriting pinned older models", () => {
+    const claude = ProviderDriverKind.make("claudeAgent");
+    for (const alias of ["haiku", "haiku-5.5", "haiku-5-5", "claude-haiku-5.5"]) {
+      expect(normalizeModelSlug(alias, claude)).toBe("claude-haiku-5-5");
+    }
+    expect(normalizeModelSlug("haiku-4.5", claude)).toBe("claude-haiku-4-5");
+    expect(normalizeModelSlug("claude-haiku-4-5-20251001", claude)).toBe("claude-haiku-4-5");
+  });
   it("resolves Opus 5.5 aliases without rewriting pinned older models", () => {
     const claude = ProviderDriverKind.make("claudeAgent");
     for (const alias of ["opus", "opus-5.5", "opus-5-5", "claude-opus-5.5"]) {

@@ -673,6 +673,7 @@ describe("ClaudeAdapterLive", () => {
   for (const { model, defaultEffort } of [
     { model: "claude-opus-5-5", defaultEffort: "medium" },
     { model: "claude-sonnet-5-5", defaultEffort: "high" },
+    { model: "claude-haiku-5-5", defaultEffort: "medium" },
   ]) {
     for (const effort of [undefined, "xhigh"] as const) {
       it.effect(`starts ${model} with ${effort ?? "default"} effort`, () => {

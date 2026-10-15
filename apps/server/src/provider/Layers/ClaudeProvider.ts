@@ -60,6 +60,8 @@ const MINIMUM_CLAUDE_OPUS_5_VERSION = "2.1.220";
 const MINIMUM_CLAUDE_OPUS_5_5_VERSION = "2.1.280";
 const MINIMUM_CLAUDE_SONNET_5_VERSION = "2.1.220";
 const MINIMUM_CLAUDE_SONNET_5_5_VERSION = "2.1.284";
+// Claude Code 2.1.293 introduces Haiku 5.5.
+const MINIMUM_CLAUDE_HAIKU_5_5_VERSION = "2.1.293";
 const MINIMUM_CLAUDE_FABLE_5_VERSION = "2.1.169";
 const MINIMUM_CLAUDE_OPUS_4_8_VERSION = "2.1.154";
 const MINIMUM_CLAUDE_OPUS_4_7_VERSION = "2.1.111";
@@ -337,6 +339,26 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
     }),
   },
   {
+    slug: "claude-haiku-5-5",
+    name: "Claude Haiku 5.5",
+    isCustom: false,
+    capabilities: createModelCapabilities({
+      optionDescriptors: [
+        buildSelectOptionDescriptor({
+          id: "effort",
+          label: "Reasoning",
+          options: [
+            { value: "low", label: "Low" },
+            { value: "medium", label: "Medium", isDefault: true },
+            { value: "high", label: "High" },
+            { value: "xhigh", label: "Extra High" },
+            { value: "max", label: "Max" },
+          ],
+        }),
+      ],
+    }),
+  },
+  {
     slug: "claude-haiku-4-5",
     name: "Claude Haiku 4.5",
     isCustom: false,
@@ -367,6 +389,10 @@ function supportsClaudeSonnet55(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_SONNET_5_5_VERSION) >= 0 : false;
 }
 
+function supportsClaudeHaiku55(version: string | null | undefined): boolean {
+  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_HAIKU_5_5_VERSION) >= 0 : false;
+}
+
 function supportsClaudeFable5(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_FABLE_5_VERSION) >= 0 : false;
 }
@@ -383,6 +409,9 @@ function getBuiltInClaudeModelsForVersion(
   version: string | null | undefined,
 ): ReadonlyArray<ServerProviderModel> {
   return BUILT_IN_MODELS.filter((model) => {
+    if (model.slug === "claude-haiku-5-5") {
+      return supportsClaudeHaiku55(version);
+    }
     if (model.slug === "claude-sonnet-5-5") {
       return supportsClaudeSonnet55(version);
     }
@@ -486,7 +515,8 @@ export function normalizeClaudeCliEffort(
     model !== "claude-opus-5" &&
     model !== "claude-opus-5-5" &&
     model !== "claude-sonnet-5" &&
-    model !== "claude-sonnet-5-5"
+    model !== "claude-sonnet-5-5" &&
+    model !== "claude-haiku-5-5"
   ) {
     return "max";
   }
@@ -992,7 +1022,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     DEFAULT_CLAUDE_MODEL_CAPABILITIES,
   );
   const versionUpgradeMessage = supportsClaudeSonnet55(parsedVersion)
-    ? undefined
+    ? supportsClaudeHaiku55(parsedVersion)
+      ? undefined
+      : `Claude Code ${parsedVersion ?? "(unknown version)"} is too old for Claude Haiku 5.5. Upgrade to v${MINIMUM_CLAUDE_HAIKU_5_5_VERSION} or newer to access it.`
     : supportsClaudeOpus55(parsedVersion)
       ? formatClaudeSonnet55UpgradeMessage(parsedVersion)
       : supportsClaudeOpus5(parsedVersion)

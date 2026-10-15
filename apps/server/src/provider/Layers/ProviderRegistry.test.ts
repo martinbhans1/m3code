@@ -1433,6 +1433,20 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
     describe("checkClaudeProviderStatus", () => {
       for (const { slug, version, supported, minimumVersion, defaultEffort } of [
         {
+          slug: "claude-haiku-5-5",
+          version: "2.1.292",
+          supported: false,
+          minimumVersion: "2.1.293",
+          defaultEffort: "medium",
+        },
+        {
+          slug: "claude-haiku-5-5",
+          version: "2.1.293",
+          supported: true,
+          minimumVersion: "2.1.293",
+          defaultEffort: "medium",
+        },
+        {
           slug: "claude-opus-5-5",
           version: "2.1.279",
           supported: false,
