@@ -298,9 +298,9 @@ export function useThreadComposerState() {
     sendQueuedMessage,
   });
 
-  const onSendMessage = useCallback(() => {
+  const enqueueDraft = useCallback((): QueuedThreadMessage | null => {
     if (!selectedThreadShell) {
-      return;
+      return null;
     }
 
     const threadKey = scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id);
@@ -308,11 +308,11 @@ export function useThreadComposerState() {
     const text = (draft?.text ?? "").trim();
     const attachments = draft?.attachments ?? [];
     if (text.length === 0 && attachments.length === 0) {
-      return;
+      return null;
     }
 
     const metadata = makeQueuedMessageMetadata();
-    enqueueQueuedMessage({
+    const message: QueuedThreadMessage = {
       environmentId: selectedThreadShell.environmentId,
       threadId: selectedThreadShell.id,
       messageId: MessageId.make(metadata.messageId),
@@ -320,9 +320,39 @@ export function useThreadComposerState() {
       text,
       attachments,
       createdAt: metadata.createdAt,
-    });
+    };
+    enqueueQueuedMessage(message);
     clearComposerDraft(threadKey);
+    return message;
   }, [composerDrafts, selectedThreadShell]);
+
+  const onSendMessage = useCallback(() => {
+    enqueueDraft();
+  }, [enqueueDraft]);
+
+  // Steering sends straight into the running turn instead of waiting for it to
+  // finish — the same command a normal send uses, just not held in the queue.
+  const onSteerMessage = useCallback(() => {
+    const message = enqueueDraft();
+    if (message) {
+      void sendQueuedMessage(message);
+    }
+  }, [enqueueDraft, sendQueuedMessage]);
+
+  const onSteerQueuedMessage = useCallback(
+    (messageId: MessageId) => {
+      if (dispatchingQueuedMessageId === messageId) {
+        return;
+      }
+      const message = selectedThreadQueuedMessages.find(
+        (candidate) => candidate.messageId === messageId,
+      );
+      if (message) {
+        void sendQueuedMessage(message);
+      }
+    },
+    [dispatchingQueuedMessageId, selectedThreadQueuedMessages, sendQueuedMessage],
+  );
 
   const onChangeDraftMessage = useCallback(
     (value: string) => {
@@ -420,5 +450,7 @@ export function useThreadComposerState() {
     onNativePasteImages,
     onRemoveDraftImage,
     onSendMessage,
+    onSteerMessage,
+    onSteerQueuedMessage,
   };
 }

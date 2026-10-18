@@ -1,6 +1,7 @@
 import type {
   ApprovalRequestId,
   EnvironmentId,
+  MessageId,
   ModelSelection,
   OrchestrationThread,
   ProviderApprovalDecision,
@@ -71,6 +72,8 @@ export interface ThreadDetailScreenProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => Promise<void>;
   readonly onSendMessage: () => void;
+  readonly onSteerMessage: () => void;
+  readonly onSteerQueuedMessage: (messageId: MessageId) => void;
   readonly onUpdateThreadModelSelection: (modelSelection: ModelSelection) => Promise<void>;
   readonly onUpdateThreadRuntimeMode: (runtimeMode: RuntimeMode) => Promise<void>;
   readonly onUpdateThreadInteractionMode: (
@@ -307,6 +310,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             <ThreadFeed
               key={props.selectedThread.id}
               threadId={props.selectedThread.id}
+              environmentId={props.environmentId}
               feed={props.selectedThreadFeed}
               httpBaseUrl={props.httpBaseUrl}
               bearerToken={props.bearerToken}
@@ -317,6 +321,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               layoutVariant={layoutVariant}
               composerExpanded={composerExpanded}
               skills={selectedProviderSkills}
+              onSteerQueuedMessage={props.onSteerQueuedMessage}
             />
           </View>
         ) : (
@@ -376,6 +381,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 onRemoveDraftImage={props.onRemoveDraftImage}
                 onStopThread={props.onStopThread}
                 onSendMessage={props.onSendMessage}
+                onSteerMessage={props.onSteerMessage}
                 onUpdateModelSelection={props.onUpdateThreadModelSelection}
                 onUpdateRuntimeMode={props.onUpdateThreadRuntimeMode}
                 onUpdateInteractionMode={props.onUpdateThreadInteractionMode}

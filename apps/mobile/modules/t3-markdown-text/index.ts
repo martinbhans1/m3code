@@ -16,6 +16,11 @@ export {
 } from "./src/nativeMarkdownText";
 export { MarkdownTextPrimitive } from "./src/MarkdownTextPrimitive";
 export {
+  MarkdownImageRendererProvider,
+  type MarkdownImageRenderer,
+  type MarkdownImageRenderInput,
+} from "./src/markdownImageRenderer";
+export {
   SelectableMarkdownText,
   type MarkdownCodeHighlighter,
   type MarkdownHighlightedToken,

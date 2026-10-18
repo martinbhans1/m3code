@@ -42,12 +42,3 @@ export function threadStatusTone(thread: EnvironmentScopedThreadShell): StatusTo
     textClassName: "text-neutral-600 dark:text-neutral-300",
   };
 }
-
-export function messageImageUrl(httpBaseUrl: string | null, attachmentId: string): string | null {
-  if (!httpBaseUrl) {
-    return null;
-  }
-
-  const url = new URL(`/attachments/${encodeURIComponent(attachmentId)}`, httpBaseUrl);
-  return url.toString();
-}

@@ -400,6 +400,8 @@ export function ThreadRouteScreen() {
           serverConfig={serverConfig}
           onStopThread={commands.onStopThread}
           onSendMessage={composer.onSendMessage}
+          onSteerMessage={composer.onSteerMessage}
+          onSteerQueuedMessage={composer.onSteerQueuedMessage}
           onUpdateThreadModelSelection={commands.onUpdateThreadModelSelection}
           onUpdateThreadRuntimeMode={commands.onUpdateThreadRuntimeMode}
           onUpdateThreadInteractionMode={commands.onUpdateThreadInteractionMode}

@@ -85,6 +85,8 @@ export interface ThreadComposerProps {
   readonly onRemoveDraftImage: (imageId: string) => void;
   readonly onStopThread: () => Promise<void>;
   readonly onSendMessage: () => void;
+  /** Send into the running turn now rather than queueing behind it. */
+  readonly onSteerMessage: () => void;
   readonly onUpdateModelSelection: (modelSelection: ModelSelection) => Promise<void>;
   readonly onUpdateRuntimeMode: (runtimeMode: RuntimeMode) => Promise<void>;
   readonly onUpdateInteractionMode: (interactionMode: ProviderInteractionMode) => Promise<void>;
@@ -395,12 +397,23 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   }, [composerTrigger, pathSearch.entries, selectedProviderStatus]);
 
   // ── Handle command selection ──────────────────────────────
-  const { onChangeDraftMessage, onUpdateInteractionMode, draftMessage, onSendMessage } = props;
+  const {
+    onChangeDraftMessage,
+    onUpdateInteractionMode,
+    draftMessage,
+    onSendMessage,
+    onSteerMessage,
+  } = props;
 
   const handleSend = useCallback(() => {
     onSendMessage();
     inputRef.current?.blur();
   }, [onSendMessage]);
+  const handleSteer = useCallback(() => {
+    onSteerMessage();
+    inputRef.current?.blur();
+  }, [onSteerMessage]);
+  const showSteerAction = props.activeThreadBusy && canSend;
   const handleCommandSelect = useCallback(
     (item: ComposerCommandItem) => {
       if (!composerTrigger) return;
@@ -826,6 +839,14 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
                 />
               ) : null}
             </ComposerToolbarScroller>
+            {showSteerAction ? (
+              <ComposerToolbarButton
+                accessibilityLabel="Steer: send now, into the running turn"
+                label="Steer"
+                onPress={handleSteer}
+                showChevron={false}
+              />
+            ) : null}
             <ComposerToolbarButton
               accessibilityLabel={sendLabel}
               icon="arrow.up"

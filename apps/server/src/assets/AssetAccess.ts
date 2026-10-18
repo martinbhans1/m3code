@@ -43,6 +43,8 @@ const PREVIEW_ASSET_EXTENSIONS = new Set([
   ".woff",
   ".woff2",
 ]);
+// Raster formats only: an SVG served from this origin could carry script.
+const LOCAL_IMAGE_EXTENSIONS = new Set([".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"]);
 
 const AssetClaimsSchema = Schema.Union([
   Schema.Struct({
@@ -63,6 +65,12 @@ const AssetClaimsSchema = Schema.Union([
     kind: Schema.Literal("project-favicon"),
     workspaceRoot: Schema.String,
     relativePath: Schema.NullOr(Schema.String),
+    expiresAt: Schema.Number,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("local-image"),
+    path: Schema.String,
     expiresAt: Schema.Number,
   }),
 ]);
@@ -91,6 +99,27 @@ function decodeRelativePath(value: string): string | null {
     return null;
   }
 }
+
+/**
+ * Canonical path of an existing raster image, or null. Agents write Windows
+ * paths markdown-style with a leading slash (`/C:/Users/...`); drop it so the
+ * drive letter is not read as a folder under the current drive.
+ */
+const resolveLocalImageFile = Effect.fn("AssetAccess.resolveLocalImageFile")(function* (
+  rawPath: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const candidate = /^\/[A-Za-z]:[\\/]/.test(rawPath) ? rawPath.slice(1) : rawPath;
+  if (candidate.includes("\0") || !path.isAbsolute(candidate)) return null;
+  const canonicalFile = yield* fileSystem
+    .realPath(candidate)
+    .pipe(Effect.orElseSucceed(() => null));
+  if (!canonicalFile) return null;
+  if (!LOCAL_IMAGE_EXTENSIONS.has(path.extname(canonicalFile).toLowerCase())) return null;
+  const info = yield* fileSystem.stat(canonicalFile).pipe(Effect.orElseSucceed(() => null));
+  return info?.type === "File" ? canonicalFile : null;
+});
 
 const failAccess = (message: string, cause?: unknown) =>
   new AssetAccessError({ message, ...(cause === undefined ? {} : { cause }) });
@@ -209,6 +238,15 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       fileName = relativePath ? path.basename(relativePath) : "favicon.svg";
       break;
     }
+    case "local-image": {
+      const imagePath = yield* resolveLocalImageFile(input.resource.path);
+      if (!imagePath) {
+        return yield* failAccess("Image was not found.");
+      }
+      claims = { version: 1, kind: "local-image", path: imagePath, expiresAt };
+      fileName = path.basename(imagePath);
+      break;
+    }
   }
 
   const secretStore = yield* ServerSecretStore;
@@ -239,6 +277,11 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
 
   const claims = decodeClaims(encodedPayload);
   if (!claims || claims.expiresAt <= (yield* Clock.currentTimeMillis)) return null;
+
+  if (claims.kind === "local-image") {
+    const imagePath = yield* resolveLocalImageFile(claims.path);
+    return imagePath ? ({ kind: "file", path: imagePath } satisfies ResolvedAsset) : null;
+  }
 
   if (claims.kind === "attachment") {
     const config = yield* ServerConfig;

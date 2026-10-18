@@ -2,7 +2,7 @@ import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import { KeyboardAvoidingLegendList } from "@legendapp/list/keyboard";
 import { type LegendListRef } from "@legendapp/list/react-native";
-import type { ThreadId, TurnId } from "@t3tools/contracts";
+import type { EnvironmentId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import { SymbolView } from "expo-symbols";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
@@ -54,6 +54,10 @@ import {
 import { buildReviewParsedDiff } from "../review/reviewModel";
 import { cn } from "../../lib/cn";
 import type { MobileLayoutVariant } from "../../lib/mobileLayout";
+import {
+  MarkdownImageRendererProvider,
+  type MarkdownImageRenderer,
+} from "@t3tools/mobile-markdown-text";
 import { markdownFileIconSource } from "@t3tools/mobile-markdown-text/file-icons";
 import { resolveMarkdownLinkPresentation } from "@t3tools/mobile-markdown-text/links";
 import {
@@ -63,7 +67,7 @@ import {
 } from "../../lib/threadActivity";
 import { isThreadFeedNearEnd } from "../../lib/threadFeedLayout";
 import { relativeTime } from "../../lib/time";
-import { messageImageUrl } from "./threadPresentation";
+import { localImagePathFromHref, useAssetUrl } from "../../lib/assetUrls";
 import { CollapsibleUserMessage } from "./CollapsibleUserMessage";
 
 const THREAD_FEED_END_THRESHOLD = 80;
@@ -82,6 +86,7 @@ function formatMessageTime(input: string): string {
 
 export interface ThreadFeedProps {
   readonly threadId: ThreadId;
+  readonly environmentId: EnvironmentId;
   readonly feed: ReadonlyArray<ThreadFeedEntry>;
   readonly httpBaseUrl: string | null;
   readonly bearerToken: string | null;
@@ -92,7 +97,114 @@ export interface ThreadFeedProps {
   readonly layoutVariant?: MobileLayoutVariant;
   readonly composerExpanded?: boolean;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
+  /** Send a queued message now, into the running turn, instead of waiting. */
+  readonly onSteerQueuedMessage?: (messageId: MessageId) => void;
 }
+
+/**
+ * A chat attachment, fetched through a signed asset URL — the phone has no
+ * other route to the file the server stored.
+ */
+const ThreadAttachmentImage = memo(function ThreadAttachmentImage(props: {
+  readonly environmentId: EnvironmentId;
+  readonly httpBaseUrl: string | null;
+  readonly attachmentId: string;
+  readonly className: string;
+  readonly wrapperClassName?: string;
+  readonly onPressImage: (uri: string) => void;
+}) {
+  const asset = useAssetUrl({
+    environmentId: props.environmentId,
+    httpBaseUrl: props.httpBaseUrl,
+    resource: { _tag: "attachment", attachmentId: props.attachmentId },
+  });
+  const uri = asset.url;
+  return (
+    <TouchableOpacity
+      activeOpacity={0.7}
+      className={props.wrapperClassName}
+      disabled={!uri}
+      onPress={() => {
+        if (uri) props.onPressImage(uri);
+      }}
+    >
+      {uri ? (
+        <Image source={{ uri }} className={props.className} resizeMode="cover" />
+      ) : (
+        <View className={props.className} />
+      )}
+    </TouchableOpacity>
+  );
+});
+
+/**
+ * An image an agent put in its reply. Agents usually point at a screenshot on
+ * the desktop's disk, which the phone cannot open, so local paths go through a
+ * signed asset URL; web URLs load as they are.
+ */
+const ThreadMarkdownImage = memo(function ThreadMarkdownImage(props: {
+  readonly environmentId: EnvironmentId;
+  readonly httpBaseUrl: string | null;
+  readonly href: string;
+  readonly alt: string | null;
+  readonly onPressImage: (uri: string) => void;
+}) {
+  const localPath = localImagePathFromHref(props.href);
+  const asset = useAssetUrl({
+    environmentId: localPath ? props.environmentId : null,
+    httpBaseUrl: props.httpBaseUrl,
+    resource: localPath ? { _tag: "local-image", path: localPath } : null,
+  });
+  const uri = localPath ? asset.url : props.href;
+  const [aspectRatio, setAspectRatio] = useState(16 / 9);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const unavailable = loadFailed || (localPath !== null && asset.status === "error");
+
+  return (
+    <View style={{ gap: 6 }}>
+      {unavailable ? (
+        <View className="items-center justify-center rounded-[10px] bg-neutral-200 px-4 py-6 dark:bg-neutral-800">
+          <Text className="text-center font-sans text-[13px] text-foreground-muted">
+            {localPath ? "This image is no longer on the computer." : "This image could not load."}
+          </Text>
+        </View>
+      ) : (
+        <Pressable
+          accessibilityRole="imagebutton"
+          accessibilityLabel={props.alt ?? "Image"}
+          disabled={!uri}
+          onPress={() => {
+            if (uri) props.onPressImage(uri);
+          }}
+        >
+          {uri ? (
+            <Image
+              source={{ uri }}
+              resizeMode="contain"
+              onLoad={(event) => {
+                const { width, height } = event.nativeEvent.source;
+                if (width > 0 && height > 0) setAspectRatio(width / height);
+              }}
+              onError={() => setLoadFailed(true)}
+              className="w-full rounded-[10px] bg-neutral-200 dark:bg-neutral-800"
+              style={{ aspectRatio }}
+            />
+          ) : (
+            <View
+              className="w-full rounded-[10px] bg-neutral-200 dark:bg-neutral-800"
+              style={{ aspectRatio }}
+            />
+          )}
+        </Pressable>
+      )}
+      {props.alt ? (
+        <Text selectable className="font-sans text-xs leading-4 text-foreground-muted">
+          {props.alt}
+        </Text>
+      ) : null}
+    </View>
+  );
+});
 
 function stripShellWrapper(value: string): string {
   const trimmed = value.trim();
@@ -655,7 +767,10 @@ function useMarkdownStyles(): MarkdownStyleSets {
 
 function renderFeedEntry(
   info: { item: ThreadFeedEntry; index: number },
-  props: Pick<ThreadFeedProps, "bearerToken" | "httpBaseUrl" | "skills"> & {
+  props: Pick<
+    ThreadFeedProps,
+    "environmentId" | "httpBaseUrl" | "onSteerQueuedMessage" | "skills"
+  > & {
     readonly copiedRowId: string | null;
     readonly expandedWorkGroups: Record<string, boolean>;
     readonly expandedWorkRows: Record<string, boolean>;
@@ -665,7 +780,7 @@ function renderFeedEntry(
     readonly onToggleWorkGroup: (groupId: string) => void;
     readonly onToggleWorkRow: (rowId: string) => void;
     readonly onToggleTurnFold: (turnId: TurnId) => void;
-    readonly onPressImage: (uri: string, headers?: Record<string, string>) => void;
+    readonly onPressImage: (uri: string) => void;
     readonly iconSubtleColor: string | import("react-native").ColorValue;
     readonly userBubbleColor: string | import("react-native").ColorValue;
     readonly markdownStyles: MarkdownStyleSets;
@@ -750,29 +865,16 @@ function renderFeedEntry(
                 />
               </CollapsibleUserMessage>
             ) : null}
-            {attachments.map((attachment) => {
-              const uri = messageImageUrl(props.httpBaseUrl, attachment.id);
-              if (!uri) {
-                return null;
-              }
-              const headers = props.bearerToken
-                ? { Authorization: `Bearer ${props.bearerToken}` }
-                : undefined;
-
-              return (
-                <TouchableOpacity
-                  key={attachment.id}
-                  activeOpacity={0.7}
-                  onPress={() => props.onPressImage(uri, headers)}
-                >
-                  <Image
-                    source={{ uri, ...(headers ? { headers } : {}) }}
-                    className="aspect-[1.3] w-full rounded-[14px] bg-white/15"
-                    resizeMode="cover"
-                  />
-                </TouchableOpacity>
-              );
-            })}
+            {attachments.map((attachment) => (
+              <ThreadAttachmentImage
+                key={attachment.id}
+                environmentId={props.environmentId}
+                httpBaseUrl={props.httpBaseUrl}
+                attachmentId={attachment.id}
+                className="aspect-[1.3] w-full rounded-[14px] bg-white/15"
+                onPressImage={props.onPressImage}
+              />
+            ))}
           </View>
           <View className="mt-1 flex-row items-center justify-end gap-1 pr-0.5">
             <Text className="font-t3-medium text-xs tabular-nums text-neutral-600 dark:text-neutral-400">
@@ -818,30 +920,17 @@ function renderFeedEntry(
             </Markdown>
           )
         ) : null}
-        {attachments.map((attachment) => {
-          const uri = messageImageUrl(props.httpBaseUrl, attachment.id);
-          if (!uri) {
-            return null;
-          }
-          const headers = props.bearerToken
-            ? { Authorization: `Bearer ${props.bearerToken}` }
-            : undefined;
-
-          return (
-            <TouchableOpacity
-              key={attachment.id}
-              activeOpacity={0.7}
-              className="mt-1.5"
-              onPress={() => props.onPressImage(uri, headers)}
-            >
-              <Image
-                source={{ uri, ...(headers ? { headers } : {}) }}
-                className="aspect-[1.3] w-full rounded-[18px] bg-neutral-200 dark:bg-neutral-800"
-                resizeMode="cover"
-              />
-            </TouchableOpacity>
-          );
-        })}
+        {attachments.map((attachment) => (
+          <ThreadAttachmentImage
+            key={attachment.id}
+            environmentId={props.environmentId}
+            httpBaseUrl={props.httpBaseUrl}
+            attachmentId={attachment.id}
+            wrapperClassName="mt-1.5"
+            className="aspect-[1.3] w-full rounded-[18px] bg-neutral-200 dark:bg-neutral-800"
+            onPressImage={props.onPressImage}
+          />
+        ))}
         {showAssistantMeta ? (
           <View className="mt-1 flex-row items-center gap-1">
             <CopyTextButton
@@ -877,9 +966,21 @@ function renderFeedEntry(
             </Text>
           ) : null}
         </View>
-        <Text className="mt-1.5 px-1 text-right font-t3-medium text-xs text-neutral-600 dark:text-neutral-400">
-          {entry.sending ? "dispatching" : `${relativeTime(entry.createdAt)} • pending`}
-        </Text>
+        <View className="mt-1.5 flex-row items-center gap-2 px-1">
+          <Text className="text-right font-t3-medium text-xs text-neutral-600 dark:text-neutral-400">
+            {entry.sending ? "dispatching" : `${relativeTime(entry.createdAt)} • pending`}
+          </Text>
+          {!entry.sending && props.onSteerQueuedMessage ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Steer now"
+              hitSlop={8}
+              onPress={() => props.onSteerQueuedMessage?.(entry.queuedMessage.messageId)}
+            >
+              <Text className="font-t3-bold text-xs text-foreground">Steer now</Text>
+            </Pressable>
+          ) : null}
+        </View>
       </View>
     );
   }
@@ -1262,10 +1363,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     expandedTurnIds: new Set(),
   });
   const { copiedRowId, expandedWorkGroups, expandedWorkRows, expandedTurnIds } = interactionState;
-  const [expandedImage, setExpandedImage] = useState<{
-    uri: string;
-    headers?: Record<string, string>;
-  } | null>(null);
+  const [expandedImage, setExpandedImage] = useState<string | null>(null);
   const horizontalPadding = props.layoutVariant === "split" ? 20 : 16;
   const contentWidth = Math.max(0, viewportWidth - horizontalPadding * 2);
   const reviewCommentBubbleWidth = Math.min(Math.max(280, contentWidth * 0.85), contentWidth);
@@ -1457,16 +1555,37 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
     });
   }, []);
 
-  const onPressImage = useCallback((uri: string, headers?: Record<string, string>) => {
-    setExpandedImage({ uri, headers });
+  const onPressImage = useCallback((uri: string) => {
+    setExpandedImage(uri);
   }, []);
+
+  const { environmentId, httpBaseUrl } = props;
+  const renderMarkdownImage = useCallback<MarkdownImageRenderer>(
+    ({ href, alt }) => {
+      // Relative or made-up hrefs have nothing to load; keep the default.
+      if (!localImagePathFromHref(href) && !/^(https?:|data:image\/)/i.test(href)) {
+        return undefined;
+      }
+      return (
+        <ThreadMarkdownImage
+          environmentId={environmentId}
+          httpBaseUrl={httpBaseUrl}
+          href={href}
+          alt={alt}
+          onPressImage={onPressImage}
+        />
+      );
+    },
+    [environmentId, httpBaseUrl, onPressImage],
+  );
 
   const renderItem = useCallback(
     (info: { item: ThreadFeedEntry; index: number }) =>
       renderFeedEntry(info, {
-        bearerToken: props.bearerToken,
+        environmentId: props.environmentId,
         copiedRowId,
         httpBaseUrl: props.httpBaseUrl,
+        onSteerQueuedMessage: props.onSteerQueuedMessage,
         expandedWorkGroups,
         expandedWorkRows,
         terminalAssistantMessageIds,
@@ -1499,8 +1618,9 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       onToggleTurnFold,
       onToggleWorkGroup,
       onToggleWorkRow,
-      props.bearerToken,
+      props.environmentId,
       props.httpBaseUrl,
+      props.onSteerQueuedMessage,
       props.skills,
     ],
   );
@@ -1527,7 +1647,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   }
 
   return (
-    <>
+    <MarkdownImageRendererProvider value={renderMarkdownImage}>
       <View style={{ flex: 1 }}>
         <KeyboardAvoidingLegendList
           ref={listRef}
@@ -1570,22 +1690,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       </View>
 
       <ImageViewing
-        images={
-          expandedImage
-            ? [
-                {
-                  uri: expandedImage.uri,
-                  headers: expandedImage.headers,
-                },
-              ]
-            : []
-        }
+        images={expandedImage ? [{ uri: expandedImage }] : []}
         imageIndex={0}
         visible={expandedImage !== null}
         onRequestClose={() => setExpandedImage(null)}
         swipeToCloseEnabled
         doubleTapToZoomEnabled
       />
-    </>
+    </MarkdownImageRendererProvider>
   );
 });

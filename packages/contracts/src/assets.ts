@@ -15,6 +15,14 @@ export const AssetResource = Schema.Union([
   Schema.TaggedStruct("project-favicon", {
     cwd: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
   }),
+  /**
+   * A picture an agent embedded in its reply by absolute path on the server's
+   * disk (a verification screenshot, say). Raster images only, so a client
+   * that cannot read the server's filesystem — the phone — can still show it.
+   */
+  Schema.TaggedStruct("local-image", {
+    path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
+  }),
 ]);
 export type AssetResource = typeof AssetResource.Type;
 

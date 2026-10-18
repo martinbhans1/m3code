@@ -111,6 +111,43 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("issues local image capabilities for raster images only", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-local-image-",
+      });
+      const imagePath = path.join(dir, "screenshot.png");
+      yield* fileSystem.writeFile(imagePath, new Uint8Array([1, 2, 3]));
+      yield* fileSystem.writeFileString(path.join(dir, "notes.txt"), "secret");
+      yield* fileSystem.writeFileString(path.join(dir, "icon.svg"), "<svg />");
+      const canonicalImagePath = yield* fileSystem.realPath(imagePath);
+
+      const result = yield* issueAssetUrl({
+        resource: { _tag: "local-image", path: imagePath },
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const token = suffix.slice(0, suffix.indexOf("/"));
+      expect(yield* resolveAsset(token, "anything.png")).toEqual({
+        kind: "file",
+        path: canonicalImagePath,
+      });
+
+      for (const rejected of [
+        path.join(dir, "notes.txt"),
+        path.join(dir, "icon.svg"),
+        path.join(dir, "missing.png"),
+        "relative/screenshot.png",
+      ]) {
+        const error = yield* issueAssetUrl({
+          resource: { _tag: "local-image", path: rejected },
+        }).pipe(Effect.flip);
+        expect(error.message).toBe("Image was not found.");
+      }
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("issues project favicon capabilities with a signed fallback", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

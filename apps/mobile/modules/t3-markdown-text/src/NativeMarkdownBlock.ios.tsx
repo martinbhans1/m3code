@@ -3,6 +3,7 @@ import { Image, ScrollView, Text, useColorScheme, View } from "react-native";
 import type { MarkdownNode } from "react-native-nitro-markdown/headless";
 
 import { CopyTextButton } from "./CopyTextButton";
+import { useMarkdownImageRenderer } from "./markdownImageRenderer";
 import { MarkdownTextPrimitive } from "./MarkdownTextPrimitive";
 import {
   nativeMarkdownDocumentRuns,
@@ -365,9 +366,14 @@ function NativeMarkdownImage(props: {
   readonly node: MarkdownNode;
   readonly textStyle: NativeMarkdownTextStyle;
 }) {
+  const renderImage = useMarkdownImageRenderer();
   const href = props.node.href;
   if (!href) {
     return <SelectableNode node={props.node} textStyle={props.textStyle} />;
+  }
+  const custom = renderImage?.({ href, alt: props.node.alt ?? props.node.title ?? null });
+  if (custom !== undefined) {
+    return <>{custom}</>;
   }
 
   return (
