@@ -157,8 +157,10 @@ const ThreadMarkdownImage = memo(function ThreadMarkdownImage(props: {
   });
   const uri = localPath ? asset.url : props.href;
   const [aspectRatio, setAspectRatio] = useState(16 / 9);
-  const [loadFailed, setLoadFailed] = useState(false);
-  const unavailable = loadFailed || (localPath !== null && asset.status === "error");
+  // Keyed to the URL so a refreshed link gets a fresh attempt.
+  const [failedUri, setFailedUri] = useState<string | null>(null);
+  const unavailable =
+    (uri !== null && failedUri === uri) || (localPath !== null && asset.status === "error");
 
   return (
     <View style={{ gap: 6 }}>
@@ -185,7 +187,7 @@ const ThreadMarkdownImage = memo(function ThreadMarkdownImage(props: {
                 const { width, height } = event.nativeEvent.source;
                 if (width > 0 && height > 0) setAspectRatio(width / height);
               }}
-              onError={() => setLoadFailed(true)}
+              onError={() => setFailedUri(uri)}
               className="w-full rounded-[10px] bg-neutral-200 dark:bg-neutral-800"
               style={{ aspectRatio }}
             />

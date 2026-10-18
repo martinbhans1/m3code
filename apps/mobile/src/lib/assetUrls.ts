@@ -10,6 +10,7 @@ import { getEnvironmentClient } from "../state/environment-session-registry";
  */
 
 const REFRESH_MARGIN_MS = 30_000;
+const REFRESH_RETRY_MS = 15_000;
 
 interface CachedAssetUrl {
   readonly url: string;
@@ -86,11 +87,13 @@ export function useAssetUrl(input: {
     }
     let cancelled = false;
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    let loaded = false;
 
     const load = () => {
       void resolveAssetUrl({ environmentId, httpBaseUrl, resource })
         .then((result) => {
           if (cancelled) return;
+          loaded = true;
           setState({ status: "ready", url: result.url });
           refreshTimer = setTimeout(
             load,
@@ -98,7 +101,14 @@ export function useAssetUrl(input: {
           );
         })
         .catch(() => {
-          if (!cancelled) setState({ status: "error", url: null });
+          if (cancelled) return;
+          // A refresh that fails (phone offline, reconnecting) keeps showing
+          // the link that already worked and tries again shortly.
+          if (loaded) {
+            refreshTimer = setTimeout(load, REFRESH_RETRY_MS);
+            return;
+          }
+          setState({ status: "error", url: null });
         });
     };
     load();
@@ -138,7 +148,8 @@ export function localImagePathFromHref(href: string): string | null {
   if (/^[a-z]:[\\/]/i.test(value)) {
     return value;
   }
-  if (value.startsWith("/") && !value.startsWith("//")) {
+  // `//host` and `/\host` are network paths; never send those to the server.
+  if (value.startsWith("/") && !/^\/[\\/]/.test(value)) {
     return value;
   }
   return null;

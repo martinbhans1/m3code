@@ -112,9 +112,13 @@ const resolveLocalImageFile = Effect.fn("AssetAccess.resolveLocalImageFile")(fun
   const path = yield* Path.Path;
   const candidate = /^\/[A-Za-z]:[\\/]/.test(rawPath) ? rawPath.slice(1) : rawPath;
   if (candidate.includes("\0") || !path.isAbsolute(candidate)) return null;
-  const canonicalFile = yield* fileSystem
-    .realPath(candidate)
-    .pipe(Effect.orElseSucceed(() => null));
+  // Touching a network path (`\\host\share`, `/\host\share`, `\\?\UNC\...`)
+  // makes Windows connect out and hand over the user's NTLM hash, so refuse
+  // anything that resolves to one before the filesystem is asked about it.
+  const resolved = path.resolve(candidate);
+  if (/^[\\/]{2}/.test(resolved)) return null;
+  if (!LOCAL_IMAGE_EXTENSIONS.has(path.extname(resolved).toLowerCase())) return null;
+  const canonicalFile = yield* fileSystem.realPath(resolved).pipe(Effect.orElseSucceed(() => null));
   if (!canonicalFile) return null;
   if (!LOCAL_IMAGE_EXTENSIONS.has(path.extname(canonicalFile).toLowerCase())) return null;
   const info = yield* fileSystem.stat(canonicalFile).pipe(Effect.orElseSucceed(() => null));

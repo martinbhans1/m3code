@@ -139,6 +139,10 @@ describe("AssetAccess", () => {
         path.join(dir, "icon.svg"),
         path.join(dir, "missing.png"),
         "relative/screenshot.png",
+        "//evil/share/x.png",
+        "\\\\evil\\share\\x.png",
+        "/\\evil\\share\\x.png",
+        "\\\\?\\UNC\\evil\\share\\x.png",
       ]) {
         const error = yield* issueAssetUrl({
           resource: { _tag: "local-image", path: rejected },

@@ -24,6 +24,8 @@ describe("localImagePathFromHref", () => {
     expect(localImagePathFromHref("https://example.com/shot.png")).toBeNull();
     expect(localImagePathFromHref("data:image/png;base64,AAAA")).toBeNull();
     expect(localImagePathFromHref("//cdn.example.com/shot.png")).toBeNull();
+    expect(localImagePathFromHref("/\\evil\\share\\x.png")).toBeNull();
+    expect(localImagePathFromHref("file:///\\evil\\share\\x.png")).toBeNull();
     expect(localImagePathFromHref("screenshot-after-reload")).toBeNull();
   });
 });
