@@ -249,4 +249,33 @@ describe("resolveNewConversationModel", () => {
       }),
     ).toMatchObject({ source: "available", selection: sol });
   });
+
+  // The phone opened a new chat before its settings and model list arrived,
+  // and started it on the project's pinned gpt-5.4, which the account rejects.
+  it("refuses to choose before the settings have loaded", () => {
+    expect(
+      resolveNewConversationModel({
+        settings: null,
+        providers: [],
+        projectDefault: retiredProjectDefault,
+      }),
+    ).toMatchObject({ outcome: "unsupported" });
+  });
+
+  it("never falls back to the project's pinned model while the model list is unknown", () => {
+    expect(
+      resolveNewConversationModel({
+        settings: { defaultModelEnabled: false, defaultModelSelection: null, favorites: [] },
+        providers: [],
+        projectDefault: retiredProjectDefault,
+      }),
+    ).toMatchObject({ outcome: "unsupported" });
+    expect(
+      resolveNewConversationModel({
+        settings: { defaultModelEnabled: false, defaultModelSelection: opus, favorites: [] },
+        providers: [],
+        projectDefault: retiredProjectDefault,
+      }),
+    ).toMatchObject({ source: "default", selection: opus, verified: false });
+  });
 });

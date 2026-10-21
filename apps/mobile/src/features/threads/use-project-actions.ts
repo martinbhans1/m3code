@@ -160,18 +160,25 @@ export function useProjectActions() {
 
   const onCreateThread = useCallback(
     async (project: EnvironmentScopedProjectShell) => {
-      const latestProjectThread =
-        threads.find(
-          (thread) =>
-            thread.environmentId === project.environmentId && thread.projectId === project.id,
-        ) ?? null;
-      const modelSelection = resolveStartingModel(
-        serverConfigByEnvironmentId[project.environmentId] ?? null,
-        {
-          projectDefault: project.defaultModelSelection ?? null,
-          inherited: latestProjectThread?.modelSelection ?? null,
-        },
-      );
+      // Ask the server rather than guess when the config has not arrived yet.
+      // No "inherited" model: the project's latest chat is not a chat you are
+      // continuing, and following it is how an old chat's model leaked into
+      // new ones ahead of the default.
+      const serverConfig =
+        serverConfigByEnvironmentId[project.environmentId] ??
+        (await getEnvironmentClient(project.environmentId)
+          ?.server.getConfig()
+          .catch(() => null)) ??
+        null;
+      if (!serverConfig) {
+        setPendingConnectionError(
+          "Still loading your models from the computer. Try again in a moment.",
+        );
+        return null;
+      }
+      const modelSelection = resolveStartingModel(serverConfig, {
+        projectDefault: project.defaultModelSelection ?? null,
+      });
       if (!modelSelection) {
         setPendingConnectionError(
           "None of the connected accounts is offering a model right now. Check that a provider is enabled and signed in.",

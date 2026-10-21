@@ -120,6 +120,11 @@ function createTestClient(config?: { readonly emitInitialSnapshot?: boolean }) {
         });
       }
     },
+    emitConfigEvent: (event: unknown) => {
+      for (const listener of configListeners) {
+        listener(event);
+      }
+    },
     emitShellSnapshot: (snapshotSequence: number) => {
       for (const listener of shellListeners) {
         listener({
@@ -193,6 +198,55 @@ describe("createEnvironmentConnection", () => {
     expect(() => emitWelcome(EnvironmentId.make("env-2"))).toThrow(
       "Environment connection env-1 changed identity to env-2 via server lifecycle welcome.",
     );
+
+    await connection.dispose();
+  });
+
+  // The phone's model picker stayed on the placeholder list from the first
+  // snapshot because provider results and settings changes arrive afterwards.
+  it("folds provider and settings updates into the latest config", async () => {
+    const environmentId = EnvironmentId.make("env-1");
+    const { client, emitConfigEvent } = createTestClient();
+    const onConfigSnapshot = vi.fn();
+
+    const connection = createEnvironmentConnection({
+      kind: "saved",
+      knownEnvironment: {
+        id: "env-1",
+        label: "Remote env",
+        source: "manual",
+        target: {
+          httpBaseUrl: "http://example.test",
+          wsBaseUrl: "ws://example.test",
+        },
+        environmentId,
+      },
+      client,
+      applyShellEvent: vi.fn(),
+      syncShellSnapshot: vi.fn(),
+      onConfigSnapshot,
+    });
+
+    // Nothing to fold into yet.
+    emitConfigEvent({ type: "providerStatuses", payload: { providers: [{ instanceId: "x" }] } });
+    expect(onConfigSnapshot).not.toHaveBeenCalled();
+
+    emitConfigEvent({
+      type: "snapshot",
+      config: { environment: { environmentId }, providers: [], settings: { a: 1 } },
+    });
+    emitConfigEvent({
+      type: "providerStatuses",
+      payload: { providers: [{ instanceId: "codex" }] },
+    });
+    emitConfigEvent({ type: "settingsUpdated", payload: { settings: { a: 2 } } });
+
+    expect(onConfigSnapshot).toHaveBeenCalledTimes(3);
+    expect(onConfigSnapshot).toHaveBeenLastCalledWith({
+      environment: { environmentId },
+      providers: [{ instanceId: "codex" }],
+      settings: { a: 2 },
+    });
 
     await connection.dispose();
   });

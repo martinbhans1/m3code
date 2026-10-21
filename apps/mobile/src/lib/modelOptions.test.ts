@@ -161,6 +161,10 @@ describe("resolveStartingModel", () => {
     ).toEqual(opus);
   });
 
+  it("picks nothing until the server config has arrived", () => {
+    expect(resolveStartingModel(null, { projectDefault: retired })).toBeNull();
+  });
+
   it("follows the chat being continued unless the default is switched on", () => {
     const sol = { instanceId: "codex", model: "gpt-6.1-sol" } as never;
     expect(

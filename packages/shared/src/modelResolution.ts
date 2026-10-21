@@ -250,6 +250,12 @@ export interface NewConversationModelSettings {
  * Everything is checked against what the connected accounts offer — the same
  * list the default is picked from — so a new model works the moment it is
  * chosen, and a retired one is stepped over instead of started.
+ *
+ * Until the settings have arrived there is no answer: guessing then is how a
+ * phone that had not loaded yet started chats on a project's stale pinned
+ * model instead of the default. And while the model list is unknown, the
+ * project's stored model is not a candidate — nobody chose it, and nothing
+ * can check it.
  */
 export function resolveNewConversationModel(input: {
   readonly settings: NewConversationModelSettings | null | undefined;
@@ -258,13 +264,21 @@ export function resolveNewConversationModel(input: {
   readonly inherited?: ModelSelection | null;
   readonly projectDefault?: ModelSelection | null;
 }): ModelResolution {
+  if (!input.settings && !input.explicit) {
+    return {
+      outcome: "unsupported",
+      message: "Still loading your model settings. Try again in a moment.",
+      skipped: [],
+    };
+  }
+  const runnable = listRunnableModels(input.providers);
   return resolveModelSelection({
-    runnable: listRunnableModels(input.providers),
+    runnable,
     explicit: input.explicit ?? null,
     configuredDefault: input.settings?.defaultModelSelection ?? null,
     inherited: input.inherited ?? null,
     inheritedRank: input.settings?.defaultModelEnabled ? "after-default" : "before-default",
-    projectDefault: input.projectDefault ?? null,
+    projectDefault: runnable.length > 0 ? (input.projectDefault ?? null) : null,
     favorites: input.settings?.favorites ?? [],
     toSelection: (model) => ({ instanceId: model.instanceId, model: model.slug }),
   });

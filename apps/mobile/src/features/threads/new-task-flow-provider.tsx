@@ -93,6 +93,8 @@ type NewTaskFlowContextValue = {
   }>;
   readonly selectedProject: EnvironmentScopedProjectShell | null;
   readonly modelOptions: ReadonlyArray<ModelOption>;
+  /** The computer has not sent its settings and model list yet. */
+  readonly modelsLoading: boolean;
   readonly selectedModel: ModelSelection | null;
   readonly selectedModelOption: ModelOption | null;
   readonly selectedProviderSkills: ReadonlyArray<ServerProviderSkill>;
@@ -279,6 +281,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     [selectedProjectConfig, startingModel],
   );
 
+  const modelsLoading = selectedProject !== null && selectedProjectConfig === null;
   const selectedModel =
     modelOptions.find((option) => option.key === selectedModelKey)?.selection ??
     startingModel ??
@@ -463,6 +466,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       environments,
       selectedProject,
       modelOptions,
+      modelsLoading,
       selectedModel,
       selectedModelOption,
       selectedProviderSkills,
@@ -504,6 +508,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       loadBranches,
       logicalProjects,
       modelOptions,
+      modelsLoading,
       prompt,
       providerGroups,
       replaceAttachments,

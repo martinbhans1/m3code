@@ -151,17 +151,44 @@ export function createEnvironmentConnection(
       })
     : () => undefined;
 
+  // The server sends its config once, while provider checks may still be
+  // running, then streams the provider results and settings changes as
+  // separate events. Folding those into the last snapshot is what keeps a
+  // phone's model list and default model current; dropping them left the
+  // picker on the placeholder list until something re-fetched the config.
+  let latestConfig: ServerConfig | null = null;
   const unsubConfig = shouldObserveConfig
     ? input.client.server.subscribeConfig((event) => {
-        if (disposed || event.type !== "snapshot") {
+        if (disposed) {
           return;
         }
 
-        observeEnvironmentIdentity(
-          event.config.environment.environmentId,
-          "server config snapshot",
-        );
-        input.onConfigSnapshot?.(event.config);
+        switch (event.type) {
+          case "snapshot":
+            observeEnvironmentIdentity(
+              event.config.environment.environmentId,
+              "server config snapshot",
+            );
+            latestConfig = event.config;
+            break;
+          case "providerStatuses":
+            if (!latestConfig) return;
+            latestConfig = { ...latestConfig, providers: event.payload.providers };
+            break;
+          case "settingsUpdated":
+            if (!latestConfig) return;
+            latestConfig = { ...latestConfig, settings: event.payload.settings };
+            break;
+          case "keybindingsUpdated":
+            if (!latestConfig) return;
+            latestConfig = {
+              ...latestConfig,
+              keybindings: event.payload.keybindings,
+              issues: event.payload.issues,
+            };
+            break;
+        }
+        input.onConfigSnapshot?.(latestConfig);
       })
     : () => undefined;
 

@@ -525,7 +525,13 @@ export function NewTaskDraftScreen(props: {
                   iconNode={
                     <ProviderIcon provider={flow.selectedModelOption?.providerDriver} size={16} />
                   }
-                  label={flow.selectedModelOption ? flow.selectedModelOption.label : "Model"}
+                  label={
+                    flow.selectedModelOption
+                      ? flow.selectedModelOption.label
+                      : flow.modelsLoading
+                        ? "Loading models…"
+                        : "Model"
+                  }
                 />
               </ControlPillMenu>
               <ControlPillMenu
