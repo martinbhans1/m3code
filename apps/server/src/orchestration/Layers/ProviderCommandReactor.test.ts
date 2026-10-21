@@ -1512,6 +1512,18 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.startSession.mock.calls.length === 1);
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
 
+    // An answered chat: the provider holds memory a switch would lose.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-assistant-reply-provider-switch"),
+        threadId: ThreadId.make("thread-1"),
+        messageId: asMessageId("assistant-reply-provider-switch"),
+        delta: "hello",
+        createdAt: now,
+      }),
+    );
+
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.turn.start",
@@ -1573,6 +1585,18 @@ describe("ProviderCommandReactor", () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
 
+    // An answered chat: the provider holds memory a switch would lose.
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.make("cmd-assistant-reply-stopped-provider-switch"),
+        threadId: ThreadId.make("thread-1"),
+        messageId: asMessageId("assistant-reply-stopped-provider-switch"),
+        delta: "hello",
+        createdAt: now,
+      }),
+    );
+
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.session.set",
@@ -1633,6 +1657,65 @@ describe("ProviderCommandReactor", () => {
         detail: expect.stringContaining("cannot switch to 'claudeAgent'"),
       },
     });
+  });
+
+  // The first turn failed on a model the account rejects (gpt-5.4 on a
+  // ChatGPT login); switching to another provider has to rescue the chat.
+  it("lets a chat that never got a reply switch to another provider", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-unanswered-switch-1"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-unanswered-switch-1"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-unanswered-switch-2"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-unanswered-switch-2"),
+          role: "user",
+          text: "second",
+          attachments: [],
+        },
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus-4-6",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+
+    expect(harness.startSession.mock.calls.length).toBe(2);
+    const restart = harness.startSession.mock.calls[1]?.[1] as
+      | { provider?: string; providerInstanceId?: string; resumeCursor?: unknown }
+      | undefined;
+    expect(restart?.provider).toBe("claudeAgent");
+    expect(restart?.providerInstanceId).toBe("claudeAgent");
+    // A Codex resume cursor means nothing to Claude.
+    expect(restart?.resumeCursor).toBeUndefined();
   });
 
   it("reacts to thread.turn.interrupt-requested by calling provider interrupt", async () => {

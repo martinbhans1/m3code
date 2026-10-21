@@ -456,10 +456,19 @@ const make = Effect.gen(function* () {
         requestedModelSelection,
       });
     }
+    // A chat that never got a reply has no provider memory to lose, so it may
+    // move to any account. Without this, a first turn that failed on a model
+    // the account rejects left the chat stuck on that provider for good.
+    const neverAnswered = !thread.messages.some((message) => message.role === "assistant");
+    const crossesResumeState =
+      currentInfo.driverKind !== desiredInfo.driverKind ||
+      currentInfo.continuationIdentity.continuationKey !==
+        desiredInfo.continuationIdentity.continuationKey;
     if (
       thread.session !== null &&
       requestedModelSelection !== undefined &&
-      requestedModelSelection.instanceId !== currentInstanceId
+      requestedModelSelection.instanceId !== currentInstanceId &&
+      !neverAnswered
     ) {
       if (currentInfo.driverKind !== desiredInfo.driverKind) {
         return yield* new ProviderAdapterRequestError({
@@ -568,9 +577,10 @@ const make = Effect.gen(function* () {
         return existingSessionThreadId;
       }
 
-      const resumeCursor = shouldRestartForModelChange
-        ? undefined
-        : (activeSession?.resumeCursor ?? undefined);
+      const resumeCursor =
+        shouldRestartForModelChange || crossesResumeState
+          ? undefined
+          : (activeSession?.resumeCursor ?? undefined);
       yield* Effect.logInfo("provider command reactor restarting provider session", {
         threadId,
         existingSessionThreadId,
