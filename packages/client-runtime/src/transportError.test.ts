@@ -35,6 +35,10 @@ describe("isTransportConnectionErrorMessage", () => {
     expect(isTransportConnectionErrorMessage("ping timeout")).toBe(true);
   });
 
+  it("returns true when the transport was torn down mid-request", () => {
+    expect(isTransportConnectionErrorMessage("Transport disposed")).toBe(true);
+  });
+
   it("does not treat a cancelled Effect fiber as a connection failure", () => {
     expect(isTransportConnectionErrorMessage("All fibers interrupted without error")).toBe(false);
     expect(isTransportConnectionErrorMessage("Transport request interrupted")).toBe(false);

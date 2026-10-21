@@ -188,8 +188,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   }, [onExpandedChange]);
   const showStopAction =
     props.selectedThread.session?.status === "running" ||
-    props.selectedThread.session?.status === "starting" ||
-    props.queueCount > 0;
+    props.selectedThread.session?.status === "starting";
 
   const sendLabel = props.activeThreadBusy || props.queueCount > 0 ? "Queue" : "Send";
   const currentModelSelection = props.selectedThread.modelSelection;

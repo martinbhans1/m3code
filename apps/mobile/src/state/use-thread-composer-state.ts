@@ -1,7 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { EnvironmentScopedThreadShell } from "@t3tools/client-runtime";
+import { EnvironmentScopedThreadShell, isTransportConnectionError } from "@t3tools/client-runtime";
 import { CommandId, MessageId, type EnvironmentId, type ThreadId } from "@t3tools/contracts";
 import { deriveActiveWorkStartedAt } from "@t3tools/shared/orchestrationTiming";
 import { Atom } from "effect/unstable/reactivity";
@@ -40,6 +40,14 @@ const dispatchingQueuedMessageIdAtom = Atom.make<MessageId | null>(null).pipe(
   Atom.keepAlive,
   Atom.withLabel("mobile:thread-composer:dispatching-message-id"),
 );
+
+/**
+ * A send that lost its connection is retried, not dropped: the server dedupes
+ * by command id, so a retry of one it did take just confirms it. The pause
+ * keeps a socket that reports "ready" but fails every call from spinning.
+ */
+const QUEUED_MESSAGE_RETRY_DELAY_MS = 3_000;
+const queuedMessageRetryNotBefore = new Map<MessageId, number>();
 
 const queuedMessagesByThreadKeyAtom = Atom.make<Record<string, ReadonlyArray<QueuedThreadMessage>>>(
   {},
@@ -131,11 +139,14 @@ function useQueueDrain(input: {
     sendQueuedMessage,
     threads,
   } = input;
+  const [retryTick, setRetryTick] = useState(0);
 
   useEffect(() => {
     if (dispatchingQueuedMessageId !== null) {
       return;
     }
+
+    let nextRetryAt: number | null = null;
 
     for (const [threadKey, queuedMessages] of Object.entries(queuedMessagesByThreadKey)) {
       const nextQueuedMessage = queuedMessages[0];
@@ -162,10 +173,26 @@ function useQueueDrain(input: {
         continue;
       }
 
+      const retryNotBefore = queuedMessageRetryNotBefore.get(nextQueuedMessage.messageId);
+      if (retryNotBefore !== undefined && retryNotBefore > Date.now()) {
+        nextRetryAt = Math.min(nextRetryAt ?? retryNotBefore, retryNotBefore);
+        continue;
+      }
+
       void sendQueuedMessage(nextQueuedMessage);
       return;
     }
+
+    if (nextRetryAt === null) {
+      return;
+    }
+    const timer = setTimeout(
+      () => setRetryTick((tick) => tick + 1),
+      Math.max(0, nextRetryAt - Date.now()),
+    );
+    return () => clearTimeout(timer);
   }, [
+    retryTick,
     dispatchingQueuedMessageId,
     environments,
     queuedMessagesByThreadKey,
@@ -219,7 +246,12 @@ export function useThreadComposerState() {
     };
   }, [selectedThread]);
 
-  const queuedSendStartedAt = selectedThreadQueuedMessages[0]?.createdAt ?? null;
+  // Only a message actually being handed over counts as work starting. A
+  // message merely waiting in the queue is not, or one left behind on an idle
+  // thread keeps a "Working for…" timer running forever.
+  const queuedSendStartedAt =
+    selectedThreadQueuedMessages.find((message) => message.messageId === dispatchingQueuedMessageId)
+      ?.createdAt ?? null;
   const activeWorkStartedAt = useMemo(() => {
     if (!selectedThread) {
       return null;
@@ -269,12 +301,24 @@ export function useThreadComposerState() {
           createdAt: queuedMessage.createdAt,
         });
 
+        queuedMessageRetryNotBefore.delete(queuedMessage.messageId);
         removeQueuedMessage(
           queuedMessage.environmentId,
           queuedMessage.threadId,
           queuedMessage.messageId,
         );
       } catch (error) {
+        // Losing the connection mid-send is not a failed message: the server
+        // may already have it. Keep it queued and send it again; the server
+        // treats the repeat as the same message.
+        if (isTransportConnectionError(error)) {
+          queuedMessageRetryNotBefore.set(
+            queuedMessage.messageId,
+            Date.now() + QUEUED_MESSAGE_RETRY_DELAY_MS,
+          );
+          return;
+        }
+        queuedMessageRetryNotBefore.delete(queuedMessage.messageId);
         removeQueuedMessage(
           queuedMessage.environmentId,
           queuedMessage.threadId,
@@ -289,6 +333,25 @@ export function useThreadComposerState() {
     },
     [threads],
   );
+
+  // A queued message the conversation already shows was delivered, whatever
+  // the send call reported. Clear it so it cannot linger as pending.
+  useEffect(() => {
+    if (!selectedThread || selectedThreadQueuedMessages.length === 0) {
+      return;
+    }
+    const deliveredIds = new Set<string>(selectedThread.messages.map((message) => message.id));
+    for (const queuedMessage of selectedThreadQueuedMessages) {
+      if (deliveredIds.has(queuedMessage.messageId)) {
+        queuedMessageRetryNotBefore.delete(queuedMessage.messageId);
+        removeQueuedMessage(
+          queuedMessage.environmentId,
+          queuedMessage.threadId,
+          queuedMessage.messageId,
+        );
+      }
+    }
+  }, [selectedThread, selectedThreadQueuedMessages]);
 
   useQueueDrain({
     dispatchingQueuedMessageId,

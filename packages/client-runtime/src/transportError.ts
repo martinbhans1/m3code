@@ -5,6 +5,9 @@ const TRANSPORT_ERROR_PATTERNS = [
   /Unable to connect to the T3 server WebSocket\./i,
   /\bping timeout\b/i,
   /\bUnknown socket error\b/i,
+  // The client was torn down mid-request (app backgrounded, connection
+  // replaced); the server may or may not have taken the command.
+  /\bTransport disposed\b/i,
 ] as const;
 
 // Effect's RPC client reports this once its socket loop has died from a defect.
