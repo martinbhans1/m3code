@@ -759,6 +759,23 @@ const ThreadTurnStartBootstrap = Schema.Struct({
 
 export type ThreadTurnStartBootstrap = typeof ThreadTurnStartBootstrap.Type;
 
+/**
+ * A concrete model, or "default": the server resolves the user's Settings
+ * default when the command arrives. A client that has not loaded the model
+ * list yet (a phone just back from sleep) can still start a chat at once.
+ */
+const ClientModelSelection = Schema.Union([ModelSelection, Schema.Literal("default")]);
+
+const ClientThreadTurnStartBootstrap = Schema.Struct({
+  ...ThreadTurnStartBootstrap.fields,
+  createThread: Schema.optional(
+    Schema.Struct({
+      ...ThreadTurnStartBootstrapCreateThread.fields,
+      modelSelection: ClientModelSelection,
+    }),
+  ),
+});
+
 export const ThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
@@ -792,11 +809,11 @@ const ClientThreadTurnStartCommand = Schema.Struct({
     attachments: Schema.Array(UploadChatAttachment),
     replyToMessageId: Schema.optional(MessageId),
   }),
-  modelSelection: Schema.optional(ModelSelection),
+  modelSelection: Schema.optional(ClientModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
-  bootstrap: Schema.optional(ThreadTurnStartBootstrap),
+  bootstrap: Schema.optional(ClientThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   createdAt: IsoDateTime,
 });
@@ -900,7 +917,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   Schema.Struct({
     ...ThreadCreateCommand.fields,
     // Integrations can follow the user's current choice without pinning a model ID.
-    modelSelection: Schema.Union([ModelSelection, Schema.Literal("default")]),
+    modelSelection: ClientModelSelection,
   }),
   ThreadDeleteCommand,
   ThreadArchiveCommand,

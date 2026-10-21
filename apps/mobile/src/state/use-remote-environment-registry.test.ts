@@ -96,10 +96,13 @@ vi.mock("../features/cloud/linkEnvironment", () => ({
 }));
 
 vi.mock("../lib/storage", () => ({
+  clearCachedServerConfig: vi.fn(() => Promise.resolve()),
   clearCachedShellSnapshot: mocks.clearCachedShellSnapshot,
   clearSavedConnection: mocks.clearSavedConnection,
+  loadCachedServerConfig: vi.fn(() => Promise.resolve(null)),
   loadCachedShellSnapshot: vi.fn(() => Promise.resolve(null)),
   loadSavedConnections: vi.fn(() => Promise.resolve([])),
+  saveCachedServerConfig: vi.fn(() => Promise.resolve()),
   saveCachedShellSnapshot: mocks.saveCachedShellSnapshot,
   saveConnection: mocks.saveConnection,
 }));
@@ -130,6 +133,7 @@ vi.mock("../features/terminal/terminalDebugLog", () => ({
 
 vi.mock("./use-environment-runtime", () => ({
   environmentRuntimeManager: {
+    getSnapshot: vi.fn(() => ({ serverConfig: null })),
     invalidate: mocks.environmentRuntimeInvalidate,
     patch: mocks.environmentRuntimePatch,
   },

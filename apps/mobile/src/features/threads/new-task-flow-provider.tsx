@@ -93,8 +93,12 @@ type NewTaskFlowContextValue = {
   }>;
   readonly selectedProject: EnvironmentScopedProjectShell | null;
   readonly modelOptions: ReadonlyArray<ModelOption>;
-  /** The computer has not sent its settings and model list yet. */
-  readonly modelsLoading: boolean;
+  /**
+   * Nothing on this screen has been changed from its starting state, so the
+   * chat can ask the computer for the Settings default instead of naming a
+   * model — which also means sending never waits for the model list.
+   */
+  readonly usesDefaultModel: boolean;
   readonly selectedModel: ModelSelection | null;
   readonly selectedModelOption: ModelOption | null;
   readonly selectedProviderSkills: ReadonlyArray<ServerProviderSkill>;
@@ -281,7 +285,8 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     [selectedProjectConfig, startingModel],
   );
 
-  const modelsLoading = selectedProject !== null && selectedProjectConfig === null;
+  const usesDefaultModel =
+    selectedModelKey === null && effort === "high" && !fastMode && contextWindow === "1M";
   const selectedModel =
     modelOptions.find((option) => option.key === selectedModelKey)?.selection ??
     startingModel ??
@@ -466,7 +471,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       environments,
       selectedProject,
       modelOptions,
-      modelsLoading,
+      usesDefaultModel,
       selectedModel,
       selectedModelOption,
       selectedProviderSkills,
@@ -508,7 +513,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
       loadBranches,
       logicalProjects,
       modelOptions,
-      modelsLoading,
+      usesDefaultModel,
       prompt,
       providerGroups,
       replaceAttachments,

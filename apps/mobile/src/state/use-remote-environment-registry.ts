@@ -34,10 +34,13 @@ import { renewDeviceConnection, logoutDeviceConnection } from "../lib/deviceAuth
 import { refreshCloudEnvironmentConnection } from "../features/cloud/linkEnvironment";
 import { terminalDebugLog } from "../features/terminal/terminalDebugLog";
 import {
+  clearCachedServerConfig,
   clearCachedShellSnapshot,
   clearSavedConnection,
+  loadCachedServerConfig,
   loadCachedShellSnapshot,
   loadSavedConnections,
+  saveCachedServerConfig,
   saveCachedShellSnapshot,
   saveConnection,
 } from "../lib/storage";
@@ -210,7 +213,19 @@ export function disconnectEnvironment(
     }
     invalidateSourceControlDiscoveryForEnvironment(environmentId);
     terminalSessionManager.invalidateEnvironment(environmentId);
+    // Keep the last model list and settings through a dropped connection: a
+    // stale list is far better than an empty picker while the phone
+    // reconnects, and live updates replace it as soon as they arrive.
+    const lastServerConfig = options?.removeSaved
+      ? null
+      : environmentRuntimeManager.getSnapshot({ environmentId }).serverConfig;
     environmentRuntimeManager.invalidate({ environmentId });
+    if (lastServerConfig) {
+      environmentRuntimeManager.patch({ environmentId }, (runtime) => ({
+        ...runtime,
+        serverConfig: lastServerConfig,
+      }));
+    }
 
     if (options?.removeSaved) {
       const saved = (yield* fromPromise(loadSavedConnections)).find(
@@ -221,8 +236,9 @@ export function disconnectEnvironment(
         [
           fromPromise(() => clearSavedConnection(environmentId)),
           fromPromise(() => clearCachedShellSnapshot(environmentId)),
+          fromPromise(() => clearCachedServerConfig(environmentId)),
         ],
-        { concurrency: 2 },
+        { concurrency: 3 },
       );
       clearCachedShellSnapshotMetadata(environmentId);
       removeSavedConnection(environmentId);
@@ -400,6 +416,7 @@ export function connectSavedEnvironment(
       },
       onConfigSnapshot: (serverConfig) => {
         if (isCurrentAttempt()) {
+          void saveCachedServerConfig(connection.environmentId, serverConfig);
           environmentRuntimeManager.patch(
             { environmentId: connection.environmentId },
             (runtime) => ({
@@ -621,9 +638,20 @@ export function useRemoteEnvironmentBootstrap() {
 
         await Promise.all(
           connections.map(async (connection) => {
-            const cached = await loadCachedShellSnapshot(connection.environmentId);
+            const [cached, cachedConfig] = await Promise.all([
+              loadCachedShellSnapshot(connection.environmentId),
+              loadCachedServerConfig(connection.environmentId),
+            ]);
             if (!cancelled && cached) {
               hydrateCachedShellSnapshot(cached);
+            }
+            if (!cancelled && cachedConfig) {
+              // Only fill the gap: a live config that already arrived wins.
+              environmentRuntimeManager.patch(
+                { environmentId: connection.environmentId },
+                (runtime) =>
+                  runtime.serverConfig ? runtime : { ...runtime, serverConfig: cachedConfig },
+              );
             }
           }),
         );

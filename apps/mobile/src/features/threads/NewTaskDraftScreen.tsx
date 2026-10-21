@@ -407,7 +407,7 @@ export function NewTaskDraftScreen(props: {
   async function handleStart(): Promise<void> {
     if (
       !flow.selectedProject ||
-      !flow.selectedModel ||
+      (!flow.selectedModel && !flow.usesDefaultModel) ||
       flow.prompt.trim().length === 0 ||
       flow.submitting ||
       (flow.workspaceMode === "worktree" && !flow.selectedBranchName)
@@ -417,20 +417,26 @@ export function NewTaskDraftScreen(props: {
 
     flow.setSubmitting(true);
     try {
-      const modelWithOptions: ModelSelection =
-        flow.selectedModelOption?.providerDriver === "claudeAgent"
-          ? withModelSelectionOption(
-              withModelSelectionOption(
-                withModelSelectionOption(flow.selectedModel, "effort", flow.effort),
-                "fastMode",
-                flow.fastMode || undefined,
-              ),
-              "contextWindow",
-              flow.contextWindow,
-            )
-          : flow.selectedModelOption?.providerDriver === "codex"
-            ? withModelSelectionOption(flow.selectedModel, "fastMode", flow.fastMode || undefined)
-            : flow.selectedModel;
+      // Untouched screen: the computer fills in the Settings default, so the
+      // chat starts on it even if this phone's copy of the list is stale or
+      // has not loaded.
+      const selectedModel = flow.selectedModel;
+      const modelWithOptions: ModelSelection | "default" =
+        flow.usesDefaultModel || !selectedModel
+          ? "default"
+          : flow.selectedModelOption?.providerDriver === "claudeAgent"
+            ? withModelSelectionOption(
+                withModelSelectionOption(
+                  withModelSelectionOption(selectedModel, "effort", flow.effort),
+                  "fastMode",
+                  flow.fastMode || undefined,
+                ),
+                "contextWindow",
+                flow.contextWindow,
+              )
+            : flow.selectedModelOption?.providerDriver === "codex"
+              ? withModelSelectionOption(selectedModel, "fastMode", flow.fastMode || undefined)
+              : selectedModel;
 
       const createdThread = await onCreateThreadWithOptions({
         project: flow.selectedProject,
@@ -528,8 +534,8 @@ export function NewTaskDraftScreen(props: {
                   label={
                     flow.selectedModelOption
                       ? flow.selectedModelOption.label
-                      : flow.modelsLoading
-                        ? "Loading models…"
+                      : flow.usesDefaultModel
+                        ? "Default model"
                         : "Model"
                   }
                 />
@@ -573,7 +579,7 @@ export function NewTaskDraftScreen(props: {
               showChevron={false}
               disabled={
                 !flow.selectedProject ||
-                !flow.selectedModel ||
+                (!flow.selectedModel && !flow.usesDefaultModel) ||
                 flow.prompt.trim().length === 0 ||
                 flow.submitting ||
                 (flow.workspaceMode === "worktree" && !flow.selectedBranchName)

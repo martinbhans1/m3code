@@ -75,13 +75,14 @@ function deriveThreadTitleFromPrompt(value: string): string {
 }
 
 export function useProjectActions() {
-  const { threads, serverConfigByEnvironmentId } = useRemoteCatalog();
+  const { serverConfigByEnvironmentId } = useRemoteCatalog();
   const refreshRemoteData = useRefreshRemoteData();
 
   const onCreateThreadWithOptions = useCallback(
     async (input: {
       readonly project: EnvironmentScopedProjectShell;
-      readonly modelSelection: ModelSelection;
+      /** "default" lets the computer fill in the Settings default on arrival. */
+      readonly modelSelection: ModelSelection | "default";
       readonly envMode: "local" | "worktree";
       readonly branch: string | null;
       readonly worktreePath: string | null;
@@ -149,7 +150,9 @@ export function useProjectActions() {
         createdAt,
       });
 
-      await refreshRemoteData([input.project.environmentId]);
+      // Not awaited: the config stream keeps the phone current, and waiting
+      // on a full config round trip here only delayed opening the new chat.
+      void refreshRemoteData([input.project.environmentId]);
       return {
         environmentId: input.project.environmentId,
         threadId,
@@ -160,25 +163,16 @@ export function useProjectActions() {
 
   const onCreateThread = useCallback(
     async (project: EnvironmentScopedProjectShell) => {
-      // Ask the server rather than guess when the config has not arrived yet.
       // No "inherited" model: the project's latest chat is not a chat you are
       // continuing, and following it is how an old chat's model leaked into
-      // new ones ahead of the default.
-      const serverConfig =
-        serverConfigByEnvironmentId[project.environmentId] ??
-        (await getEnvironmentClient(project.environmentId)
-          ?.server.getConfig()
-          .catch(() => null)) ??
-        null;
-      if (!serverConfig) {
-        setPendingConnectionError(
-          "Still loading your models from the computer. Try again in a moment.",
-        );
-        return null;
-      }
-      const modelSelection = resolveStartingModel(serverConfig, {
-        projectDefault: project.defaultModelSelection ?? null,
-      });
+      // new ones ahead of the default. Without the model list yet, let the
+      // computer fill in the default rather than wait or guess.
+      const serverConfig = serverConfigByEnvironmentId[project.environmentId] ?? null;
+      const modelSelection = serverConfig
+        ? resolveStartingModel(serverConfig, {
+            projectDefault: project.defaultModelSelection ?? null,
+          })
+        : "default";
       if (!modelSelection) {
         setPendingConnectionError(
           "None of the connected accounts is offering a model right now. Check that a provider is enabled and signed in.",
@@ -198,7 +192,7 @@ export function useProjectActions() {
         initialAttachments: [],
       });
     },
-    [onCreateThreadWithOptions, serverConfigByEnvironmentId, threads],
+    [onCreateThreadWithOptions, serverConfigByEnvironmentId],
   );
 
   const onListProjectBranches = useCallback(

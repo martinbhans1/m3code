@@ -3,7 +3,7 @@ import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SecureStore from "expo-secure-store";
-import { EnvironmentId, OrchestrationShellSnapshot } from "@t3tools/contracts";
+import { EnvironmentId, OrchestrationShellSnapshot, ServerConfig } from "@t3tools/contracts";
 
 import {
   isRelayManagedConnection,
@@ -252,4 +252,55 @@ export async function loadOrCreateAgentAwarenessDeviceId(): Promise<string> {
 export async function loadAgentAwarenessDeviceId(): Promise<string | null> {
   const existing = await readStorageItem(AGENT_AWARENESS_DEVICE_ID_KEY);
   return existing?.trim() ? existing : null;
+}
+
+// The computer's settings and model list, kept so a relaunched or woken phone
+// can show the model picker at once instead of waiting for the connection.
+// Same best-effort file cache as the shell snapshot; a version bump or a
+// schema change just reads as "nothing cached".
+const SERVER_CONFIG_CACHE_DIRECTORY = "server-configs";
+const decodeCachedServerConfig = Schema.decodeUnknownOption(ServerConfig);
+
+async function getServerConfigCacheFile(environmentId: EnvironmentId) {
+  const { Directory, File, Paths } = await import("expo-file-system");
+  const directory = new Directory(Paths.document, SERVER_CONFIG_CACHE_DIRECTORY);
+  directory.create({ idempotent: true, intermediates: true });
+  return new File(directory, `${encodeURIComponent(environmentId)}.json`);
+}
+
+export async function loadCachedServerConfig(
+  environmentId: EnvironmentId,
+): Promise<ServerConfig | null> {
+  try {
+    const file = await getServerConfigCacheFile(environmentId);
+    if (!file.exists) return null;
+    const decoded = decodeCachedServerConfig(JSON.parse(await file.text()) as unknown);
+    return Option.isSome(decoded) && decoded.value.environment.environmentId === environmentId
+      ? decoded.value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveCachedServerConfig(
+  environmentId: EnvironmentId,
+  config: ServerConfig,
+): Promise<void> {
+  try {
+    const file = await getServerConfigCacheFile(environmentId);
+    if (!file.exists) file.create({ intermediates: true, overwrite: true });
+    file.write(JSON.stringify(config));
+  } catch {
+    // Best-effort, like the shell snapshot cache.
+  }
+}
+
+export async function clearCachedServerConfig(environmentId: EnvironmentId): Promise<void> {
+  try {
+    const file = await getServerConfigCacheFile(environmentId);
+    if (file.exists) file.delete();
+  } catch {
+    // Ignore cache cleanup failures.
+  }
 }

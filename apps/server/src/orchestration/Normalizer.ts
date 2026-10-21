@@ -3,6 +3,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import {
   type ClientOrchestrationCommand,
+  type ModelSelection,
   type OrchestrationCommand,
   OrchestrationDispatchCommandError,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
@@ -17,48 +18,55 @@ import { ServerSettingsService } from "../serverSettings.ts";
 import { resolveModelSelection } from "@t3tools/shared/modelResolution";
 import { readRunnableModels, runnableToSelection } from "../startingModel.ts";
 
+/**
+ * The model "default" stands for: the user's Settings default or, when the
+ * account cannot run it, one of their starred models. Starting on whatever a
+ * provider happens to list first would be the silent substitution this
+ * exists to avoid.
+ */
+const resolveDefaultModelSelection = Effect.gen(function* () {
+  const settingsService = yield* ServerSettingsService;
+  const settings = yield* settingsService.getSettings.pipe(
+    Effect.mapError(
+      () =>
+        new OrchestrationDispatchCommandError({
+          message: "Could not read the default model from Settings.",
+        }),
+    ),
+  );
+  // "default" asks for the user's chosen default. Its switch only decides
+  // whether it beats the chat someone is in, which does not apply here.
+  const configuredDefault = settings.defaultModelSelection;
+  if (!configuredDefault) {
+    return yield* new OrchestrationDispatchCommandError({
+      message: "Choose a default model in Settings > Chat before using the default model.",
+    });
+  }
+  const resolution = resolveModelSelection({
+    runnable: yield* readRunnableModels,
+    configuredDefault,
+    favorites: settings.favorites,
+    toSelection: runnableToSelection,
+  });
+  if (resolution.outcome === "unsupported" || resolution.source === "available") {
+    return yield* new OrchestrationDispatchCommandError({
+      message: `The default model in Settings > Chat (${configuredDefault.model}) is not available on the connected accounts, and none of your starred models are either. Pick another default, or check the provider is signed in.`,
+    });
+  }
+  if (resolution.skipped.length > 0) {
+    yield* Effect.logInfo("default model unavailable; started on a starred model instead", {
+      configured: configuredDefault.model,
+      started: resolution.selection.model,
+    });
+  }
+  return resolution.selection;
+});
+
 export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
   Effect.gen(function* () {
     if (command.type === "thread.create" && command.modelSelection === "default") {
-      const settingsService = yield* ServerSettingsService;
-      const settings = yield* settingsService.getSettings.pipe(
-        Effect.mapError(
-          () =>
-            new OrchestrationDispatchCommandError({
-              message: "Could not read the default model from Settings.",
-            }),
-        ),
-      );
-      // "default" asks for the user's chosen default. Its switch only decides
-      // whether it beats the chat someone is in, which does not apply here.
-      const configuredDefault = settings.defaultModelSelection;
-      if (!configuredDefault) {
-        return yield* new OrchestrationDispatchCommandError({
-          message: "Choose a default model in Settings > Chat before using the default model.",
-        });
-      }
-      // "default" is a request for the user's choice, so only their default
-      // or, when the account cannot run it, one of their starred models will
-      // do. Starting on whatever a provider happens to list first would be the
-      // silent substitution this path exists to avoid.
-      const resolution = resolveModelSelection({
-        runnable: yield* readRunnableModels,
-        configuredDefault,
-        favorites: settings.favorites,
-        toSelection: runnableToSelection,
-      });
-      if (resolution.outcome === "unsupported" || resolution.source === "available") {
-        return yield* new OrchestrationDispatchCommandError({
-          message: `The default model in Settings > Chat (${configuredDefault.model}) is not available on the connected accounts, and none of your starred models are either. Pick another default, or check the provider is signed in.`,
-        });
-      }
-      if (resolution.skipped.length > 0) {
-        yield* Effect.logInfo("default model unavailable; started on a starred model instead", {
-          configured: configuredDefault.model,
-          started: resolution.selection.model,
-        });
-      }
-      return { ...command, modelSelection: resolution.selection } satisfies OrchestrationCommand;
+      const modelSelection = yield* resolveDefaultModelSelection;
+      return { ...command, modelSelection } satisfies OrchestrationCommand;
     }
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -113,6 +121,16 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
     if (command.type !== "thread.turn.start") {
       return command as OrchestrationCommand;
     }
+
+    const createThread = command.bootstrap?.createThread;
+    const defaultModelSelection =
+      command.modelSelection === "default" || createThread?.modelSelection === "default"
+        ? yield* resolveDefaultModelSelection
+        : undefined;
+    const resolveModel = (selection: ModelSelection | "default"): ModelSelection =>
+      selection === "default" && defaultModelSelection !== undefined
+        ? defaultModelSelection
+        : (selection as ModelSelection);
 
     const normalizedAttachments = yield* Effect.forEach(
       command.message.attachments,
@@ -199,8 +217,26 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       { concurrency: 1 },
     );
 
+    const { modelSelection, bootstrap, ...rest } = command;
+    const { createThread: _unresolved, ...otherBootstrapSteps } = bootstrap ?? {};
     return {
-      ...command,
+      ...rest,
+      ...(modelSelection !== undefined ? { modelSelection: resolveModel(modelSelection) } : {}),
+      ...(bootstrap !== undefined
+        ? {
+            bootstrap: {
+              ...otherBootstrapSteps,
+              ...(createThread !== undefined
+                ? {
+                    createThread: {
+                      ...createThread,
+                      modelSelection: resolveModel(createThread.modelSelection),
+                    },
+                  }
+                : {}),
+            },
+          }
+        : {}),
       message: {
         ...command.message,
         attachments: normalizedAttachments,

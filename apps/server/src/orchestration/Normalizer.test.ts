@@ -133,3 +133,43 @@ it.effect("refuses a 'default' thread rather than start it on a model the accoun
     Effect.provide(layerWith({ defaultModelEnabled: true, defaultModelSelection: retiredDefault })),
   ),
 );
+
+// The phone sends a new chat before its model list has loaded and lets the
+// server fill in the default, so sending never waits on the list.
+const phoneNewChat = Schema.decodeUnknownSync(ClientOrchestrationCommand)({
+  type: "thread.turn.start",
+  commandId: "turn-default",
+  threadId: "thread-phone",
+  message: { messageId: "message-phone", role: "user", text: "x", attachments: [] },
+  modelSelection: "default",
+  runtimeMode: "full-access",
+  interactionMode: "default",
+  bootstrap: {
+    createThread: {
+      projectId: "project-default",
+      title: "x",
+      modelSelection: "default",
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: "2026-10-21T08:00:00.000Z",
+    },
+    runSetupScript: false,
+  },
+  createdAt: "2026-10-21T08:00:00.000Z",
+});
+
+it.effect("fills in the default for a new chat that asks for it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      expect(yield* normalizeDispatchCommand(phoneNewChat)).toMatchObject({
+        modelSelection: selection,
+        bootstrap: {
+          createThread: { modelSelection: selection, projectId: "project-default" },
+          runSetupScript: false,
+        },
+      });
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
