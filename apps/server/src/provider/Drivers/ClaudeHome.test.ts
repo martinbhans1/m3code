@@ -7,12 +7,15 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import {
+  CLAUDE_CREDENTIALS_FILE_NAME,
   claudeSessionTranscriptExists,
   encodeClaudeProjectDirName,
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
   makeClaudeEnvironment,
   resolveClaudeConfigDirPath,
+  resolveClaudeConfigDirRealPath,
+  resolveClaudeCredentialsPath,
   resolveClaudeHomePath,
   resolveClaudeSessionTranscriptPath,
 } from "./ClaudeHome.ts";
@@ -169,6 +172,56 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
             { CLAUDE_CONFIG_DIR: configDir },
           ),
         ).toBe(false);
+      }).pipe(Effect.scoped),
+    );
+  });
+  describe("credentials", () => {
+    it.effect("names the credentials file inside the instance's own config dir", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const configDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "m3code-claude-credentials-",
+        });
+
+        expect(
+          yield* resolveClaudeCredentialsPath({ homePath: "" }, { CLAUDE_CONFIG_DIR: configDir }),
+        ).toBe(
+          path.join(
+            yield* resolveClaudeConfigDirRealPath(
+              { homePath: "" },
+              { CLAUDE_CONFIG_DIR: configDir },
+            ),
+            CLAUDE_CREDENTIALS_FILE_NAME,
+          ),
+        );
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("resolves two config dirs sharing one credentials file to one path", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "m3code-claude-credentials-shared-",
+        });
+        const owner = path.join(root, "owner");
+        const borrower = path.join(root, "borrower");
+        yield* fileSystem.makeDirectory(owner, { recursive: true });
+        yield* fileSystem.makeDirectory(borrower, { recursive: true });
+        const ownerCredentials = path.join(owner, CLAUDE_CREDENTIALS_FILE_NAME);
+        yield* fileSystem.writeFileString(ownerCredentials, "{}");
+
+        // Windows refuses symlinks without Developer Mode or elevation, and a
+        // machine that cannot make one cannot suffer the sharing either.
+        const linked = yield* fileSystem
+          .symlink(ownerCredentials, path.join(borrower, CLAUDE_CREDENTIALS_FILE_NAME))
+          .pipe(Effect.result);
+        if (linked._tag === "Failure") return;
+
+        expect(
+          yield* resolveClaudeCredentialsPath({ homePath: "" }, { CLAUDE_CONFIG_DIR: borrower }),
+        ).toBe(yield* resolveClaudeCredentialsPath({ homePath: "" }, { CLAUDE_CONFIG_DIR: owner }));
       }).pipe(Effect.scoped),
     );
   });

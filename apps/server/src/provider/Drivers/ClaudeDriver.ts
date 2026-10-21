@@ -34,6 +34,7 @@ import {
   makePendingClaudeProvider,
   probeClaudeCapabilities,
 } from "../Layers/ClaudeProvider.ts";
+import { ClaudeCredentialStoreRegistry } from "../Layers/ClaudeCredentialStoreRegistry.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import {
   enrichProviderSnapshotWithAdvisoryAndUsage,
@@ -53,7 +54,13 @@ import {
   normalizeCommandPath,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
-import { makeClaudeCapabilitiesCacheKey, makeClaudeContinuationGroupKey } from "./ClaudeHome.ts";
+import { withClaudeCredentialSharing } from "./ClaudeCredentialSharing.ts";
+import {
+  makeClaudeCapabilitiesCacheKey,
+  makeClaudeContinuationGroupKey,
+  resolveClaudeConfigDirRealPath,
+  resolveClaudeCredentialsPath,
+} from "./ClaudeHome.ts";
 import { applyClaudeSessionRetention } from "./ClaudeSessionRetention.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -88,6 +95,7 @@ const UPDATE = makePackageManagedProviderMaintenanceResolver({
 
 export type ClaudeDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
+  | ClaudeCredentialStoreRegistry
   | Crypto.Crypto
   | FileSystem.FileSystem
   | HttpClient.HttpClient
@@ -123,8 +131,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const httpClient = yield* HttpClient.HttpClient;
+      const credentialStores = yield* ClaudeCredentialStoreRegistry;
       const eventLoggers = yield* ProviderEventLoggers;
       // Captured as a value here rather than read inside `enrichSnapshot`,
       // whose signature pins `R = never`.
@@ -149,6 +159,25 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
       // that can never be resumed again, so every config dir the app launches
       // gets the floor applied — including one added after this code shipped.
       yield* applyClaudeSessionRetention({ instanceId, config: effectiveConfig }, processEnv);
+
+      // Claim this account's sign-in for as long as the instance lives, so a
+      // sibling reading the same credentials file can be named in both
+      // instances' snapshots. Disabled instances refresh nothing and are left
+      // out — they cannot be the account that loses the rotation race.
+      if (enabled) {
+        yield* credentialStores.register({
+          instanceId,
+          label: displayName ?? instanceId,
+          locate: Effect.all({
+            configDirPath: resolveClaudeConfigDirRealPath(effectiveConfig, processEnv),
+            credentialsPath: resolveClaudeCredentialsPath(effectiveConfig, processEnv),
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+          ),
+        });
+      }
+
       const stampIdentity = withInstanceIdentity({
         instanceId,
         displayName,
@@ -185,6 +214,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         () => Cache.get(capabilitiesProbeCache, capabilitiesCacheKey),
         processEnv,
       ).pipe(
+        // Folded in after the probe rather than inside it: whether an account's
+        // sign-in is its own is a fact about the *set* of instances, which the
+        // single-instance probe has no way to see.
+        Effect.flatMap((draft) =>
+          credentialStores
+            .sharingFor(instanceId)
+            .pipe(Effect.map((sharing) => withClaudeCredentialSharing(draft, sharing))),
+        ),
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(Path.Path, path),

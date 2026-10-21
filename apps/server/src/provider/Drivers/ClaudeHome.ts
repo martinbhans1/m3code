@@ -46,6 +46,58 @@ export const resolveClaudeConfigDirPath = Effect.fn("resolveClaudeConfigDirPath"
   return path.join(yield* resolveClaudeHomePath(config), ".claude");
 });
 
+/** What Claude names the file it keeps an account's OAuth tokens in. */
+export const CLAUDE_CREDENTIALS_FILE_NAME = ".credentials.json";
+
+/**
+ * This instance's config dir with symlinks resolved, so two spellings of one
+ * directory compare equal. Falls back to the unresolved path when the dir does
+ * not exist yet — Claude creates it on first run.
+ */
+export const resolveClaudeConfigDirRealPath = Effect.fn("resolveClaudeConfigDirRealPath")(
+  function* (
+    config: Pick<ClaudeSettings, "homePath">,
+    environment?: NodeJS.ProcessEnv,
+  ): Effect.fn.Return<string, never, FileSystem.FileSystem | Path.Path> {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const configDirPath = yield* resolveClaudeConfigDirPath(config, environment);
+    return yield* fileSystem
+      .realPath(configDirPath)
+      .pipe(Effect.orElseSucceed(() => configDirPath));
+  },
+);
+
+/**
+ * The file holding this instance's OAuth tokens, with symlinks resolved.
+ *
+ * Resolving is the entire point. Claude mints a fresh refresh token on every
+ * refresh and kills the previous one, and it takes the lock that serialises
+ * that refresh inside the *config dir* — so two config dirs whose credentials
+ * file is one file (a symlink, a junction, the same dir named twice) hold two
+ * copies of one rotating token behind two locks that know nothing about each
+ * other. Whichever refreshes second is told `invalid_grant`, and Claude's
+ * answer to a dead refresh token is to blank the tokens where it found them.
+ * That signs both accounts out of a file neither thought it was sharing.
+ *
+ * Falls back to the resolved config dir's own path when the file is absent:
+ * Claude writes it on first sign-in, and an instance that has never signed in
+ * is not sharing anything yet.
+ */
+export const resolveClaudeCredentialsPath = Effect.fn("resolveClaudeCredentialsPath")(function* (
+  config: Pick<ClaudeSettings, "homePath">,
+  environment?: NodeJS.ProcessEnv,
+): Effect.fn.Return<string, never, FileSystem.FileSystem | Path.Path> {
+  const path = yield* Path.Path;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const credentialsPath = path.join(
+    yield* resolveClaudeConfigDirRealPath(config, environment),
+    CLAUDE_CREDENTIALS_FILE_NAME,
+  );
+  return yield* fileSystem
+    .realPath(credentialsPath)
+    .pipe(Effect.orElseSucceed(() => credentialsPath));
+});
+
 /**
  * The transcript store a Claude instance resumes from: `<config dir>/projects`,
  * with symlinks resolved.
