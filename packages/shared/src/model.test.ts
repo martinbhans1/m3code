@@ -165,6 +165,15 @@ describe("misc helpers", () => {
       "Ultrathink:\nInvestigate",
     );
     expect(applyClaudePromptEffortPrefix("/compact", "ultrathink")).toBe("/compact");
+    expect(applyClaudePromptEffortPrefix(" /compact keep the plan", "ultrathink")).toBe(
+      "/compact keep the plan",
+    );
+    expect(applyClaudePromptEffortPrefix("/plugin:run now", "ultrathink")).toBe("/plugin:run now");
+    // A path is not a slash command.
+    expect(applyClaudePromptEffortPrefix("/Users/me/app.ts is broken", "ultrathink")).toBe(
+      "Ultrathink:\n/Users/me/app.ts is broken",
+    );
+    expect(applyClaudePromptEffortPrefix("/ why", "ultrathink")).toBe("Ultrathink:\n/ why");
   });
 
   it("trims strings to null", () => {

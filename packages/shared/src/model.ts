@@ -357,6 +357,13 @@ export function resolvePromptInjectedEffort(
   return null;
 }
 
+/**
+ * A prompt that opens with a slash command: `/compact`, `/review the diff`,
+ * `/plugin:command`. A path (`/Users/me/app.ts is broken`) is not one: the
+ * word must end at whitespace or the end of the prompt.
+ */
+const CLAUDE_SLASH_COMMAND_PATTERN = /^\/[A-Za-z][\w-]*(?::[\w-]+)*(?:\s|$)/;
+
 export function applyClaudePromptEffortPrefix(
   text: string,
   effort: string | null | undefined,
@@ -370,7 +377,7 @@ export function applyClaudePromptEffortPrefix(
   }
   // A slash command (`/compact`) only runs when it opens the prompt; prefixed,
   // Claude reads it as a message and answers it instead.
-  if (trimmed.startsWith("Ultrathink:") || trimmed.startsWith("/")) {
+  if (trimmed.startsWith("Ultrathink:") || CLAUDE_SLASH_COMMAND_PATTERN.test(trimmed)) {
     return trimmed;
   }
   return `Ultrathink:\n${trimmed}`;
