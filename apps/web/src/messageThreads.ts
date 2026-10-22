@@ -60,6 +60,8 @@ function entryTurnId(entry: TimelineEntry): TurnId | null {
       return entry.proposedPlan.turnId;
     case "handoff":
       return null;
+    case "html-render":
+      return entry.htmlRender.turnId;
   }
 }
 

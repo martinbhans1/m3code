@@ -15,6 +15,8 @@ import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import { FollowupToolkitHandlersLive } from "./toolkits/followup/handlers.ts";
 import { FollowupToolkit } from "./toolkits/followup/tools.ts";
+import { HtmlRenderToolkitHandlersLive } from "./toolkits/html/handlers.ts";
+import { HtmlRenderToolkit } from "./toolkits/html/tools.ts";
 import { OrchestratorToolkitHandlersLive } from "./toolkits/orchestrator/handlers.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 import {
@@ -207,10 +209,15 @@ const FollowupToolkitRegistrationLive = McpServer.toolkit(FollowupToolkit).pipe(
   Layer.provide(FollowupToolkitHandlersLive),
 );
 
+const HtmlRenderToolkitRegistrationLive = McpServer.toolkit(HtmlRenderToolkit).pipe(
+  Layer.provide(HtmlRenderToolkitHandlersLive),
+);
+
 export const PreviewToolkitRegistrationLive = Layer.mergeAll(
   PreviewStandardToolkitRegistrationLive,
   PreviewSnapshotRegistrationLive,
   FollowupToolkitRegistrationLive,
+  HtmlRenderToolkitRegistrationLive,
 );
 
 const McpTransportLive = McpServer.layerHttp({

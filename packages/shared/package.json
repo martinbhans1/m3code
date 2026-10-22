@@ -182,6 +182,10 @@
     "./relayTracing": {
       "types": "./src/relayTracing.ts",
       "import": "./src/relayTracing.ts"
+    },
+    "./htmlRender": {
+      "types": "./src/htmlRender.ts",
+      "import": "./src/htmlRender.ts"
     }
   },
   "scripts": {

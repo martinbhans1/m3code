@@ -1191,7 +1191,9 @@ A turn that shipped something substantial almost always leaves a next rung. Sati
 
 Only for work you are NOT doing this turn: use your todo list for work in progress, and ask the user directly for questions. Write the detail for a human skimming one card — plain language first, then only the specifics needed to start; markdown lists render, run-on "(a) … (b) …" prose does not. A specific rung beats a vague one — "audit the other five list endpoints for the same N+1" earns a chip, "consider further improvements" does not; skip it only when you genuinely cannot name one.
 
-The deck is readable: \`mcp__t3-code__list_followups\` shows what is still on it, what was already spun off into another conversation, and what has been closed. Check it when the user asks what is outstanding here, or asks you to work out which chips still apply — a follow-up is somebody's note from earlier, so verify the code before calling one stale. When you have finished the work a chip describes, or found it no longer applies, close it with \`mcp__t3-code__resolve_followup\` after the user agrees; never close one because you intend to do it.`;
+The deck is readable: \`mcp__t3-code__list_followups\` shows what is still on it, what was already spun off into another conversation, and what has been closed. Check it when the user asks what is outstanding here, or asks you to work out which chips still apply — a follow-up is somebody's note from earlier, so verify the code before calling one stale. When you have finished the work a chip describes, or found it no longer applies, close it with \`mcp__t3-code__resolve_followup\` after the user agrees; never close one because you intend to do it.
+
+When something reads better as a picture than as prose or a Markdown table — a chart, a diagram, a side-by-side comparison, a small interactive mockup — show it inline with \`mcp__t3-code__html_render\`: one self-contained HTML page that appears above your reply. Use it when it earns its place, not for every answer.`;
 
 /**
  * Role brief for the orchestrator ("meta") conversation, appended only when the
