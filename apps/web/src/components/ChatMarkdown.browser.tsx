@@ -89,6 +89,47 @@ describe("ChatMarkdown", () => {
     }
   });
 
+  it("typesets maths and leaves prices as text", async () => {
+    const screen = await render(
+      <ChatMarkdown text={"It costs $5 and $10, so $x^2$ is the area."} cwd="/repo/project" />,
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-markdown-math="inline"] .katex')).not.toBeNull();
+      });
+      expect(document.querySelectorAll("[data-markdown-math]")).toHaveLength(1);
+      expect(document.querySelector(".chat-markdown")?.textContent).toContain("$5 and $10");
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows a mermaid fence as source while streaming and as a diagram once settled", async () => {
+    const text = "```mermaid\ngraph TD\n  A --> B\n```";
+    const screen = await render(<ChatMarkdown text={text} cwd="/repo/project" isStreaming />);
+
+    try {
+      expect(document.querySelector("[data-markdown-mermaid]")).toBeNull();
+      await expect.element(page.getByRole("button", { name: "Show code" })).not.toBeInTheDocument();
+
+      await screen.rerender(<ChatMarkdown text={text} cwd="/repo/project" />);
+      await vi.waitFor(
+        () => {
+          expect(document.querySelector("[data-markdown-mermaid] svg")).not.toBeNull();
+        },
+        { timeout: 10_000 },
+      );
+      expect(document.querySelector("[data-markdown-mermaid] script")).toBeNull();
+
+      await page.getByRole("button", { name: "Show code" }).click();
+      expect(document.querySelector("[data-markdown-mermaid]")).toBeNull();
+      await expect.element(page.getByRole("button", { name: "Show diagram" })).toBeVisible();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("rewrites file uri hrefs into direct paths before rendering", async () => {
     const filePath =
       "/Users/yashsingh/p/sco/claude-code-extract/src/utils/permissions/PermissionRule.ts";
