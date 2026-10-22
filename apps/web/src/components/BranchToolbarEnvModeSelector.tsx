@@ -16,8 +16,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 interface BranchToolbarEnvModeSelectorProps {
+  forceNewWorktree?: boolean;
   envLocked: boolean;
   effectiveEnvMode: EnvMode;
   activeWorktreePath: string | null;
@@ -25,6 +27,7 @@ interface BranchToolbarEnvModeSelectorProps {
 }
 
 export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSelector({
+  forceNewWorktree = false,
   envLocked,
   effectiveEnvMode,
   activeWorktreePath,
@@ -37,6 +40,22 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
     ],
     [activeWorktreePath],
   );
+
+  if (forceNewWorktree) {
+    return (
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span className="inline-flex items-center gap-1 border border-transparent px-[calc(--spacing(3)-1px)] text-sm font-medium text-muted-foreground/70 sm:text-xs" />
+          }
+        >
+          <FolderGit2Icon className="size-3" />
+          {resolveEnvModeLabel("worktree")}
+        </TooltipTrigger>
+        <TooltipPopup side="top">Each model starts in its own worktree</TooltipPopup>
+      </Tooltip>
+    );
+  }
 
   if (envLocked) {
     return (

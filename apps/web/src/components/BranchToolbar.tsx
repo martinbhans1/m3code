@@ -43,6 +43,8 @@ import {
 import { Separator } from "./ui/separator";
 
 interface BranchToolbarProps {
+  /** Several models are picked: each starts in its own new worktree, so the mode is fixed. */
+  forceNewWorktree?: boolean;
   environmentId: EnvironmentId;
   threadId: ThreadId;
   draftId?: DraftId;
@@ -60,6 +62,7 @@ interface BranchToolbarProps {
 }
 
 interface MobileRunContextSelectorProps {
+  forceNewWorktree: boolean;
   envLocked: boolean;
   envModeLocked: boolean;
   environmentId: EnvironmentId;
@@ -72,6 +75,7 @@ interface MobileRunContextSelectorProps {
 }
 
 const MobileRunContextSelector = memo(function MobileRunContextSelector({
+  forceNewWorktree,
   envLocked,
   envModeLocked,
   environmentId,
@@ -170,7 +174,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
             value={effectiveEnvMode}
             onValueChange={(value) => onEnvModeChange(value as EnvMode)}
           >
-            <MenuRadioItem disabled={envModeLocked} value="local">
+            <MenuRadioItem disabled={envModeLocked || forceNewWorktree} value="local">
               <span className="flex min-w-0 items-center gap-1.5">
                 {activeWorktreePath ? (
                   <FolderGitIcon className="size-3" />
@@ -196,6 +200,7 @@ const MobileRunContextSelector = memo(function MobileRunContextSelector({
 });
 
 export const BranchToolbar = memo(function BranchToolbar({
+  forceNewWorktree = false,
   environmentId,
   threadId,
   draftId,
@@ -230,9 +235,11 @@ export const BranchToolbar = memo(function BranchToolbar({
   );
   const activeProject = useStore(activeProjectSelector);
   const hasActiveThread = serverThread !== undefined || draftThread !== null;
-  const activeWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
+  const activeWorktreePath = forceNewWorktree
+    ? null
+    : (serverThread?.worktreePath ?? draftThread?.worktreePath ?? null);
   const effectiveEnvMode =
-    effectiveEnvModeOverride ??
+    (forceNewWorktree ? "worktree" : effectiveEnvModeOverride) ??
     resolveEffectiveEnvMode({
       activeWorktreePath,
       hasServerThread: serverThread !== undefined,
@@ -277,6 +284,7 @@ export const BranchToolbar = memo(function BranchToolbar({
       />
       {isMobile ? (
         <MobileRunContextSelector
+          forceNewWorktree={forceNewWorktree}
           envLocked={envLocked}
           envModeLocked={envModeLocked}
           environmentId={environmentId}
@@ -301,6 +309,7 @@ export const BranchToolbar = memo(function BranchToolbar({
             </>
           )}
           <BranchToolbarEnvModeSelector
+            forceNewWorktree={forceNewWorktree}
             envLocked={envModeLocked}
             effectiveEnvMode={effectiveEnvMode}
             activeWorktreePath={activeWorktreePath}
@@ -323,7 +332,12 @@ export const BranchToolbar = memo(function BranchToolbar({
         threadId={threadId}
         {...(draftId ? { draftId } : {})}
         envLocked={envLocked}
-        {...(effectiveEnvModeOverride ? { effectiveEnvModeOverride } : {})}
+        forceNewWorktree={forceNewWorktree}
+        {...(forceNewWorktree
+          ? { effectiveEnvModeOverride: "worktree" as const }
+          : effectiveEnvModeOverride
+            ? { effectiveEnvModeOverride }
+            : {})}
         {...(activeThreadBranchOverride !== undefined ? { activeThreadBranchOverride } : {})}
         {...(onActiveThreadBranchOverrideChange ? { onActiveThreadBranchOverrideChange } : {})}
         {...(onCheckoutPullRequestRequest ? { onCheckoutPullRequestRequest } : {})}

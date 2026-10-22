@@ -65,6 +65,8 @@ import {
 } from "../composerFooterLayout";
 import { type ComposerPromptEditorHandle, ComposerPromptEditor } from "../ComposerPromptEditor";
 import { ProviderModelPicker } from "./ProviderModelPicker";
+import { useMultiModelSelection } from "./multiModelSelectionStore";
+import { multiModelSelectionKey, toggleMultiModelSelection } from "./multiModelSend";
 import { ProviderUsageDialog } from "./ProviderUsageDialog";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
@@ -368,6 +370,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   isConnecting: boolean;
   isEnvironmentUnavailable: boolean;
   hasSendableContent: boolean;
+  sendBlockedReason: string | null;
   preserveComposerFocusOnPointerDown?: boolean;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
@@ -378,6 +381,8 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
     <>
       {props.isPreparingWorktree ? (
         <span className="text-muted-foreground/70 text-xs">Preparing worktree...</span>
+      ) : props.sendBlockedReason ? (
+        <span className="text-muted-foreground/70 text-xs">{props.sendBlockedReason}</span>
       ) : null}
       <ComposerPrimaryActions
         compact={props.compact}
@@ -389,7 +394,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         isConnecting={props.isConnecting}
         isEnvironmentUnavailable={props.isEnvironmentUnavailable}
         isPreparingWorktree={props.isPreparingWorktree}
-        hasSendableContent={props.hasSendableContent}
+        hasSendableContent={props.hasSendableContent && props.sendBlockedReason === null}
         preserveComposerFocusOnPointerDown={props.preserveComposerFocusOnPointerDown ?? false}
         onPreviousPendingQuestion={props.onPreviousPendingQuestion}
         onInterrupt={props.onInterrupt}
@@ -546,7 +551,13 @@ export interface ChatComposerProps {
     cursorAdjacentToMention: boolean,
   ) => void;
 
-  onProviderModelSelect: (instanceId: ProviderInstanceId, model: string) => void;
+  onProviderModelSelect: (
+    instanceId: ProviderInstanceId,
+    model: string,
+    options?: { focusComposer?: boolean },
+  ) => void;
+  /** Why sending to the picked models cannot go out yet, shown by the send button. */
+  multiModelSendBlockReason: string | null;
   getModelDisabledReason: (instanceId: ProviderInstanceId, model: string) => string | null;
   toggleInteractionMode: () => void;
   handleRuntimeModeChange: (mode: RuntimeMode) => void;
@@ -575,7 +586,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadEnvironmentId: _activeThreadEnvironmentId,
     activeThread,
     isServerThread,
-    isLocalDraftThread: _isLocalDraftThread,
+    isLocalDraftThread,
     phase,
     isConnecting,
     isSendBusy,
@@ -624,6 +635,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onPreviousActivePendingUserInputQuestion,
     onChangeActivePendingUserInputCustomAnswer,
     onProviderModelSelect,
+    multiModelSendBlockReason,
     getModelDisabledReason,
     toggleInteractionMode,
     handleRuntimeModeChange,
@@ -848,6 +860,45 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     [selectedInstanceId, selectedModel, selectedModelOptionsForDispatch],
   );
   const selectedModelForPicker = selectedModel;
+  // Picking several models is only for a thread that has not started yet.
+  const [multiModelSelections, setMultiModelSelections] = useMultiModelSelection(
+    routeKind === "draft" && isLocalDraftThread ? draftId : null,
+  );
+  const canPickMultipleModels = routeKind === "draft" && isLocalDraftThread && draftId !== null;
+  const modelSelectionByProvider = composerDraft.modelSelectionByProvider;
+  const onToggleModel = useCallback(
+    (instanceId: ProviderInstanceId, model: string) => {
+      const saved = modelSelectionByProvider?.[instanceId];
+      const { multi, single } = toggleMultiModelSelection({
+        current: multiModelSelections,
+        primary: selectedModelSelection,
+        toggled: { instanceId, model },
+        // Carry the traits last chosen for that model on that account.
+        options: saved?.model === model ? saved.options : undefined,
+      });
+      setMultiModelSelections(multi);
+      if (
+        multi === null &&
+        multiModelSelectionKey(single) !== multiModelSelectionKey(selectedModelSelection)
+      ) {
+        onProviderModelSelect(single.instanceId, single.model, { focusComposer: false });
+      }
+    },
+    [
+      modelSelectionByProvider,
+      multiModelSelections,
+      onProviderModelSelect,
+      selectedModelSelection,
+      setMultiModelSelections,
+    ],
+  );
+  const onPickerModelChange = useCallback(
+    (instanceId: ProviderInstanceId, model: string) => {
+      setMultiModelSelections(null);
+      onProviderModelSelect(instanceId, model);
+    },
+    [onProviderModelSelect, setMultiModelSelections],
+  );
   // Instance-keyed option list so the picker can show each configured
   // instance (built-in + custom) as a first-class sidebar entry. The
   // options are server-reported models plus that exact instance's
@@ -2728,7 +2779,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     setIsComposerModelPickerOpen(open);
                   }}
                   getModelDisabledReason={getModelDisabledReason}
-                  onInstanceModelChange={onProviderModelSelect}
+                  {...(canPickMultipleModels
+                    ? { onToggleModel, selectedModels: multiModelSelections }
+                    : {})}
+                  onInstanceModelChange={onPickerModelChange}
                 />
 
                 {isComposerFooterCompact ? (
@@ -2822,6 +2876,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   isEnvironmentUnavailable={environmentUnavailable !== null}
                   isPreparingWorktree={isPreparingWorktree}
                   hasSendableContent={composerSendState.hasSendableContent}
+                  sendBlockedReason={multiModelSendBlockReason}
                   preserveComposerFocusOnPointerDown={isMobileViewport}
                   onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                   onInterrupt={handleInterruptPrimaryAction}

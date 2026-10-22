@@ -46,6 +46,8 @@ import {
 import { stackedThreadToast, toastManager } from "./ui/toast";
 
 interface BranchToolbarBranchSelectorProps {
+  /** Ignore the draft's existing worktree: the branch picked is a base for new ones. */
+  forceNewWorktree?: boolean;
   className?: string;
   environmentId: EnvironmentId;
   threadId: ThreadId;
@@ -80,6 +82,7 @@ function getBranchTriggerLabel(input: {
 }
 
 export function BranchToolbarBranchSelector({
+  forceNewWorktree = false,
   className,
   environmentId,
   threadId,
@@ -123,7 +126,9 @@ export function BranchToolbarBranchSelector({
     activeThreadBranchOverride !== undefined
       ? activeThreadBranchOverride
       : (serverThread?.branch ?? draftThread?.branch ?? null);
-  const activeWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
+  const activeWorktreePath = forceNewWorktree
+    ? null
+    : (serverThread?.worktreePath ?? draftThread?.worktreePath ?? null);
   const activeProjectCwd = activeProject?.cwd ?? null;
   const branchCwd = activeWorktreePath ?? activeProjectCwd;
   const hasServerThread = serverThread !== undefined;

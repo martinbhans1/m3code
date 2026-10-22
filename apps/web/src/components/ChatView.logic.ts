@@ -3,6 +3,7 @@ import {
   isProviderDriverKind,
   ProjectId,
   type ModelSelection,
+  type PreviewAnnotationPayload,
   type ProviderDriverKind,
   type ServerProvider,
   type ScopedThreadRef,
@@ -14,10 +15,19 @@ import { type ComposerImageAttachment, type DraftThreadState } from "../composer
 import * as Schema from "effect/Schema";
 import { selectThreadByRef, useStore } from "../store";
 import {
+  appendTerminalContextsToPrompt,
   filterTerminalContextsWithText,
+  formatTerminalContextLabel,
   stripInlineTerminalContextPlaceholders,
   type TerminalContextDraft,
 } from "../lib/terminalContext";
+import {
+  appendElementContextsToPrompt,
+  type ElementContextDraft,
+  formatElementContextLabel,
+} from "../lib/elementContext";
+import { appendPreviewAnnotationPrompt } from "../lib/previewAnnotation";
+import { appendReviewCommentsToPrompt, type ReviewCommentContext } from "../reviewCommentContext";
 import type { DraftThreadEnvMode } from "../composerDraftStore";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
@@ -447,4 +457,53 @@ export function hasServerAcknowledgedLocalDispatch(input: {
     input.localDispatch.sessionOrchestrationStatus !== (session?.orchestrationStatus ?? null) ||
     input.localDispatch.sessionUpdatedAt !== (session?.updatedAt ?? null)
   );
+}
+
+/**
+ * The text a send carries: the prompt with its terminal, element, preview
+ * and review context appended, in that order.
+ */
+export function buildComposerMessageText(input: {
+  readonly prompt: string;
+  readonly terminalContexts: ReadonlyArray<TerminalContextDraft>;
+  readonly elementContexts: ReadonlyArray<ElementContextDraft>;
+  readonly previewAnnotations: ReadonlyArray<PreviewAnnotationPayload>;
+  readonly reviewComments: ReadonlyArray<ReviewCommentContext>;
+}): string {
+  const withContexts = appendElementContextsToPrompt(
+    appendTerminalContextsToPrompt(input.prompt, input.terminalContexts),
+    input.elementContexts,
+  );
+  const withPreviewAnnotations = input.previewAnnotations.reduce(
+    (text, annotation) => appendPreviewAnnotationPrompt(text, annotation),
+    withContexts,
+  );
+  return appendReviewCommentsToPrompt(withPreviewAnnotations, input.reviewComments);
+}
+
+/** What a new thread's title starts from when the prompt itself is empty. */
+export function deriveTurnTitleSeed(input: {
+  readonly trimmedPrompt: string;
+  readonly images: ReadonlyArray<Pick<ComposerImageAttachment, "name">>;
+  readonly terminalContexts: ReadonlyArray<TerminalContextDraft>;
+  readonly elementContexts: ReadonlyArray<ElementContextDraft>;
+}): string {
+  if (input.trimmedPrompt) return input.trimmedPrompt;
+  const firstImage = input.images[0];
+  if (firstImage) return `Image: ${firstImage.name}`;
+  const firstTerminalContext = input.terminalContexts[0];
+  if (firstTerminalContext) return formatTerminalContextLabel(firstTerminalContext);
+  const firstElementContext = input.elementContexts[0];
+  if (firstElementContext) return formatElementContextLabel(firstElementContext);
+  return "New thread";
+}
+
+/** What the composer held when a send began, kept to put back if it fails. */
+export interface ComposerSendSnapshot {
+  readonly prompt: string;
+  readonly images: ComposerImageAttachment[];
+  readonly terminalContexts: TerminalContextDraft[];
+  readonly elementContexts: ElementContextDraft[];
+  readonly previewAnnotations: PreviewAnnotationPayload[];
+  readonly reviewComments: ReviewCommentContext[];
 }

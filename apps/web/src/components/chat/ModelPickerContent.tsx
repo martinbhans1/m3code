@@ -58,6 +58,16 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   activeInstanceId: ProviderInstanceId;
   model: string;
   /**
+   * Several picked models (a new thread sent to each). When set, every pick
+   * shows a check instead of only the active model.
+   */
+  selectedModels?: ReadonlyArray<{ instanceId: ProviderInstanceId; model: string }> | null;
+  /**
+   * Shift-click / Shift-Enter adds or removes a model from the picks. Only
+   * passed where several models are allowed (a new thread's draft).
+   */
+  onToggleModel?: (instanceId: ProviderInstanceId, model: string) => void;
+  /**
    * When set, the picker is locked to the given driver kind — typically
    * because the user is editing a previously-sent message and can't change
    * which driver served the turn. Multiple instances of the same kind
@@ -91,7 +101,19 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     instanceEntries,
     getModelDisabledReason,
     onInstanceModelChange,
+    onToggleModel,
+    selectedModels,
   } = props;
+  const activeModelKey = `${props.activeInstanceId}:${props.model}`;
+  const selectedModelKeySet = useMemo(
+    () =>
+      new Set(
+        selectedModels
+          ? selectedModels.map((selection) => `${selection.instanceId}:${selection.model}`)
+          : [activeModelKey],
+      ),
+    [activeModelKey, selectedModels],
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const [showTopScrollFade, setShowTopScrollFade] = useState(false);
   const [showBottomScrollFade, setShowBottomScrollFade] = useState(false);
@@ -358,7 +380,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   ]);
 
   const handleModelSelect = useCallback(
-    (modelSlug: string, instanceId: ProviderInstanceId) => {
+    (modelSlug: string, instanceId: ProviderInstanceId, additive = false) => {
       if (getModelDisabledReason?.(instanceId, modelSlug)) {
         return;
       }
@@ -374,11 +396,20 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       // (slug casing etc.). Custom instances share their driver's
       // normalization rules, so pass the driver kind here.
       const resolvedModel = resolveSelectableModel(entry.driverKind, modelSlug, options);
-      if (resolvedModel) {
+      if (!resolvedModel) return;
+      if (additive && onToggleModel) {
+        onToggleModel(instanceId, resolvedModel);
+      } else {
         onInstanceModelChange(instanceId, resolvedModel);
       }
     },
-    [entryByInstanceId, getModelDisabledReason, modelOptionsByInstance, onInstanceModelChange],
+    [
+      entryByInstanceId,
+      getModelDisabledReason,
+      modelOptionsByInstance,
+      onInstanceModelChange,
+      onToggleModel,
+    ],
   );
 
   const toggleFavorite = useCallback(
@@ -499,6 +530,11 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     };
   }, [handleModelSelect, keybindings, modelJumpModelKeys, modelJumpShortcutContext]);
 
+  const modelListExtraData = useMemo(
+    () => ({ favoritesSet, selectedModelKeySet }),
+    [favoritesSet, selectedModelKeySet],
+  );
+
   useLayoutEffect(() => {
     setShowTopScrollFade(false);
     setShowBottomScrollFade(filteredModelKeys.length > 5);
@@ -538,7 +574,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
         )}
 
         {/* Main content area */}
-        <Combobox
+        <Combobox<string, boolean>
           inline
           items={allModelKeys}
           filteredItems={filteredModelKeys}
@@ -546,7 +582,10 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           autoHighlight
           open
           virtualized
-          value={`${props.activeInstanceId}:${props.model}`}
+          // Multiple mode where picks can be toggled, so clicking an already
+          // picked row still reports a change (single mode swallows it).
+          multiple={onToggleModel !== undefined}
+          value={onToggleModel ? [...selectedModelKeySet] : activeModelKey}
           onItemHighlighted={(modelKey, eventDetails) => {
             highlightedModelKeyRef.current = typeof modelKey === "string" ? modelKey : null;
             if (eventDetails.reason === "keyboard" && eventDetails.index >= 0) {
@@ -556,12 +595,19 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               });
             }
           }}
-          onValueChange={(modelKey) => {
+          onValueChange={(value, eventDetails) => {
+            // In multiple mode the value is the whole set; the row acted on is
+            // the one added or removed.
+            const modelKey = Array.isArray(value)
+              ? (value.find((key) => !selectedModelKeySet.has(key)) ??
+                [...selectedModelKeySet].find((key) => !value.includes(key)))
+              : value;
             if (typeof modelKey !== "string") {
               return;
             }
             const { instanceId, slug } = splitInstanceModelKey(modelKey);
-            handleModelSelect(slug, instanceId);
+            const event = eventDetails.event as Partial<MouseEvent> | undefined;
+            handleModelSelect(slug, instanceId, event?.shiftKey === true);
           }}
         >
           <div
@@ -600,7 +646,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                       const { instanceId, slug } = splitInstanceModelKey(
                         highlightedModelKeyRef.current,
                       );
-                      handleModelSelect(slug, instanceId);
+                      handleModelSelect(slug, instanceId, e.shiftKey);
                       return;
                     }
                     e.stopPropagation();
@@ -619,7 +665,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                 <LegendList<string>
                   ref={modelListRef}
                   data={filteredModelKeys}
-                  extraData={favoritesSet}
+                  extraData={modelListExtraData}
                   keyExtractor={(modelKey) => modelKey}
                   renderItem={({ item: modelKey, index }) => {
                     const model = filteredModelByKey.get(modelKey);
@@ -638,7 +684,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                         providerDisplayName={model.instanceDisplayName}
                         providerAccentColor={model.instanceAccentColor}
                         isFavorite={favoritesSet.has(modelKey)}
-                        isSelected={modelKey === `${props.activeInstanceId}:${props.model}`}
+                        isSelected={selectedModelKeySet.has(modelKey)}
                         showProvider
                         preferShortName={!isLocked}
                         useTriggerLabel={false}

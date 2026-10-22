@@ -18,6 +18,7 @@ import {
   getTriggerDisplayModelName,
 } from "./providerIconUtils";
 import { setModelPickerOpen } from "../../modelPickerOpenState";
+import { formatMultiModelTriggerLabel, resolveMultiModelLabels } from "./multiModelSend";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 
 export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
@@ -27,6 +28,10 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
    */
   activeInstanceId: ProviderInstanceId;
   model: string;
+  /** Several picked models; the trigger then shows all of them. */
+  selectedModels?: ReadonlyArray<{ instanceId: ProviderInstanceId; model: string }> | null;
+  /** Shift-click toggles a model in the picks; the menu stays open. */
+  onToggleModel?: (instanceId: ProviderInstanceId, model: string) => void;
   lockedProvider: ProviderDriverKind | null;
   lockedContinuationGroupKey?: string | null;
   /** Instance entries rendered in the sidebar + used to resolve display name. */
@@ -71,6 +76,29 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     (entry) => activeEntry !== null && entry.driverKind === activeEntry.driverKind,
   ).length;
   const showInstanceBadge = Boolean(activeEntry?.accentColor) || duplicateDriverCount > 1;
+  const multiModel = useMemo(() => {
+    const selections = props.selectedModels;
+    if (!selections || selections.length < 2) return null;
+    const labels = resolveMultiModelLabels(selections, {
+      modelName: (selection) => {
+        const option = props.modelOptionsByInstance
+          .get(selection.instanceId)
+          ?.find((candidate) => candidate.slug === selection.model);
+        return option ? getTriggerDisplayModelName(option) : selection.model;
+      },
+      instanceName: (selection) =>
+        props.instanceEntries.find((entry) => entry.instanceId === selection.instanceId)
+          ?.displayName ?? selection.instanceId,
+    });
+    return {
+      entries: selections.map((selection) => ({
+        key: `${selection.instanceId}:${selection.model}`,
+        entry: props.instanceEntries.find((entry) => entry.instanceId === selection.instanceId),
+      })),
+      label: formatMultiModelTriggerLabel(labels),
+      tooltip: labels.join(", "),
+    };
+  }, [props.instanceEntries, props.modelOptionsByInstance, props.selectedModels]);
 
   const setIsMenuOpen = (open: boolean) => {
     props.onOpenChange?.(open);
@@ -139,6 +167,12 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
     props.onInstanceModelChange(instanceId, model);
     setIsMenuOpen(false);
   };
+  const onToggleModel = props.onToggleModel;
+  const handleToggleModel = onToggleModel
+    ? (instanceId: ProviderInstanceId, model: string) => {
+        if (!props.disabled) onToggleModel(instanceId, model);
+      }
+    : undefined;
 
   return (
     <>
@@ -168,7 +202,24 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           }
         >
           <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
-            {activeEntry ? (
+            {multiModel ? (
+              <span className="flex shrink-0 items-center -space-x-1.5" aria-hidden="true">
+                {multiModel.entries
+                  .slice(0, 3)
+                  .map(({ key, entry }) =>
+                    entry ? (
+                      <ProviderInstanceIcon
+                        key={key}
+                        driverKind={entry.driverKind}
+                        displayName={entry.displayName}
+                        accentColor={entry.accentColor}
+                        className="size-4 rounded-full bg-background ring-2 ring-background"
+                        iconClassName="size-4"
+                      />
+                    ) : null,
+                  )}
+              </span>
+            ) : activeEntry ? (
               <ProviderInstanceIcon
                 driverKind={activeEntry.driverKind}
                 displayName={activeEntry.displayName}
@@ -185,9 +236,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             ) : null}
             <Tooltip>
               <TooltipTrigger render={<span className="min-w-0 flex-1 overflow-hidden truncate" />}>
-                {triggerTitle}
+                {multiModel?.label ?? triggerTitle}
               </TooltipTrigger>
-              <TooltipPopup side="top">{triggerLabel}</TooltipPopup>
+              <TooltipPopup side="top">{multiModel?.tooltip ?? triggerLabel}</TooltipPopup>
             </Tooltip>
           </span>
           <span aria-hidden="true" className="flex items-center">
@@ -205,6 +256,12 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
           <ModelPickerContent
             activeInstanceId={activeInstanceId}
             model={props.model}
+            {...(handleToggleModel
+              ? {
+                  onToggleModel: handleToggleModel,
+                  selectedModels: multiModel ? props.selectedModels : null,
+                }
+              : {})}
             lockedProvider={props.lockedProvider}
             lockedContinuationGroupKey={props.lockedContinuationGroupKey ?? null}
             instanceEntries={props.instanceEntries}

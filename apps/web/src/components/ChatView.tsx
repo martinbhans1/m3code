@@ -22,11 +22,7 @@ import {
   TerminalOpenInput,
 } from "@t3tools/contracts";
 import { scopedThreadKey, scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime";
-import {
-  applyClaudePromptEffortPrefix,
-  createModelSelection,
-  resolvePromptInjectedEffort,
-} from "@t3tools/shared/model";
+import { createModelSelection } from "@t3tools/shared/model";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
 import { truncate } from "@t3tools/shared/String";
 import { nextTerminalId, resolveTerminalSessionLabel } from "@t3tools/shared/terminalLabels";
@@ -153,7 +149,7 @@ import {
   projectScriptIdFromCommand,
 } from "~/projectScripts";
 import { newCommandId, newDraftId, newMessageId, newThreadId } from "~/lib/utils";
-import { getProviderModelCapabilities, resolveSelectableProvider } from "../providerModels";
+import { resolveSelectableProvider } from "../providerModels";
 import { useSettings } from "../hooks/useSettings";
 import { useOrchestratorProjectId } from "../hooks/useOrchestratorConversation";
 import {
@@ -183,23 +179,20 @@ import {
   useComposerDraftStore,
   type DraftId,
 } from "../composerDraftStore";
-import {
-  appendTerminalContextsToPrompt,
-  formatTerminalContextLabel,
-  type TerminalContextDraft,
-  type TerminalContextSelection,
-} from "../lib/terminalContext";
+import { type TerminalContextDraft, type TerminalContextSelection } from "../lib/terminalContext";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { useKnownTerminalSessions, useThreadRunningTerminalIds } from "../terminalSessionState";
-import {
-  appendElementContextsToPrompt,
-  type ElementContextDraft,
-  formatElementContextLabel,
-} from "../lib/elementContext";
-import { appendPreviewAnnotationPrompt } from "../lib/previewAnnotation";
-import { appendReviewCommentsToPrompt, type ReviewCommentContext } from "../reviewCommentContext";
+import { type ElementContextDraft } from "../lib/elementContext";
+import { type ReviewCommentContext } from "../reviewCommentContext";
 import { ChatComposer, type ChatComposerHandle } from "./chat/ChatComposer";
-import { getComposerProviderState } from "./chat/composerProviderState";
+import {
+  formatOutgoingPrompt,
+  getComposerProviderState,
+  IMAGE_ONLY_BOOTSTRAP_PROMPT,
+} from "./chat/composerProviderState";
+import { useMultiModelSelection } from "./chat/multiModelSelectionStore";
+import { multiModelSelectionKey, resolveMultiModelSendBlockReason } from "./chat/multiModelSend";
+import { useMultiModelSend } from "./chat/useMultiModelSend";
 import { QueuedTurns } from "./chat/QueuedTurns";
 import {
   type QueuedTurn,
@@ -219,8 +212,11 @@ import { ProviderStatusBanner } from "./chat/ProviderStatusBanner";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import { ComposerBannerStack, type ComposerBannerStackItem } from "./chat/ComposerBannerStack";
 import {
+  buildComposerMessageText,
   buildExpiredTerminalContextToastCopy,
   buildLocalDraftThread,
+  type ComposerSendSnapshot,
+  deriveTurnTitleSeed,
   collectUserMessageBlobPreviewUrls,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
@@ -258,8 +254,6 @@ import {
   resolveServerConfigVersionMismatch,
 } from "../versionSkew";
 
-const IMAGE_ONLY_BOOTSTRAP_PROMPT =
-  "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_PROPOSED_PLANS: Thread["proposedPlans"] = [];
 const EMPTY_PROVIDERS: ServerProvider[] = [];
@@ -440,17 +434,6 @@ function useThreadPlanCatalog(threadIds: readonly ThreadId[]): ThreadPlanCatalog
   );
 }
 
-function formatOutgoingPrompt(params: {
-  provider: ProviderDriverKind;
-  model: string | null;
-  models: ReadonlyArray<ServerProvider["models"][number]>;
-  effort: string | null;
-  text: string;
-}): string {
-  const caps = getProviderModelCapabilities(params.models, params.model, params.provider);
-  const promptEffort = resolvePromptInjectedEffort(caps, params.effort);
-  return applyClaudePromptEffortPrefix(params.text, promptEffort);
-}
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
 
@@ -1276,6 +1259,8 @@ function ChatViewContent(props: ChatViewProps) {
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
+  const [multiModelSelections] = useMultiModelSelection(draftId);
+  const sendToMultipleModels = useMultiModelSend();
   const terminalUiOpenByThreadRef = useRef<Record<string, boolean>>({});
 
   const terminalUiState = useTerminalUiStateStore((state) =>
@@ -3712,6 +3697,14 @@ function ChatViewContent(props: ChatViewProps) {
     requestedEnvMode: envMode,
     isGitRepo,
   });
+  const multiModelSendBlockReason =
+    multiModelSelections !== null && isLocalDraftThread
+      ? resolveMultiModelSendBlockReason({
+          isGitRepo,
+          baseBranch: activeThreadBranch,
+          projectCwd: activeProject?.cwd,
+        })
+      : null;
 
   useEffect(() => {
     setPendingServerThreadEnvMode(null);
@@ -4000,6 +3993,101 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
 
+  const isComposerEmpty = () => {
+    const draft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+    return (
+      promptRef.current.length === 0 &&
+      composerImagesRef.current.length === 0 &&
+      composerTerminalContextsRef.current.length === 0 &&
+      composerElementContextsRef.current.length === 0 &&
+      (draft?.previewAnnotations.length ?? 0) === 0 &&
+      (draft?.reviewComments.length ?? 0) === 0
+    );
+  };
+
+  /** Puts a failed send's contents back into the composer. */
+  const writeComposerSnapshot = (snapshot: ComposerSendSnapshot) => {
+    promptRef.current = snapshot.prompt;
+    const retryComposerImages = snapshot.images.map(cloneComposerImageForRetry);
+    composerImagesRef.current = retryComposerImages;
+    composerTerminalContextsRef.current = snapshot.terminalContexts;
+    composerElementContextsRef.current = snapshot.elementContexts;
+    setComposerDraftPrompt(composerDraftTarget, snapshot.prompt);
+    addComposerDraftImages(composerDraftTarget, retryComposerImages);
+    setComposerDraftTerminalContexts(composerDraftTarget, snapshot.terminalContexts);
+    setComposerDraftElementContexts(composerDraftTarget, snapshot.elementContexts);
+    setComposerDraftPreviewAnnotations(composerDraftTarget, snapshot.previewAnnotations);
+    setComposerDraftReviewComments(composerDraftTarget, snapshot.reviewComments);
+    composerRef.current?.resetCursorState({
+      cursor: collapseExpandedComposerCursor(snapshot.prompt, snapshot.prompt.length),
+      prompt: snapshot.prompt,
+      detectTrigger: true,
+    });
+  };
+
+  /**
+   * A new-thread draft with several models picked: one thread per model, each
+   * in its own new worktree, while the user stays on the cleared draft.
+   */
+  const sendMultiModelDraft = async (input: {
+    readonly draftId: DraftId;
+    readonly threadId: ThreadId;
+    readonly project: NonNullable<typeof activeProject>;
+    readonly snapshot: ComposerSendSnapshot;
+    readonly trimmedPrompt: string;
+    readonly selectedModelSelection: ModelSelection;
+    readonly selections: ReadonlyArray<ModelSelection>;
+  }) => {
+    const blockReason = resolveMultiModelSendBlockReason({
+      isGitRepo,
+      baseBranch: activeThreadBranch,
+      projectCwd: input.project.cwd,
+    });
+    if (blockReason !== null || !activeThreadBranch || !input.project.cwd) {
+      setThreadError(input.threadId, blockReason);
+      return;
+    }
+    const { snapshot } = input;
+    const selectedKey = multiModelSelectionKey(input.selectedModelSelection);
+    sendInFlightRef.current = true;
+    beginLocalDispatch({ preparingWorktree: true });
+    try {
+      await sendToMultipleModels({
+        environmentId,
+        draftId: input.draftId,
+        projectId: input.project.id,
+        projectCwd: input.project.cwd,
+        baseBranch: activeThreadBranch,
+        // The composer's own pick carries its live traits (effort and the like).
+        selections: input.selections.map((selection) =>
+          multiModelSelectionKey(selection) === selectedKey
+            ? input.selectedModelSelection
+            : selection,
+        ),
+        entries: providerInstanceEntries,
+        messageText: buildComposerMessageText(snapshot),
+        titleSeed: deriveTurnTitleSeed({ trimmedPrompt: input.trimmedPrompt, ...snapshot }),
+        images: snapshot.images,
+        runtimeMode,
+        interactionMode,
+        setError: (error) => setThreadError(input.threadId, error),
+        clearComposer: () => {
+          promptRef.current = "";
+          clearComposerDraftContent(composerDraftTarget);
+          composerRef.current?.resetCursorState();
+        },
+        restoreComposer: () => {
+          if (isComposerEmpty()) writeComposerSnapshot(snapshot);
+        },
+        selectSingleModel: (instanceId, model) =>
+          onProviderModelSelect(instanceId, model, { focusComposer: false }),
+      });
+    } finally {
+      sendInFlightRef.current = false;
+      resetLocalDispatch();
+    }
+  };
+
   const onSend = async (
     e?: { preventDefault: () => void },
     behavior: "queue" | "steer" = "queue",
@@ -4115,6 +4203,25 @@ function ChatViewContent(props: ChatViewProps) {
     }
     if (!activeProject) return;
     const threadIdForSend = activeThread.id;
+    if (multiModelSelections && isLocalDraftThread && draftId) {
+      await sendMultiModelDraft({
+        draftId,
+        threadId: threadIdForSend,
+        project: activeProject,
+        trimmedPrompt: trimmed,
+        snapshot: {
+          prompt: promptForSend,
+          images: [...composerImages],
+          terminalContexts: [...sendableComposerTerminalContexts],
+          elementContexts: [...composerElementContexts],
+          previewAnnotations: [...composerPreviewAnnotations],
+          reviewComments: [...composerReviewComments],
+        },
+        selectedModelSelection: ctxSelectedModelSelection,
+        selections: multiModelSelections,
+      });
+      return;
+    }
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     const baseBranchForWorktree =
       isFirstMessage && sendEnvMode === "worktree" && !activeThread.worktreePath
@@ -4137,18 +4244,13 @@ function ChatViewContent(props: ChatViewProps) {
     const composerElementContextsSnapshot = [...composerElementContexts];
     const composerPreviewAnnotationsSnapshot = [...composerPreviewAnnotations];
     const composerReviewCommentsSnapshot: ReviewCommentContext[] = [...composerReviewComments];
-    const messageTextWithContexts = appendElementContextsToPrompt(
-      appendTerminalContextsToPrompt(promptForSend, composerTerminalContextsSnapshot),
-      composerElementContextsSnapshot,
-    );
-    const messageTextWithPreviewAnnotations = composerPreviewAnnotationsSnapshot.reduce(
-      (text, annotation) => appendPreviewAnnotationPrompt(text, annotation),
-      messageTextWithContexts,
-    );
-    const messageTextForSend = appendReviewCommentsToPrompt(
-      messageTextWithPreviewAnnotations,
-      composerReviewCommentsSnapshot,
-    );
+    const messageTextForSend = buildComposerMessageText({
+      prompt: promptForSend,
+      terminalContexts: composerTerminalContextsSnapshot,
+      elementContexts: composerElementContextsSnapshot,
+      previewAnnotations: composerPreviewAnnotationsSnapshot,
+      reviewComments: composerReviewCommentsSnapshot,
+    });
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
     const outgoingMessageText = formatOutgoingPrompt({
@@ -4259,26 +4361,14 @@ function ChatViewContent(props: ChatViewProps) {
     // queue instead of unwinding the send back into the composer.
     const requeueCommandRef: { current: QueuedTurn["command"] | null } = { current: null };
     await (async () => {
-      let firstComposerImageName: string | null = null;
-      if (composerImagesSnapshot.length > 0) {
-        const firstComposerImage = composerImagesSnapshot[0];
-        if (firstComposerImage) {
-          firstComposerImageName = firstComposerImage.name;
-        }
-      }
-      let titleSeed = trimmed;
-      if (!titleSeed) {
-        if (firstComposerImageName) {
-          titleSeed = `Image: ${firstComposerImageName}`;
-        } else if (composerTerminalContextsSnapshot.length > 0) {
-          titleSeed = formatTerminalContextLabel(composerTerminalContextsSnapshot[0]!);
-        } else if (composerElementContextsSnapshot.length > 0) {
-          titleSeed = formatElementContextLabel(composerElementContextsSnapshot[0]!);
-        } else {
-          titleSeed = "New thread";
-        }
-      }
-      const title = truncate(titleSeed);
+      const title = truncate(
+        deriveTurnTitleSeed({
+          trimmedPrompt: trimmed,
+          images: composerImagesSnapshot,
+          terminalContexts: composerTerminalContextsSnapshot,
+          elementContexts: composerElementContextsSnapshot,
+        }),
+      );
       // No code-constant tail: starting on a model nobody chose is how a
       // retired one kept being sent. With nothing to start on, say so and keep
       // the message in the composer.
@@ -4394,17 +4484,7 @@ function ChatViewContent(props: ChatViewProps) {
         setThreadError(threadIdForSend, null);
         return;
       }
-      if (
-        !turnStartSucceeded &&
-        promptRef.current.length === 0 &&
-        composerImagesRef.current.length === 0 &&
-        composerTerminalContextsRef.current.length === 0 &&
-        composerElementContextsRef.current.length === 0 &&
-        (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.previewAnnotations
-          .length ?? 0) === 0 &&
-        (useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.reviewComments
-          .length ?? 0) === 0
-      ) {
+      if (!turnStartSucceeded && isComposerEmpty()) {
         setOptimisticUserMessages((existing) => {
           const removed = existing.filter((message) => message.id === messageIdForSend);
           for (const message of removed) {
@@ -4413,21 +4493,13 @@ function ChatViewContent(props: ChatViewProps) {
           const next = existing.filter((message) => message.id !== messageIdForSend);
           return next.length === existing.length ? existing : next;
         });
-        promptRef.current = promptForSend;
-        const retryComposerImages = composerImagesSnapshot.map(cloneComposerImageForRetry);
-        composerImagesRef.current = retryComposerImages;
-        composerTerminalContextsRef.current = composerTerminalContextsSnapshot;
-        composerElementContextsRef.current = composerElementContextsSnapshot;
-        setComposerDraftPrompt(composerDraftTarget, promptForSend);
-        addComposerDraftImages(composerDraftTarget, retryComposerImages);
-        setComposerDraftTerminalContexts(composerDraftTarget, composerTerminalContextsSnapshot);
-        setComposerDraftElementContexts(composerDraftTarget, composerElementContextsSnapshot);
-        setComposerDraftPreviewAnnotations(composerDraftTarget, composerPreviewAnnotationsSnapshot);
-        setComposerDraftReviewComments(composerDraftTarget, composerReviewCommentsSnapshot);
-        composerRef.current?.resetCursorState({
-          cursor: collapseExpandedComposerCursor(promptForSend, promptForSend.length),
+        writeComposerSnapshot({
           prompt: promptForSend,
-          detectTrigger: true,
+          images: composerImagesSnapshot,
+          terminalContexts: composerTerminalContextsSnapshot,
+          elementContexts: composerElementContextsSnapshot,
+          previewAnnotations: composerPreviewAnnotationsSnapshot,
+          reviewComments: composerReviewCommentsSnapshot,
         });
       }
       setThreadError(
@@ -5512,7 +5584,10 @@ function ChatViewContent(props: ChatViewProps) {
   );
 
   const onProviderModelSelect = useCallback(
-    (instanceId: ProviderInstanceId, model: string) => {
+    (instanceId: ProviderInstanceId, model: string, options?: { focusComposer?: boolean }) => {
+      const focusComposer = () => {
+        if (options?.focusComposer !== false) scheduleComposerFocus();
+      };
       if (!activeThread) return;
       // Look up the configured instance so model normalization and custom
       // model lookup stay scoped to that exact instance. Unknown instance ids
@@ -5524,7 +5599,7 @@ function ChatViewContent(props: ChatViewProps) {
         resolvedDriverKind !== null &&
         resolvedDriverKind !== lockedProvider
       ) {
-        scheduleComposerFocus();
+        focusComposer();
         return;
       }
       if (lockedProvider !== null && activeThread.session?.providerInstanceId) {
@@ -5536,7 +5611,7 @@ function ChatViewContent(props: ChatViewProps) {
           entry?.continuation?.groupKey &&
           currentEntry.continuation.groupKey !== entry.continuation.groupKey
         ) {
-          scheduleComposerFocus();
+          focusComposer();
           return;
         }
       }
@@ -5547,7 +5622,7 @@ function ChatViewContent(props: ChatViewProps) {
         model,
       );
       if (!resolvedModel) {
-        scheduleComposerFocus();
+        focusComposer();
         return;
       }
       const nextModelSelection: ModelSelection = {
@@ -5567,7 +5642,7 @@ function ChatViewContent(props: ChatViewProps) {
           title: modelChangeBlockReason.title,
           description: modelChangeBlockReason.description,
         });
-        scheduleComposerFocus();
+        focusComposer();
         return;
       }
       setComposerDraftModelSelection(
@@ -5575,7 +5650,7 @@ function ChatViewContent(props: ChatViewProps) {
         nextModelSelection,
       );
       setStickyComposerModelSelection(nextModelSelection);
-      scheduleComposerFocus();
+      focusComposer();
     },
     [
       activeThread,
@@ -5589,6 +5664,8 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
+      // Several picked models each get their own worktree; the mode is fixed.
+      if (multiModelSelections !== null) return;
       if (canOverrideServerThreadEnvMode) {
         setPendingServerThreadEnvMode(mode);
         scheduleComposerFocus();
@@ -5607,6 +5684,7 @@ function ChatViewContent(props: ChatViewProps) {
       composerDraftTarget,
       draftThread?.worktreePath,
       isLocalDraftThread,
+      multiModelSelections,
       setPendingServerThreadEnvMode,
       scheduleComposerFocus,
       setDraftThreadContext,
@@ -6096,6 +6174,7 @@ function ChatViewContent(props: ChatViewProps) {
                         onChangeActivePendingUserInputCustomAnswer
                       }
                       onProviderModelSelect={onProviderModelSelect}
+                      multiModelSendBlockReason={multiModelSendBlockReason}
                       getModelDisabledReason={getModelDisabledReason}
                       toggleInteractionMode={toggleInteractionMode}
                       handleRuntimeModeChange={handleRuntimeModeChange}
@@ -6111,6 +6190,7 @@ function ChatViewContent(props: ChatViewProps) {
                 </div>
                 {
                   <BranchToolbar
+                    forceNewWorktree={multiModelSelections !== null && isLocalDraftThread}
                     isGitRepo={isGitRepo}
                     environmentId={activeThread.environmentId}
                     threadId={activeThread.id}

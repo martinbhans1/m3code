@@ -14,9 +14,11 @@ import { type Thread } from "../types";
 import {
   MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
+  buildComposerMessageText,
   buildExpiredTerminalContextToastCopy,
   createLocalDispatchSnapshot,
   deriveComposerSendState,
+  deriveTurnTitleSeed,
   getStartedThreadModelChangeBlockReason,
   hasServerAcknowledgedLocalDispatch,
   reconcileMountedTerminalThreadIds,
@@ -861,5 +863,31 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
         threadError: null,
       }),
     ).toBe(true);
+  });
+});
+
+describe("deriveTurnTitleSeed", () => {
+  const empty = { images: [], terminalContexts: [], elementContexts: [] };
+
+  it("prefers the prompt, then the first image", () => {
+    expect(deriveTurnTitleSeed({ ...empty, trimmedPrompt: "Fix login" })).toBe("Fix login");
+    expect(
+      deriveTurnTitleSeed({ ...empty, trimmedPrompt: "", images: [{ name: "shot.png" }] }),
+    ).toBe("Image: shot.png");
+    expect(deriveTurnTitleSeed({ ...empty, trimmedPrompt: "" })).toBe("New thread");
+  });
+});
+
+describe("buildComposerMessageText", () => {
+  it("returns the prompt unchanged when there is no context to append", () => {
+    expect(
+      buildComposerMessageText({
+        prompt: "hello",
+        terminalContexts: [],
+        elementContexts: [],
+        previewAnnotations: [],
+        reviewComments: [],
+      }),
+    ).toBe("hello");
   });
 });

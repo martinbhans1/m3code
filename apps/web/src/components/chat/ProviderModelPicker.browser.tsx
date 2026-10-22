@@ -256,8 +256,12 @@ async function mountPicker(props: {
   settings?: UnifiedSettings;
   triggerVariant?: "ghost" | "outline";
   getModelDisabledReason?: (instanceId: ProviderInstanceId, model: string) => string | null;
+  multiSelect?: {
+    selectedModels: ReadonlyArray<{ instanceId: ProviderInstanceId; model: string }> | null;
+  };
 }) {
   const host = document.createElement("div");
+  const onToggleModel = vi.fn();
   document.body.append(host);
   const onInstanceModelChange = vi.fn();
   const providers = props.providers ?? TEST_PROVIDERS;
@@ -281,6 +285,9 @@ async function mountPicker(props: {
       {...(props.getModelDisabledReason
         ? { getModelDisabledReason: props.getModelDisabledReason }
         : {})}
+      {...(props.multiSelect
+        ? { onToggleModel, selectedModels: props.multiSelect.selectedModels }
+        : {})}
       onInstanceModelChange={onInstanceModelChange}
     />,
     { container: host },
@@ -288,6 +295,7 @@ async function mountPicker(props: {
 
   return {
     onInstanceModelChange,
+    onToggleModel,
     // Back-compat alias used by callers that still assert on the old callback
     // name. Delegates to the instance-aware mock so existing expectations work.
     get onProviderModelChange() {
@@ -768,6 +776,60 @@ describe("ProviderModelPicker", () => {
         "claudeAgent",
         "claude-sonnet-4-6",
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("adds a model with shift-click and keeps single-select on a plain click", async () => {
+    const mounted = await mountPicker({
+      activeInstanceId: CLAUDE_INSTANCE_ID,
+      model: "claude-opus-4-6",
+      lockedProvider: null,
+      multiSelect: { selectedModels: null },
+    });
+
+    try {
+      await page.getByRole("button").click();
+      await vi.waitFor(() => {
+        expect(getModelPickerListText()).toContain("Claude Sonnet 4.6");
+      });
+      await page.getByText("Claude Sonnet 4.6").click({ modifiers: ["Shift"] });
+      expect(mounted.onToggleModel).toHaveBeenCalledWith("claudeAgent", "claude-sonnet-4-6");
+      expect(mounted.onInstanceModelChange).not.toHaveBeenCalled();
+      // A toggle keeps the menu open for the next pick.
+      expect(getModelPickerListText()).toContain("Claude Sonnet 4.6");
+
+      await page.getByText("Claude Sonnet 4.6").click();
+      expect(mounted.onInstanceModelChange).toHaveBeenCalledWith(
+        "claudeAgent",
+        "claude-sonnet-4-6",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("names every picked model on the trigger", async () => {
+    const mounted = await mountPicker({
+      activeInstanceId: CLAUDE_INSTANCE_ID,
+      model: "claude-opus-4-6",
+      lockedProvider: null,
+      multiSelect: {
+        selectedModels: [
+          { instanceId: CLAUDE_INSTANCE_ID, model: "claude-opus-4-6" },
+          { instanceId: CLAUDE_INSTANCE_ID, model: "claude-sonnet-4-6" },
+          { instanceId: CODEX_INSTANCE_ID, model: "gpt-5-codex" },
+        ],
+      },
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(document.querySelector("[data-chat-provider-model-picker]")?.textContent).toMatch(
+          /, \+1$/u,
+        );
+      });
     } finally {
       await mounted.cleanup();
     }
