@@ -54,6 +54,37 @@ describe("ProviderSettingsForm helpers", () => {
     expect(next).toEqual({ forkOwned: 1 });
   });
 
+  it("offers Claude's idle compaction override as a select that omits the default", () => {
+    const claude = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("claudeAgent")];
+    expect(claude).toBeDefined();
+
+    const field = deriveProviderSettingsFields(claude!).find(
+      (candidate) => candidate.key === "idleCompaction",
+    );
+    expect(field).toMatchObject({
+      control: "select",
+      label: "Compact idle threads",
+      defaultStringValue: "default",
+    });
+    expect(field!.options?.map((option) => option.value)).toEqual([
+      "default",
+      "off",
+      "beforeCacheExpires",
+    ]);
+
+    expect(nextProviderConfigWithFieldValue({ homePath: "~/w" }, field!, "off")).toEqual({
+      homePath: "~/w",
+      idleCompaction: "off",
+    });
+    expect(
+      nextProviderConfigWithFieldValue(
+        { homePath: "~/w", idleCompaction: "off" },
+        field!,
+        "default",
+      ),
+    ).toEqual({ homePath: "~/w" });
+  });
+
   it("reads non-string config values as blank strings", () => {
     expect(readProviderConfigString({ binaryPath: 123 }, "binaryPath")).toBe("");
   });

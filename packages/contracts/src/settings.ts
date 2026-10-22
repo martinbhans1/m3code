@@ -213,10 +213,17 @@ const makeBinaryPathSetting = (fallback: string) =>
     Schema.withDecodingDefault(Effect.succeed(fallback)),
   );
 
-export type ProviderSettingsFormControl = "text" | "password" | "textarea" | "switch";
+export type ProviderSettingsFormControl = "text" | "password" | "textarea" | "switch" | "select";
+
+export interface ProviderSettingsFormOption {
+  readonly value: string;
+  readonly label: string;
+}
 
 export interface ProviderSettingsFormAnnotation {
   readonly control?: ProviderSettingsFormControl | undefined;
+  /** The choices for a `select` control. */
+  readonly options?: ReadonlyArray<ProviderSettingsFormOption> | undefined;
   readonly placeholder?: string | undefined;
   readonly hidden?: boolean | undefined;
   readonly clearWhenEmpty?: "omit" | "persist" | undefined;
@@ -301,6 +308,29 @@ export const CodexSettings = makeProviderSettingsSchema(
 );
 export type CodexSettings = typeof CodexSettings.Type;
 
+/**
+ * Whether to compact an idle Claude thread on the user's behalf. Beta: the only
+ * active mode sends `/compact` shortly before the prompt cache expires, so a
+ * later return re-reads a summary instead of the whole transcript uncached.
+ */
+export const IDLE_COMPACTION_MODES = [
+  { value: "off", label: "Never" },
+  { value: "beforeCacheExpires", label: "Before the cache expires (beta)" },
+] as const;
+export const IdleCompactionMode = Schema.Literals(IDLE_COMPACTION_MODES.map((mode) => mode.value));
+export type IdleCompactionMode = typeof IdleCompactionMode.Type;
+export const DEFAULT_IDLE_COMPACTION_MODE: IdleCompactionMode = "off";
+
+/** A Claude instance's override; "default" follows the global setting. */
+export const INSTANCE_IDLE_COMPACTION_MODES = [
+  { value: "default", label: "Use default" },
+  ...IDLE_COMPACTION_MODES,
+] as const;
+export const InstanceIdleCompactionMode = Schema.Literals(
+  INSTANCE_IDLE_COMPACTION_MODES.map((mode) => mode.value),
+);
+export type InstanceIdleCompactionMode = typeof InstanceIdleCompactionMode.Type;
+
 export const ClaudeSettings = makeProviderSettingsSchema(
   {
     enabled: Schema.Boolean.pipe(
@@ -338,9 +368,22 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    idleCompaction: InstanceIdleCompactionMode.pipe(
+      Schema.withDecodingDefault(Effect.succeed("default" as const)),
+      Schema.annotateKey({
+        title: "Compact idle threads",
+        description:
+          "Compact an idle thread over 200,000 tokens just before its prompt cache expires. Overrides the default in General settings.",
+        providerSettingsForm: {
+          control: "select",
+          options: INSTANCE_IDLE_COMPACTION_MODES,
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
   },
   {
-    order: ["binaryPath", "homePath", "launchArgs"],
+    order: ["binaryPath", "homePath", "idleCompaction", "launchArgs"],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
@@ -626,6 +669,11 @@ export const ServerSettings = Schema.Struct({
       ]),
     ),
   ),
+  // Beta: compact an idle Claude thread shortly before its prompt cache expires.
+  // Each Claude instance can override it (`idleCompaction` in its config).
+  compactIdleThreads: IdleCompactionMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_IDLE_COMPACTION_MODE)),
+  ),
   textGenerationModelSelection: ModelSelection.pipe(
     Schema.withDecodingDefault(
       Effect.succeed({
@@ -718,6 +766,7 @@ const ClaudeSettingsPatch = Schema.Struct({
   homePath: Schema.optionalKey(TrimmedString),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
   launchArgs: Schema.optionalKey(TrimmedString),
+  idleCompaction: Schema.optionalKey(InstanceIdleCompactionMode),
 });
 
 const CursorSettingsPatch = Schema.Struct({
@@ -778,6 +827,7 @@ export const ServerSettingsPatch = Schema.Struct({
   orchestratorModelChoices: Schema.optionalKey(Schema.Array(ModelSelection)),
   // Whole-list replacement too: starring and unstarring both send the full set.
   favorites: Schema.optionalKey(ModelFavorites),
+  compactIdleThreads: Schema.optionalKey(IdleCompactionMode),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   observability: Schema.optionalKey(
     Schema.Struct({

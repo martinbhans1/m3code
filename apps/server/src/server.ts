@@ -53,6 +53,7 @@ import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderComma
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor.ts";
 import { ThreadDeletionReactorLive } from "./orchestration/Layers/ThreadDeletionReactor.ts";
 import { TurnAutoResumeLive } from "./orchestration/Layers/TurnAutoResume.ts";
+import { IdleCompactionLive } from "./orchestration/Layers/IdleCompaction.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
@@ -531,6 +532,7 @@ export const makeServerLayer = Layer.unwrap(
       runtimeStateLayer,
       tailscaleServeLayer,
       cloudDesiredLinkReconcileLayer,
+      IdleCompactionLive,
       // Outermost on purpose: finalizers run in reverse build order, so the
       // shutdown capture here runs before `ProviderService` stops the sessions
       // whose active turns it needs to read.
