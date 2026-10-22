@@ -54,6 +54,12 @@ function isWhitespace(code: Code): boolean {
   return code === null || code < 0 || code === SPACE;
 }
 
+const SHELL_JOINERS = new Set([COLON, SLASH, 59 /* ; */, 61 /* = */, 95 /* _ */]);
+
+function isShellJoiner(code: Code): boolean {
+  return code !== null && SHELL_JOINERS.has(code);
+}
+
 function isDigit(code: Code): boolean {
   return code !== null && code >= 48 && code <= 57;
 }
@@ -100,7 +106,9 @@ function tokenizeSingleDollarMath(
   const data: State = (code) => {
     if (code === null || isLineEnding(code) || code === GRAVE) return nok(code);
     if (code === DOLLAR) {
-      if (isWhitespace(previous)) return nok(code);
+      // `$PATH:$HOME`, `$HOME/$USER`, `$A=$B`, `$FOO_$BAR`: shell variables
+      // joined by punctuation no formula ends on.
+      if (isWhitespace(previous) || isShellJoiner(previous)) return nok(code);
       effects.exit("mathTextData");
       inData = false;
       effects.enter("mathTextSequence");
