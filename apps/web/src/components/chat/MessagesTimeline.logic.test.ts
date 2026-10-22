@@ -814,6 +814,8 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
     const finalRow = rows.find((row) => row.id === "assistant-final-entry");
     expect(finalRow?.kind === "message" && finalRow.showAssistantMeta).toBe(true);
+    // The next turn has not started yet, so no live thought can belong to it.
+    expect(rows.find((row) => row.kind === "working")).toMatchObject({ turnId: null });
   });
 
   it("does not fold the active in-progress turn", () => {
@@ -864,6 +866,8 @@ describe("deriveMessagesTimelineRows", () => {
       "work-entry-1",
       "working-indicator-row",
     ]);
+    // The working row carries the running turn so it can show that turn's live thought.
+    expect(rows.find((row) => row.kind === "working")).toMatchObject({ turnId: "turn-1" });
   });
 
   it("only shows assistant metadata on the terminal assistant message", () => {

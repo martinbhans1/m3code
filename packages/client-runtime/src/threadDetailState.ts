@@ -252,6 +252,10 @@ export function createThreadDetailManager(config: ThreadDetailManagerConfig) {
       setData(targetKey, item.snapshot.thread);
       return;
     }
+    // Live thoughts are opt-in and this store never asks for them.
+    if (item.kind !== "event") {
+      return;
+    }
 
     const current = getSnapshot({
       environmentId: entries.get(targetKey)?.target.environmentId ?? null,

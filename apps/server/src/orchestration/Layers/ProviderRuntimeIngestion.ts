@@ -50,6 +50,7 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { ThreadLiveThoughts } from "./ThreadLiveThoughts.ts";
 import { sanitizeToolActivityData } from "../toolActivityPayload.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
@@ -677,6 +678,7 @@ const make = Effect.gen(function* () {
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const serverSettingsService = yield* ServerSettingsService;
   const usageRegistry = yield* ProviderUsageRegistry;
+  const liveThoughts = yield* ThreadLiveThoughts;
   const usageReadingRepository = yield* ProviderUsageReadingRepository;
   const providerCommandId = (event: ProviderRuntimeEvent, tag: string) =>
     crypto.randomUUIDv4.pipe(
@@ -1336,6 +1338,10 @@ const make = Effect.gen(function* () {
 
       const thread = yield* resolveThreadShell(event.threadId);
       if (!thread) return;
+
+      // Reasoning never reaches the event store; it only drives the transient
+      // "latest thought" line, so it is handed off here and otherwise dropped.
+      yield* liveThoughts.observe(event);
 
       let loadedThreadDetail: OrchestrationThread | null | undefined;
       const getLoadedThreadDetail = () =>

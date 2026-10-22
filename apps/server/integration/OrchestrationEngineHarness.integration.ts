@@ -45,6 +45,7 @@ import {
   ProviderEventLoggers,
 } from "../src/provider/Layers/ProviderEventLoggers.ts";
 import { NoOpProviderUsageRegistryLive } from "../src/provider/Layers/ProviderUsageRegistry.ts";
+import { ThreadLiveThoughtsLive } from "../src/orchestration/Layers/ThreadLiveThoughts.ts";
 import { ProviderService } from "../src/provider/Services/ProviderService.ts";
 import { AnalyticsService } from "../src/telemetry/Services/AnalyticsService.ts";
 import { CheckpointReactorLive } from "../src/orchestration/Layers/CheckpointReactor.ts";
@@ -386,6 +387,7 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(ServerConfig.layerTest(workspaceDir, rootDir)),
       Layer.provideMerge(NoOpProviderUsageRegistryLive),
+      Layer.provideMerge(ThreadLiveThoughtsLive),
       Layer.provideMerge(NodeServices.layer),
     );
 

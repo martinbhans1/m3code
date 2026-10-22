@@ -25,6 +25,7 @@ import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRe
 import { ProviderEventLoggersLive } from "./provider/Layers/ProviderEventLoggers.ts";
 import { ClaudeCredentialStoreRegistryLive } from "./provider/Layers/ClaudeCredentialStoreRegistry.ts";
 import { ProviderUsageRegistryLive } from "./provider/Layers/ProviderUsageRegistry.ts";
+import { ThreadLiveThoughtsLive } from "./orchestration/Layers/ThreadLiveThoughts.ts";
 import { ProviderServiceLive } from "./provider/Layers/ProviderService.ts";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper.ts";
 import { OpenCodeRuntimeLive } from "./provider/opencodeRuntime.ts";
@@ -329,6 +330,9 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
   // every provider's `account.rate-limits.updated`), read by the Claude/Codex
   // drivers' `enrichSnapshot`. Merged with the loggers rather than piped as
   // its own step because `.pipe()` tops out at 20 arguments.
+  // `ThreadLiveThoughtsLive` holds each running turn's latest thought in
+  // memory: written by `ProviderRuntimeIngestion`, streamed by the
+  // `subscribeThread` RPC. Never persisted.
   // `ClaudeCredentialStoreRegistryLive` is how one Claude instance learns that
   // another is reading its sign-in file. Lives at the runtime level because
   // every Claude instance has to register into the *same* map for the
@@ -337,6 +341,7 @@ const RuntimeCoreDependenciesLive = ReactorLayerLive.pipe(
     Layer.mergeAll(
       ProviderEventLoggersLive,
       ProviderUsageRegistryLive,
+      ThreadLiveThoughtsLive,
       ClaudeCredentialStoreRegistryLive,
       ConversationSearchLive,
     ),
