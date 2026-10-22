@@ -165,26 +165,29 @@ export const otlpTracesProxyRouteLayer = HttpRouter.add(
   ),
 );
 
-// Agent-written HTML (an `html_render` page, a workspace report) is not the
-// app. The sandbox gives the document an opaque origin: its scripts run, but
-// the app's cookies, storage and API are out of reach even when it is opened
-// directly rather than in its sandboxed frame. No modals: a page shows without
-// a click and must not raise blocking dialogs.
-const HTML_ASSET_CONTENT_SECURITY_POLICY = "sandbox allow-scripts allow-forms allow-popups";
-// An SVG opened as a document can run script; as an image it never needs to.
-const SVG_ASSET_CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+// Files in the attachment store (an `html_render` page, anything an agent
+// dropped there) are not the app. The sandbox gives the document an opaque
+// origin: its scripts run, but the app's cookies, storage and API are out of
+// reach even when it is opened directly rather than in its sandboxed frame. No
+// modals: a page shows without a click and must not raise blocking dialogs.
+// Workspace files keep the plain headers so the user's own project pages
+// behave in the in-app browser as they do anywhere else.
+const SANDBOXED_ASSET_CONTENT_SECURITY_POLICY = "sandbox allow-scripts allow-forms allow-popups";
 
 /** Response headers for a file served from the signed asset route. */
-export function assetResponseHeaders(filePath: string): Record<string, string> {
+export function assetResponseHeaders(asset: {
+  readonly path: string;
+  readonly sandboxed: boolean;
+}): Record<string, string> {
   const headers: Record<string, string> = {
     "Cache-Control": "private, max-age=3600",
     "X-Content-Type-Options": "nosniff",
   };
-  if (/\.(?:html?|xhtml)$/i.test(filePath)) {
-    headers["Content-Type"] = "text/html; charset=utf-8";
-    headers["Content-Security-Policy"] = HTML_ASSET_CONTENT_SECURITY_POLICY;
-  } else if (/\.svg$/i.test(filePath)) {
-    headers["Content-Security-Policy"] = SVG_ASSET_CONTENT_SECURITY_POLICY;
+  if (asset.sandboxed) {
+    headers["Content-Security-Policy"] = SANDBOXED_ASSET_CONTENT_SECURITY_POLICY;
+    if (/\.html?$/i.test(asset.path)) {
+      headers["Content-Type"] = "text/html; charset=utf-8";
+    }
   }
   return headers;
 }
@@ -216,13 +219,16 @@ export const assetRouteLayer = HttpRouter.add(
       return HttpServerResponse.text(FALLBACK_PROJECT_FAVICON_SVG, {
         status: 200,
         contentType: "image/svg+xml",
-        headers: assetResponseHeaders("favicon.svg"),
+        headers: {
+          "Cache-Control": "private, max-age=3600",
+          "X-Content-Type-Options": "nosniff",
+        },
       });
     }
 
     return yield* HttpServerResponse.file(asset.path, {
       status: 200,
-      headers: assetResponseHeaders(asset.path),
+      headers: assetResponseHeaders(asset),
     }).pipe(
       Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
     );

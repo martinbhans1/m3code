@@ -81,8 +81,45 @@ const decodeAssetClaims = Schema.decodeUnknownOption(AssetClaimsJson);
 const encodeAssetClaims = Schema.encodeSync(AssetClaimsJson);
 
 export type ResolvedAsset =
-  | { readonly kind: "file"; readonly path: string }
+  | {
+      readonly kind: "file";
+      readonly path: string;
+      /**
+       * The file lives in the attachment store, where agents write
+       * (`html_render` pages, files dropped there directly). It is served in
+       * an opaque, sandboxed origin whatever its extension or the route that
+       * reached it, so it can never act as the app.
+       */
+      readonly sandboxed: boolean;
+    }
   | { readonly kind: "project-favicon-fallback" };
+
+/** Whether a canonical file path lies inside the attachment store. */
+const isInAttachmentStore = Effect.fn("AssetAccess.isInAttachmentStore")(function* (
+  filePath: string,
+) {
+  const config = yield* ServerConfig;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const roots = new Set([path.resolve(config.attachmentsDir)]);
+  const canonicalRoot = yield* fileSystem
+    .realPath(config.attachmentsDir)
+    .pipe(Effect.orElseSucceed(() => null));
+  if (canonicalRoot) roots.add(canonicalRoot);
+  for (const root of roots) {
+    const relative = path.relative(root, filePath);
+    if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
+      return true;
+    }
+  }
+  return false;
+});
+
+const workspaceAsset = (filePath: string) =>
+  Effect.map(
+    isInAttachmentStore(filePath),
+    (sandboxed): ResolvedAsset => ({ kind: "file", path: filePath, sandboxed }),
+  );
 
 function decodeClaims(encodedPayload: string): AssetClaims | null {
   try {
@@ -284,7 +321,7 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
 
   if (claims.kind === "local-image") {
     const imagePath = yield* resolveLocalImageFile(claims.path);
-    return imagePath ? ({ kind: "file", path: imagePath } satisfies ResolvedAsset) : null;
+    return imagePath ? yield* workspaceAsset(imagePath) : null;
   }
 
   if (claims.kind === "attachment") {
@@ -296,8 +333,10 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
     if (!attachmentPath) return null;
     const fileSystem = yield* FileSystem.FileSystem;
     const info = yield* fileSystem.stat(attachmentPath).pipe(Effect.orElseSucceed(() => null));
+    // Always sandboxed: the attachment id names the file, so no symlink or
+    // extension can talk its way out of the attachment store's policy.
     return info?.type === "File"
-      ? ({ kind: "file", path: attachmentPath } satisfies ResolvedAsset)
+      ? ({ kind: "file", path: attachmentPath, sandboxed: true } satisfies ResolvedAsset)
       : null;
   }
 
@@ -309,7 +348,7 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
       workspaceRoot: claims.workspaceRoot,
       relativePath: claims.relativePath,
     });
-    return faviconPath ? ({ kind: "file", path: faviconPath } satisfies ResolvedAsset) : null;
+    return faviconPath ? yield* workspaceAsset(faviconPath) : null;
   }
 
   const decodedPath = decodeRelativePath(relativePath);
@@ -330,5 +369,5 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
     workspaceRoot: claims.workspaceRoot,
     relativePath: joinedRelativePath,
   });
-  return workspaceFile ? ({ kind: "file", path: workspaceFile } satisfies ResolvedAsset) : null;
+  return workspaceFile ? yield* workspaceAsset(workspaceFile) : null;
 });
