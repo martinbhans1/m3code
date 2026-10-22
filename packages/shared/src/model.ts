@@ -368,7 +368,9 @@ export function applyClaudePromptEffortPrefix(
   if (effort !== "ultrathink") {
     return trimmed;
   }
-  if (trimmed.startsWith("Ultrathink:")) {
+  // A slash command (`/compact`) only runs when it opens the prompt; prefixed,
+  // Claude reads it as a message and answers it instead.
+  if (trimmed.startsWith("Ultrathink:") || trimmed.startsWith("/")) {
     return trimmed;
   }
   return `Ultrathink:\n${trimmed}`;
