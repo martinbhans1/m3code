@@ -206,6 +206,7 @@ it.effect(
         expect(sharedTools).toContain("list_followups");
         expect(sharedTools).toContain("resolve_followup");
         expect(sharedTools).toContain("rename_conversation");
+        expect(sharedTools).toContain("html_render");
         for (const name of [
           "list_threads",
           "search_threads",

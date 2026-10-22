@@ -1,5 +1,6 @@
 import * as Option from "effect/Option";
 import * as Arr from "effect/Array";
+import { readHtmlRenderFromToolData, type HtmlRenderReference } from "@t3tools/shared/htmlRender";
 import {
   ApprovalRequestId,
   isToolLifecycleItemType,
@@ -142,7 +143,21 @@ export interface HandoffState {
   createdAt: string;
 }
 
+/** A page an agent showed inline with `html_render`. */
+export interface HtmlRenderState {
+  id: string;
+  createdAt: string;
+  turnId: TurnId | null;
+  reference: HtmlRenderReference;
+}
+
 export type TimelineEntry =
+  | {
+      id: string;
+      kind: "html-render";
+      createdAt: string;
+      htmlRender: HtmlRenderState;
+    }
   | {
       id: string;
       kind: "message";
@@ -732,6 +747,30 @@ export function derivePendingFollowups(
 // buildHandoffActivity in contracts), one per direction. Latest per direction
 // wins — mirrors deriveHandoffThreadIdsFromActivities on the server, which
 // materializes the same thing into projection_threads for the sidebar.
+/** Every page a finished `html_render` call showed in this thread, oldest first. */
+export function deriveHtmlRenders(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): HtmlRenderState[] {
+  const renders: HtmlRenderState[] = [];
+  for (const activity of activities) {
+    if (activity.kind !== "tool.completed") continue;
+    const payload = asRecord(activity.payload);
+    if (payload?.itemType !== "mcp_tool_call") continue;
+    const reference = readHtmlRenderFromToolData(payload.data);
+    if (!reference) continue;
+    renders.push({
+      id: activity.id,
+      createdAt: activity.createdAt,
+      turnId: activity.turnId,
+      reference,
+    });
+  }
+  return renders.toSorted(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+  );
+}
+
 export function deriveHandoffs(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): HandoffState[] {
@@ -1556,6 +1595,7 @@ export function deriveTimelineEntries(
   proposedPlans: ProposedPlan[],
   workEntries: WorkLogEntry[],
   handoffs: HandoffState[] = [],
+  htmlRenders: HtmlRenderState[] = [],
 ): TimelineEntry[] {
   const messageRows: TimelineEntry[] = messages.map((message) => ({
     id: message.id,
@@ -1581,9 +1621,19 @@ export function deriveTimelineEntries(
     createdAt: handoff.createdAt,
     handoff,
   }));
-  return [...messageRows, ...proposedPlanRows, ...workRows, ...handoffRows].toSorted((a, b) =>
-    a.createdAt.localeCompare(b.createdAt),
-  );
+  const htmlRenderRows: TimelineEntry[] = htmlRenders.map((htmlRender) => ({
+    id: htmlRender.id,
+    kind: "html-render",
+    createdAt: htmlRender.createdAt,
+    htmlRender,
+  }));
+  return [
+    ...messageRows,
+    ...proposedPlanRows,
+    ...workRows,
+    ...handoffRows,
+    ...htmlRenderRows,
+  ].toSorted((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
 export function inferCheckpointTurnCountByTurnId(

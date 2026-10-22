@@ -165,6 +165,30 @@ export const otlpTracesProxyRouteLayer = HttpRouter.add(
   ),
 );
 
+// Agent-written HTML (an `html_render` page, a workspace report) is not the
+// app. The sandbox gives the document an opaque origin: its scripts run, but
+// the app's cookies, storage and API are out of reach even when it is opened
+// directly rather than in its sandboxed frame. No modals: a page shows without
+// a click and must not raise blocking dialogs.
+const HTML_ASSET_CONTENT_SECURITY_POLICY = "sandbox allow-scripts allow-forms allow-popups";
+// An SVG opened as a document can run script; as an image it never needs to.
+const SVG_ASSET_CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+
+/** Response headers for a file served from the signed asset route. */
+export function assetResponseHeaders(filePath: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Cache-Control": "private, max-age=3600",
+    "X-Content-Type-Options": "nosniff",
+  };
+  if (/\.(?:html?|xhtml)$/i.test(filePath)) {
+    headers["Content-Type"] = "text/html; charset=utf-8";
+    headers["Content-Security-Policy"] = HTML_ASSET_CONTENT_SECURITY_POLICY;
+  } else if (/\.svg$/i.test(filePath)) {
+    headers["Content-Security-Policy"] = SVG_ASSET_CONTENT_SECURITY_POLICY;
+  }
+  return headers;
+}
+
 export const assetRouteLayer = HttpRouter.add(
   "GET",
   `${ASSET_ROUTE_PREFIX}/*`,
@@ -192,19 +216,13 @@ export const assetRouteLayer = HttpRouter.add(
       return HttpServerResponse.text(FALLBACK_PROJECT_FAVICON_SVG, {
         status: 200,
         contentType: "image/svg+xml",
-        headers: {
-          "Cache-Control": "private, max-age=3600",
-          "X-Content-Type-Options": "nosniff",
-        },
+        headers: assetResponseHeaders("favicon.svg"),
       });
     }
 
     return yield* HttpServerResponse.file(asset.path, {
       status: 200,
-      headers: {
-        "Cache-Control": "private, max-age=3600",
-        "X-Content-Type-Options": "nosniff",
-      },
+      headers: assetResponseHeaders(asset.path),
     }).pipe(
       Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
     );

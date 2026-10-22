@@ -51,6 +51,7 @@ import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   deriveHandoffs,
+  deriveHtmlRenders,
   derivePendingFollowups,
   type FollowupState,
   findSidebarProposedPlan,
@@ -2368,6 +2369,7 @@ function ChatViewContent(props: ChatViewProps) {
     () => threadHandoffs.find((handoff) => handoff.direction === "spunOffFrom") ?? null,
     [threadHandoffs],
   );
+  const htmlRenders = useMemo(() => deriveHtmlRenders(threadActivities), [threadActivities]);
   const timelineEntries = useMemo(
     () =>
       deriveTimelineEntries(
@@ -2375,8 +2377,15 @@ function ChatViewContent(props: ChatViewProps) {
         activeThread?.proposedPlans ?? [],
         workLogEntries,
         continuedInHandoffs,
+        htmlRenders,
       ),
-    [activeThread?.proposedPlans, timelineMessages, workLogEntries, continuedInHandoffs],
+    [
+      activeThread?.proposedPlans,
+      timelineMessages,
+      workLogEntries,
+      continuedInHandoffs,
+      htmlRenders,
+    ],
   );
   // Side threads are pulled out of the main timeline here: what is left renders
   // as the conversation, and each thread renders in its own right-panel tab.

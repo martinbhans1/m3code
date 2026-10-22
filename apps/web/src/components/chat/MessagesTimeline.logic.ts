@@ -2,6 +2,7 @@ import * as Equal from "effect/Equal";
 import {
   formatDuration,
   type HandoffState,
+  type HtmlRenderState,
   type TimelineEntry,
   type WorkLogEntry,
 } from "../../session-logic";
@@ -91,6 +92,12 @@ export type MessagesTimelineRow =
       id: string;
       createdAt: string;
       handoff: HandoffState;
+    }
+  | {
+      kind: "html-render";
+      id: string;
+      createdAt: string;
+      htmlRender: HtmlRenderState;
     }
   | { kind: "working"; id: string; createdAt: string | null };
 
@@ -428,6 +435,16 @@ export function deriveMessagesTimelineRows(input: {
       continue;
     }
 
+    if (timelineEntry.kind === "html-render") {
+      nextRows.push({
+        kind: "html-render",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        htmlRender: timelineEntry.htmlRender,
+      });
+      continue;
+    }
+
     const assistantTurnStillInProgress =
       timelineEntry.message.role === "assistant" &&
       unsettledTurnId !== null &&
@@ -542,6 +559,16 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
 
     case "handoff":
       return a.handoff === (b as typeof a).handoff;
+
+    case "html-render": {
+      const left = a.htmlRender.reference;
+      const right = (b as typeof a).htmlRender.reference;
+      return (
+        left.attachmentId === right.attachmentId &&
+        left.title === right.title &&
+        left.height === right.height
+      );
+    }
 
     case "work":
       return Equal.equals(a.groupedEntries, (b as typeof a).groupedEntries);

@@ -12,6 +12,7 @@ import {
   deriveActivePlanState,
   deriveFollowups,
   deriveHandoffs,
+  deriveHtmlRenders,
   derivePendingFollowups,
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -1846,6 +1847,65 @@ describe("deriveFollowups", () => {
     expect(pending).toHaveLength(1);
     expect(pending[0]?.detail).toBe("Dead channels stay silent forever.");
     expect(pending[0]?.rationale).toBe("Christine cannot see replies.");
+  });
+});
+
+describe("deriveHtmlRenders", () => {
+  const renderResult = {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          htmlRender: { attachmentId: "thread-1-page", title: "Revenue", height: 500 },
+          message: "Shown",
+        }),
+      },
+    ],
+  };
+
+  it("turns a finished html_render call into its own timeline entry", () => {
+    const activities = [
+      makeActivity({
+        id: "render-updated",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "tool.updated",
+        payload: {
+          itemType: "mcp_tool_call",
+          data: { toolName: "mcp__t3-code__html_render", input: {} },
+        },
+      }),
+      makeActivity({
+        id: "render-done",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "tool.completed",
+        turnId: "turn-1",
+        payload: {
+          itemType: "mcp_tool_call",
+          data: { toolName: "mcp__t3-code__html_render", result: renderResult },
+        },
+      }),
+      makeActivity({
+        id: "other-tool",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "tool.completed",
+        payload: {
+          itemType: "mcp_tool_call",
+          data: { toolName: "mcp__t3-code__suggest_followup", result: renderResult },
+        },
+      }),
+    ];
+
+    const renders = deriveHtmlRenders(activities);
+    expect(renders).toEqual([
+      {
+        id: "render-done",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        turnId: "turn-1",
+        reference: { attachmentId: "thread-1-page", title: "Revenue", height: 500 },
+      },
+    ]);
+    const entries = deriveTimelineEntries([], [], [], [], renders);
+    expect(entries.map((entry) => entry.kind)).toEqual(["html-render"]);
   });
 });
 
