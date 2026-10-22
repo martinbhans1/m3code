@@ -157,6 +157,30 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain('data-user-message-footer="true"');
   });
 
+  it("collapses a Dealy Dev prompt to the founder's whole quote, hiding the briefing", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const founderWords = "founder words that must stay visible ".repeat(40).trim();
+    const text = [
+      "## Message for Dealy Dev in Dealy Dev · Andreas: Ivatek POGO",
+      "",
+      "**Andreas Lundmark** · 2026-10-21 08:47",
+      `> ${founderWords}`,
+      "",
+      "---",
+      "",
+      "You are Dealy Dev, the development agent for the DealJourney CRM codebase.",
+    ].join("\n");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[buildUserTimelineEntry(text)]} />,
+    );
+
+    expect(markup).toContain(founderWords);
+    expect(markup).not.toContain("You are Dealy Dev");
+    expect(markup).toContain("Show full message");
+    expect(markup).toContain('data-user-message-collapsed="true"');
+    expect(markup).toContain('data-user-message-fade="false"');
+  });
+
   it("does not render collapse controls for short user messages", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

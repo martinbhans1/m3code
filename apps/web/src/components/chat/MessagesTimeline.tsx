@@ -1640,6 +1640,20 @@ function shouldCollapseUserMessage(text: string): boolean {
   );
 }
 
+// DealJourney's Dealy Dev inbox (backend/scripts/agent_inbox/prompt.py, _headline)
+// opens every prompt with the founders' quoted words, then a `---` divider, then
+// the agent briefing. Collapsed, show the whole quote and stop at the divider —
+// the briefing is the same every time and the quote is what Martin reads.
+const DEALY_DEV_HEADLINE_PREFIX = "## Message for Dealy Dev in ";
+const DEALY_DEV_HEADLINE_DIVIDER = "\n\n---\n\n";
+
+function splitDealyDevHeadline(text: string): string | null {
+  if (!text.startsWith(DEALY_DEV_HEADLINE_PREFIX)) return null;
+  const dividerIndex = text.indexOf(DEALY_DEV_HEADLINE_DIVIDER);
+  if (dividerIndex === -1) return null;
+  return text.slice(0, dividerIndex);
+}
+
 const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(props: {
   text: string;
   terminalContexts: ParsedTerminalContextEntry[];
@@ -1651,21 +1665,26 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
   const hasVisibleBody = props.text.trim().length > 0 || props.terminalContexts.length > 0;
   // Collapse decision must match what UserMessageBody actually renders —
   // <quote> marker lines are transformed away for display.
+  const dealyDevHeadline = splitDealyDevHeadline(props.text);
   const canCollapse =
-    hasVisibleBody && shouldCollapseUserMessage(formatQuoteBlocksForDisplay(props.text));
+    hasVisibleBody &&
+    (dealyDevHeadline !== null ||
+      shouldCollapseUserMessage(formatQuoteBlocksForDisplay(props.text)));
   const isCollapsed = canCollapse && !expanded;
+  // A Dealy Dev prompt collapses to exactly its headline, so no height cap or fade.
+  const isHeightClamped = isCollapsed && dealyDevHeadline === null;
 
   return (
     <div>
       {hasVisibleBody ? (
         <div
-          className={cn("relative", isCollapsed && "max-h-44 overflow-hidden")}
+          className={cn("relative", isHeightClamped && "max-h-44 overflow-hidden")}
           data-user-message-body="true"
           data-user-message-collapsed={isCollapsed ? "true" : "false"}
           data-user-message-collapsible={canCollapse ? "true" : "false"}
-          data-user-message-fade={isCollapsed ? "true" : "false"}
+          data-user-message-fade={isHeightClamped ? "true" : "false"}
           style={
-            isCollapsed
+            isHeightClamped
               ? {
                   WebkitMaskImage: COLLAPSED_USER_MESSAGE_FADE_MASK,
                   maskImage: COLLAPSED_USER_MESSAGE_FADE_MASK,
@@ -1674,7 +1693,7 @@ const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(prop
           }
         >
           <UserMessageBody
-            text={props.text}
+            text={isCollapsed && dealyDevHeadline !== null ? dealyDevHeadline : props.text}
             terminalContexts={props.terminalContexts}
             skills={props.skills}
             markdownCwd={props.markdownCwd}
