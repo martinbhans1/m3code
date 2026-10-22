@@ -27,6 +27,7 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 import {
+  IDLE_COMPACTION_ID_PREFIX,
   IDLE_COMPACTION_LEAD_MS,
   IDLE_COMPACTION_MIN_CONTEXT_TOKENS,
   IDLE_COMPACTION_REQUIRED_CACHE_TTL_MS,
@@ -48,8 +49,11 @@ import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts"
 
 const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 
-/** Command id prefix of the turn this sends; the event log shows who started it. */
-export const IDLE_COMPACTION_COMMAND_PREFIX = "idle-compact:";
+/**
+ * Command id prefix of the turn this sends; the event log shows who started it.
+ * Its message id carries the same prefix, which is how clients tell it apart.
+ */
+export const IDLE_COMPACTION_COMMAND_PREFIX = IDLE_COMPACTION_ID_PREFIX;
 
 /** Command id prefix `TurnAutoResume` gives the turns it sends after a restart. */
 const AUTO_RESUME_COMMAND_PREFIX = "auto-resume:";
@@ -102,6 +106,7 @@ export type IdleCompactionDecision =
         | "busy"
         | "awaiting_approval"
         | "awaiting_user_input"
+        | "awaiting_plan_review"
         | "automatic_turn"
         | "no_usage"
         | "small_context"
@@ -162,6 +167,9 @@ export const decideIdleCompaction = (input: {
   }
   if (thread.hasPendingApprovals) return { compact: false, reason: "awaiting_approval" };
   if (thread.hasPendingUserInput) return { compact: false, reason: "awaiting_user_input" };
+  // Compacting would make the plan's turn no longer the latest, which retires
+  // the plan the user has yet to review.
+  if (thread.hasActionableProposedPlan) return { compact: false, reason: "awaiting_plan_review" };
   // Unknown counts as automatic: a turn this process never saw start is not
   // one it can vouch for.
   if (userTurn === undefined || isAutomaticTurn(userTurn)) {
@@ -303,7 +311,9 @@ export const makeIdleCompaction = Effect.gen(function* () {
       case "thread.message-sent": {
         if (event.payload.role !== "user") return Effect.void;
         observe(event.payload.threadId).userTurn = {
-          text: event.payload.text,
+          // Only the opening matters (is it a `/compact`?); keeping the whole
+          // message would hold every thread's last prompt in memory.
+          text: event.payload.text.trimStart().slice(0, 64),
           commandId: event.commandId,
         };
         // A new message makes the waiting compaction moot — unless it is the
