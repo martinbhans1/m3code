@@ -164,6 +164,7 @@ describe("misc helpers", () => {
     expect(applyClaudePromptEffortPrefix("Ultrathink:\nInvestigate", "ultrathink")).toBe(
       "Ultrathink:\nInvestigate",
     );
+    expect(applyClaudePromptEffortPrefix("/compact", "ultrathink")).toBe("/compact");
   });
 
   it("trims strings to null", () => {
