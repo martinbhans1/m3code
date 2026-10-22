@@ -69,6 +69,19 @@ describe("hasUnseenCompletion", () => {
       }),
     ).toBe(true);
   });
+  it("ignores a turn the server ran on its own, like an idle /compact", () => {
+    expect(
+      hasUnseenCompletion({
+        hasActionableProposedPlan: false,
+        hasPendingApprovals: false,
+        hasPendingUserInput: false,
+        interactionMode: "default",
+        latestTurn: { ...makeLatestTurn(), initiatedBy: "idleCompaction" },
+        lastVisitedAt: "2026-03-09T10:04:00.000Z",
+        session: null,
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("createThreadJumpHintVisibilityController", () => {

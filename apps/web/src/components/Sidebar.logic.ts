@@ -150,6 +150,9 @@ export function useThreadJumpHintVisibility(): {
 
 export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
   if (!thread.latestTurn?.completedAt) return false;
+  // A turn the server ran on its own (an idle `/compact`) is housekeeping, not
+  // news: it must not light the thread up as unread an hour after you left.
+  if (thread.latestTurn.initiatedBy !== undefined) return false;
   const completedAt = Date.parse(thread.latestTurn.completedAt);
   if (Number.isNaN(completedAt)) return false;
   if (!thread.lastVisitedAt) return true;

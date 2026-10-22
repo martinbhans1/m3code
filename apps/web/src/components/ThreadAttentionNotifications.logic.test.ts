@@ -125,6 +125,24 @@ describe("resolveThreadAttentionSignal", () => {
   });
 });
 
+describe("idle compaction", () => {
+  it("never announces a turn the server ran on its own, finished or failed", () => {
+    const idleTurn = makeLatestTurn({ turnId: "turn-2" as never, initiatedBy: "idleCompaction" });
+    expect(resolveThreadAttentionSignal(makeCandidate({ latestTurn: idleTurn }), now)).toBeNull();
+    expect(
+      resolveThreadAttentionSignal(
+        makeCandidate({ latestTurn: { ...idleTurn, state: "error" }, sessionStatus: "error" }),
+        now,
+      ),
+    ).toBeNull();
+    const evaluation = evaluate({
+      candidates: [makeCandidate({ latestTurn: idleTurn })],
+      previous: new Map([[threadKey, "completed:2026-03-09T10:00:00.000Z"]]),
+    });
+    expect(evaluation.notifications).toEqual([]);
+  });
+});
+
 describe("evaluateThreadAttentionNotifications", () => {
   it("records a thread on first sight without announcing it", () => {
     const evaluation = evaluate({ candidates: [makeCandidate()], previous: new Map() });

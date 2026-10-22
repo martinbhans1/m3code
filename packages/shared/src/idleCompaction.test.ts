@@ -5,7 +5,12 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveIdleCompaction } from "./idleCompaction.ts";
+import {
+  isIdleCompactionMessageId,
+  resolveIdleCompaction,
+  turnInitiatedByForMessageId,
+  turnInitiatedByLatestUserMessage,
+} from "./idleCompaction.ts";
 
 const CLAUDE = ProviderInstanceId.make("claudeAgent");
 const CLAUDE_WORK = ProviderInstanceId.make("claude-work");
@@ -95,5 +100,32 @@ describe("resolveIdleCompaction", () => {
       },
     };
     expect(resolveIdleCompaction(settings, CLAUDE_WORK)).toBe("beforeCacheExpires");
+  });
+});
+
+describe("telling the idle /compact apart", () => {
+  it("recognises the server's message id and nothing else", () => {
+    expect(isIdleCompactionMessageId("idle-compact:thread-1:turn-1")).toBe(true);
+    expect(isIdleCompactionMessageId("client-message-1")).toBe(false);
+    expect(isIdleCompactionMessageId(null)).toBe(false);
+    expect(turnInitiatedByForMessageId("idle-compact:thread-1:turn-1")).toBe("idleCompaction");
+    expect(turnInitiatedByForMessageId("client-message-1")).toBeUndefined();
+  });
+
+  it("reads the turn's origin off the latest user message", () => {
+    expect(
+      turnInitiatedByLatestUserMessage([
+        { id: "client-message-1", role: "user" },
+        { id: "idle-compact:thread-1:turn-1", role: "user" },
+        { id: "assistant-1", role: "assistant" },
+      ]),
+    ).toBe("idleCompaction");
+    expect(
+      turnInitiatedByLatestUserMessage([
+        { id: "idle-compact:thread-1:turn-1", role: "user" },
+        { id: "client-message-2", role: "user" },
+      ]),
+    ).toBeUndefined();
+    expect(turnInitiatedByLatestUserMessage([])).toBeUndefined();
   });
 });
