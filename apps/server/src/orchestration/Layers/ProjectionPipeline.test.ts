@@ -894,6 +894,53 @@ it.layer(
         },
       });
 
+      const keepPageId = "thread-revert-files-00000000-0000-4000-8000-000000000004";
+      const removePageId = "thread-revert-files-00000000-0000-4000-8000-000000000005";
+      const appendHtmlRender = (index: number, turnId: string, attachmentId: string) =>
+        appendAndProject({
+          type: "thread.activity-appended",
+          eventId: EventId.make(`evt-revert-files-page-${index}`),
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          occurredAt: now,
+          commandId: CommandId.make(`cmd-revert-files-page-${index}`),
+          causationEventId: null,
+          correlationId: CorrelationId.make(`cmd-revert-files-page-${index}`),
+          metadata: {},
+          payload: {
+            threadId,
+            activity: {
+              id: EventId.make(`activity-revert-files-page-${index}`),
+              tone: "tool",
+              kind: "tool.completed",
+              summary: "Show an HTML page",
+              payload: {
+                itemType: "mcp_tool_call",
+                data: {
+                  toolName: "mcp__t3-code__html_render",
+                  result: {
+                    content: [
+                      {
+                        type: "text",
+                        text: JSON.stringify({ htmlRender: { attachmentId, title: "Page" } }),
+                      },
+                    ],
+                  },
+                },
+              },
+              turnId: TurnId.make(turnId),
+              createdAt: now,
+            },
+          },
+        });
+      yield* appendHtmlRender(1, "turn-keep", keepPageId);
+      yield* appendHtmlRender(2, "turn-remove", removePageId);
+      const keepPagePath = path.join(attachmentsDir, `${keepPageId}.html`);
+      const removePagePath = path.join(attachmentsDir, `${removePageId}.html`);
+      yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
+      yield* fileSystem.writeFileString(keepPagePath, "<p>keep</p>");
+      yield* fileSystem.writeFileString(removePagePath, "<p>remove</p>");
+
       const keepPath = path.join(attachmentsDir, `${keepAttachmentId}.png`);
       const removePath = path.join(attachmentsDir, `${removeAttachmentId}.png`);
       yield* fileSystem.makeDirectory(attachmentsDir, { recursive: true });
@@ -924,6 +971,9 @@ it.layer(
       assert.isTrue(yield* exists(keepPath));
       assert.isFalse(yield* exists(removePath));
       assert.isTrue(yield* exists(otherThreadPath));
+      // A page the agent showed in a surviving turn survives with it.
+      assert.isTrue(yield* exists(keepPagePath));
+      assert.isFalse(yield* exists(removePagePath));
     }),
   );
 });

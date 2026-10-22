@@ -4,6 +4,7 @@ import {
   type OrchestrationSessionStatus,
   ThreadId,
 } from "@t3tools/contracts";
+import { readHtmlRenderFromToolData } from "@t3tools/shared/htmlRender";
 import { isDoneStampSuperseded } from "@t3tools/shared/threadDisposition";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -287,15 +288,39 @@ function retainProjectionProposedPlansAfterRevert(
   );
 }
 
+/**
+ * Pages an agent showed with `html_render` live in the attachment store but
+ * are referenced only by the tool's activity, never by a message. Without
+ * this, reverting a thread to any earlier turn deletes every page in it,
+ * including those in the turns that survive.
+ */
+function collectHtmlRenderRelativePaths(
+  threadSegment: string,
+  activities: ReadonlyArray<ProjectionThreadActivity>,
+): Set<string> {
+  const relativePaths = new Set<string>();
+  for (const activity of activities) {
+    if (activity.kind !== "tool.completed") continue;
+    const payload = activity.payload;
+    if (typeof payload !== "object" || payload === null) continue;
+    const reference = readHtmlRenderFromToolData((payload as { data?: unknown }).data);
+    if (!reference) continue;
+    if (parseThreadSegmentFromAttachmentId(reference.attachmentId) !== threadSegment) continue;
+    relativePaths.add(`${reference.attachmentId}.html`);
+  }
+  return relativePaths;
+}
+
 function collectThreadAttachmentRelativePaths(
   threadId: string,
   messages: ReadonlyArray<ProjectionThreadMessage>,
+  activities: ReadonlyArray<ProjectionThreadActivity> = [],
 ): Set<string> {
   const threadSegment = toSafeThreadAttachmentSegment(threadId);
   if (!threadSegment) {
     return new Set();
   }
-  const relativePaths = new Set<string>();
+  const relativePaths = collectHtmlRenderRelativePaths(threadSegment, activities);
   for (const message of messages) {
     for (const attachment of message.attachments ?? []) {
       // Keep every attachment kind (images and generic files) so the GC sweep
@@ -975,9 +1000,22 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* Effect.forEach(keptRows, projectionThreadMessageRepository.upsert, {
             concurrency: 1,
           }).pipe(Effect.asVoid);
+          // The activities projector may run before or after this one;
+          // retaining is idempotent, so either way these are the survivors.
+          const keptActivities = retainProjectionActivitiesAfterRevert(
+            yield* projectionThreadActivityRepository.listByThreadId({
+              threadId: event.payload.threadId,
+            }),
+            existingTurns,
+            event.payload.turnCount,
+          );
           attachmentSideEffects.prunedThreadRelativePaths.set(
             event.payload.threadId,
-            collectThreadAttachmentRelativePaths(event.payload.threadId, keptRows),
+            collectThreadAttachmentRelativePaths(
+              event.payload.threadId,
+              keptRows,
+              keptActivities,
+            ),
           );
           return;
         }
