@@ -716,6 +716,7 @@ describe("wsApi", () => {
       systemNotifyOnFailure: true,
       systemNotificationsSuppressWhenFocused: false,
       timestampFormat: "24-hour" as const,
+      mathRenderingEnabled: true,
     };
     const getClientSettings = vi.fn().mockResolvedValue({
       ...clientSettings,
@@ -791,6 +792,7 @@ describe("wsApi", () => {
       systemNotifyOnFailure: true,
       systemNotificationsSuppressWhenFocused: false,
       timestampFormat: "24-hour" as const,
+      mathRenderingEnabled: true,
     };
 
     await api.persistence.setClientSettings(clientSettings);

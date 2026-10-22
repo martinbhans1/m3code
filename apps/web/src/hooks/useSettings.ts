@@ -180,6 +180,18 @@ export function useClientSettingsHydrated(): boolean {
   );
 }
 
+/**
+ * One client-only setting. Unlike `useSettings`, it re-renders only when the
+ * selected value changes — for components mounted once per message.
+ */
+export function useClientSetting<T>(selector: (settings: ClientSettings) => T): T {
+  return useSyncExternalStore(
+    subscribeClientSettings,
+    () => selector(getClientSettingsSnapshot()),
+    () => selector(DEFAULT_CLIENT_SETTINGS),
+  );
+}
+
 export function useSettings<T = UnifiedSettings>(selector?: (s: UnifiedSettings) => T): T {
   const serverSettings = useServerSettings();
   const clientSettings = useSyncExternalStore(

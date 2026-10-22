@@ -29,10 +29,12 @@ import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import { defaultUrlTransform } from "react-markdown";
 import rehypeRaw from "rehype-raw";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import rehypeSanitize from "rehype-sanitize";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { renderSkillInlineMarkdownChildren } from "./chat/SkillInlineText";
+import { RenderErrorBoundary } from "./RenderErrorBoundary";
+import { MarkdownMath } from "./chat/MarkdownMath";
 import { CHAT_FILE_TAG_CHIP_CLASS_NAME, FileTagChipContent } from "./chat/FileTagChip";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
 import { hasSpecificPierreIconForFileName, syntheticFileNameForLanguageId } from "../pierre-icons";
@@ -46,7 +48,10 @@ import { openInPreferredEditor } from "../editorPreferences";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
 import { LRUCache } from "../lib/lruCache";
+import { CHAT_MARKDOWN_SANITIZE_SCHEMA } from "../lib/chatMarkdownSanitize";
+import { mathKind, remarkChatMath } from "../lib/markdownMath";
 import { useTheme } from "../hooks/useTheme";
+import { useClientSetting } from "../hooks/useSettings";
 import {
   chatMarkdownClipboardPayload,
   serializeTableElementToCsv,
@@ -73,27 +78,6 @@ import {
   openFileInPreview,
   openUrlInPreview,
 } from "../browser/openFileInPreview";
-
-class CodeHighlightErrorBoundary extends React.Component<
-  { fallback: ReactNode; children: ReactNode },
-  { hasError: boolean }
-> {
-  constructor(props: { fallback: ReactNode; children: ReactNode }) {
-    super(props);
-    this.state = { hasError: false };
-  }
-
-  static getDerivedStateFromError() {
-    return { hasError: true };
-  }
-
-  override render() {
-    if (this.state.hasError) {
-      return this.props.fallback;
-    }
-    return this.props.children;
-  }
-}
 
 interface ChatMarkdownProps {
   text: string;
@@ -128,21 +112,6 @@ function findTaskListMarkerOffset(markdown: string, listItemStart: number): numb
   if (!match?.[1]) return null;
   return listItemStart + firstLine.indexOf(match[1]);
 }
-const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
-  ...defaultSchema,
-  attributes: {
-    ...defaultSchema.attributes,
-    "*": (defaultSchema.attributes?.["*"] ?? []).filter((attribute) => attribute !== "title"),
-    code: [...(defaultSchema.attributes?.code ?? []), "dataCodeMeta"],
-    // Where a workspace file href is kept so the sanitizer does not eat it —
-    // see `rehypePreserveFileHrefs`.
-    a: [...(defaultSchema.attributes?.a ?? []), "dataFileHref"],
-  },
-  protocols: {
-    ...defaultSchema.protocols,
-    href: [...(defaultSchema.protocols?.href ?? []), "file"],
-  },
-} satisfies Parameters<typeof rehypeSanitize>[0];
 
 function extractFenceLanguage(className: string | undefined): string {
   const match = className?.match(CODE_FENCE_LANGUAGE_REGEX);
@@ -266,8 +235,10 @@ function extractCodeBlock(
 
   const onlyChild = childNodes[0];
   if (
-    !isValidElement<{ className?: string; children?: ReactNode }>(onlyChild) ||
-    onlyChild.type !== "code"
+    !isValidElement<{ className?: string; children?: ReactNode; node?: { tagName?: string } }>(
+      onlyChild,
+    ) ||
+    (onlyChild.type !== "code" && onlyChild.props.node?.tagName !== "code")
   ) {
     return null;
   }
@@ -1229,6 +1200,25 @@ function areMarkdownFileLinkPropsEqual(
   );
 }
 
+type RemarkPlugins = NonNullable<ComponentProps<typeof ReactMarkdown>["remarkPlugins"]>;
+const CHAT_MARKDOWN_REMARK_PLUGINS: RemarkPlugins = [remarkGfm, remarkPreserveCodeMeta];
+const CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS: RemarkPlugins = [
+  remarkGfm,
+  remarkBreaks,
+  remarkPreserveCodeMeta,
+];
+const CHAT_MARKDOWN_REMARK_PLUGINS_WITH_MATH: RemarkPlugins = [
+  remarkGfm,
+  remarkChatMath,
+  remarkPreserveCodeMeta,
+];
+const CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS_AND_MATH: RemarkPlugins = [
+  remarkGfm,
+  remarkChatMath,
+  remarkBreaks,
+  remarkPreserveCodeMeta,
+];
+
 function ChatMarkdown({
   text,
   cwd,
@@ -1241,6 +1231,7 @@ function ChatMarkdown({
 }: ChatMarkdownProps) {
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
+  const mathEnabled = useClientSetting((settings) => settings.mathRenderingEnabled);
   const markdownFileLinkMetaByHref = useMemo(() => {
     const metaByHref = new Map<
       string,
@@ -1421,6 +1412,17 @@ function ChatMarkdown({
           />
         );
       },
+      code({ node: _node, className, children, ...props }) {
+        const math = mathEnabled ? mathKind(className) : null;
+        if (math) {
+          return <MarkdownMath tex={nodeToPlainText(children)} display={math === "display"} />;
+        }
+        return (
+          <code {...props} className={className}>
+            {children}
+          </code>
+        );
+      },
       table: MarkdownTable,
       details({ node: _node, children, open: detailsOpen }) {
         return <MarkdownDetails open={detailsOpen}>{children}</MarkdownDetails>;
@@ -1432,6 +1434,15 @@ function ChatMarkdown({
         }
 
         const language = extractFenceLanguage(codeBlock.className);
+        // `$$` blocks render straight away (an unfinished one shows its TeX);
+        // a ```math fence waits for the reply to settle, like other code.
+        if (
+          mathEnabled &&
+          language === "math" &&
+          (mathKind(codeBlock.className) === "display" || !isStreaming)
+        ) {
+          return <MarkdownMath tex={codeBlock.code} display />;
+        }
         const fenceTitle = extractFenceTitle(extractPreCodeMeta(node));
         return (
           <MarkdownCodeBlock
@@ -1440,7 +1451,7 @@ function ChatMarkdown({
             fenceTitle={fenceTitle}
             theme={resolvedTheme}
           >
-            <CodeHighlightErrorBoundary fallback={<pre {...props}>{children}</pre>}>
+            <RenderErrorBoundary fallback={<pre {...props}>{children}</pre>}>
               <Suspense fallback={<pre {...props}>{children}</pre>}>
                 <SuspenseShikiCodeBlock
                   className={codeBlock.className}
@@ -1449,7 +1460,7 @@ function ChatMarkdown({
                   isStreaming={isStreaming}
                 />
               </Suspense>
-            </CodeHighlightErrorBoundary>
+            </RenderErrorBoundary>
           </MarkdownCodeBlock>
         );
       },
@@ -1459,6 +1470,7 @@ function ChatMarkdown({
       fileLinkParentSuffixByPath,
       isStreaming,
       markdownFileLinkMetaByHref,
+      mathEnabled,
       onTaskListChange,
       threadRef,
       resolvedTheme,
@@ -1477,9 +1489,13 @@ function ChatMarkdown({
     >
       <ReactMarkdown
         remarkPlugins={
-          lineBreaks
-            ? [remarkGfm, remarkBreaks, remarkPreserveCodeMeta]
-            : [remarkGfm, remarkPreserveCodeMeta]
+          mathEnabled
+            ? lineBreaks
+              ? CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS_AND_MATH
+              : CHAT_MARKDOWN_REMARK_PLUGINS_WITH_MATH
+            : lineBreaks
+              ? CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS
+              : CHAT_MARKDOWN_REMARK_PLUGINS
         }
         rehypePlugins={rehypePlugins}
         components={markdownComponents}

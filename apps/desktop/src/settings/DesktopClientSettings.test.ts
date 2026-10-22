@@ -39,6 +39,7 @@ const clientSettings: ClientSettings = {
   systemNotifyOnFailure: true,
   systemNotificationsSuppressWhenFocused: false,
   timestampFormat: "24-hour",
+  mathRenderingEnabled: true,
 };
 
 const decodeClientSettingsJson = Schema.decodeEffect(Schema.fromJsonString(ClientSettingsSchema));
