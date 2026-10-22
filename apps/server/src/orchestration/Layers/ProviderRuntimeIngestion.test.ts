@@ -45,6 +45,7 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import { ThreadLiveThoughts, ThreadLiveThoughtsLive } from "./ThreadLiveThoughts.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -216,7 +217,10 @@ async function waitForThread(
 
 describe("ProviderRuntimeIngestion", () => {
   let runtime: ManagedRuntime.ManagedRuntime<
-    OrchestrationEngineService | ProviderRuntimeIngestionService | ProjectionSnapshotQuery,
+    | OrchestrationEngineService
+    | ProviderRuntimeIngestionService
+    | ProjectionSnapshotQuery
+    | ThreadLiveThoughts,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -268,12 +272,14 @@ describe("ProviderRuntimeIngestion", () => {
       // The real registry, not the no-op: ingestion's `account.rate-limits.updated`
       // handler writes through it, so tests exercise the actual merge path.
       Layer.provideMerge(ProviderUsageRegistryLive),
+      Layer.provideMerge(ThreadLiveThoughtsLive),
       Layer.provideMerge(NodeServices.layer),
     );
     runtime = ManagedRuntime.make(layer);
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
+    const liveThoughts = await runtime.runPromise(Effect.service(ThreadLiveThoughts));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(ingestion.drain);
@@ -343,8 +349,68 @@ describe("ProviderRuntimeIngestion", () => {
       emit: provider.emit,
       setProviderSession: provider.setSession,
       drain,
+      liveThought: () => Effect.runPromise(liveThoughts.get(asThreadId("thread-1"))),
     };
   }
+
+  it("keeps reasoning out of the event store and exposes it as a live thought", async () => {
+    const harness = await createHarness();
+    const base = {
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-1"),
+    } as const;
+
+    harness.emit({
+      ...base,
+      type: "turn.started",
+      eventId: asEventId("evt-thought-turn-started"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    harness.emit({
+      ...base,
+      type: "content.delta",
+      eventId: asEventId("evt-thought-raw"),
+      createdAt: "2026-01-01T00:00:01.000Z",
+      itemId: asItemId("reasoning-1"),
+      payload: { streamKind: "reasoning_text", delta: "Raw chain of thought. More." },
+    });
+    harness.emit({
+      ...base,
+      type: "content.delta",
+      eventId: asEventId("evt-thought-summary"),
+      createdAt: "2026-01-01T00:00:02.000Z",
+      itemId: asItemId("reasoning-1"),
+      payload: {
+        streamKind: "reasoning_summary_text",
+        delta: "**Checking the adapter**\n\nIt drops reasoning.",
+        summaryIndex: 0,
+      },
+    });
+    await harness.drain();
+
+    expect(await harness.liveThought()).toEqual({
+      turnId: "turn-1",
+      text: "Checking the adapter",
+      updatedAt: "2026-01-01T00:00:02.000Z",
+    });
+    const thread = await waitForThread(
+      harness.readModel,
+      (entry) => entry.session?.activeTurnId === "turn-1",
+    );
+    expect(thread.messages.filter((message) => message.role === "assistant")).toEqual([]);
+    expect(thread.activities.some((activity) => activity.kind.includes("reasoning"))).toBe(false);
+
+    harness.emit({
+      ...base,
+      type: "turn.completed",
+      eventId: asEventId("evt-thought-turn-completed"),
+      createdAt: "2026-01-01T00:00:03.000Z",
+      payload: { state: "completed" },
+    });
+    await harness.drain();
+    expect(await harness.liveThought()).toBeNull();
+  });
 
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();

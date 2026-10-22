@@ -46,6 +46,7 @@ import {
 import { ensureLocalApi } from "~/localApi";
 import { collectActiveTerminalUiThreadKeys } from "~/lib/terminalUiStateCleanup";
 import { deriveOrchestrationBatchEffects } from "~/orchestrationEventEffects";
+import { useLiveThoughtStore } from "~/liveThoughtStore";
 import { getPrimaryKnownEnvironment } from "../primary";
 import { webRuntime } from "../../lib/runtime";
 import { connectManagedCloudEnvironment } from "../../cloud/linkEnvironment";
@@ -406,14 +407,24 @@ function attachThreadDetailSubscription(entry: ThreadDetailSubscriptionEntry): b
     return false;
   }
 
+  const threadKey = getThreadDetailSubscriptionKey(entry.environmentId, entry.threadId);
   entry.unsubscribe = connection.client.orchestration.subscribeThread(
-    { threadId: entry.threadId },
+    { threadId: entry.threadId, includeLiveThought: true },
     (item) => {
-      if (item.kind === "snapshot") {
-        useStore.getState().syncServerThreadDetail(item.snapshot.thread, entry.environmentId);
-        return;
+      switch (item.kind) {
+        case "snapshot":
+          // A (re)subscribe starts clean; the server follows up with the
+          // current thought if one is still live.
+          useLiveThoughtStore.getState().setLiveThought(threadKey, null);
+          useStore.getState().syncServerThreadDetail(item.snapshot.thread, entry.environmentId);
+          return;
+        case "live-thought":
+          useLiveThoughtStore.getState().setLiveThought(threadKey, item.liveThought);
+          return;
+        case "event":
+          applyEnvironmentThreadDetailEvent(item.event, entry.environmentId);
+          return;
       }
-      applyEnvironmentThreadDetailEvent(item.event, entry.environmentId);
     },
   );
   return true;
@@ -444,6 +455,7 @@ function disposeThreadDetailSubscriptionByKey(key: string): boolean {
   threadDetailSubscriptions.delete(key);
   entry.unsubscribe();
   entry.unsubscribe = NOOP;
+  useLiveThoughtStore.getState().setLiveThought(key, null);
   return true;
 }
 

@@ -79,6 +79,10 @@
       "types": "./src/toolActivity.ts",
       "import": "./src/toolActivity.ts"
     },
+    "./liveThought": {
+      "types": "./src/liveThought.ts",
+      "import": "./src/liveThought.ts"
+    },
     "./Struct": {
       "types": "./src/Struct.ts",
       "import": "./src/Struct.ts"

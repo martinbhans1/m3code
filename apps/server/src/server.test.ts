@@ -77,6 +77,7 @@ import {
   type ConversationSearchShape,
 } from "./conversationSearch/ConversationSearch.ts";
 import { makeRoutesLayer } from "./server.ts";
+import { ThreadLiveThoughtsLive } from "./orchestration/Layers/ThreadLiveThoughts.ts";
 import {
   CheckpointDiffQuery,
   type CheckpointDiffQueryShape,
@@ -713,6 +714,7 @@ const buildAppUnderTest = (options?: {
             search: () => Effect.succeed({ results: [], semanticStatus: "unavailable" }),
             ...options?.layers?.conversationSearch,
           }),
+          ThreadLiveThoughtsLive,
         ),
       ),
       Layer.provide(

@@ -608,6 +608,11 @@ export type OrchestrationShellStreamItem = typeof OrchestrationShellStreamItem.T
 
 export const OrchestrationSubscribeThreadInput = Schema.Struct({
   threadId: ThreadId,
+  /**
+   * Opt in to transient `live-thought` stream items. Clients that predate
+   * them omit the flag and never receive an item kind they cannot decode.
+   */
+  includeLiveThought: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationSubscribeThreadInput = typeof OrchestrationSubscribeThreadInput.Type;
 
@@ -1401,6 +1406,18 @@ export const OrchestrationEvent = Schema.Union([
 ]);
 export type OrchestrationEvent = typeof OrchestrationEvent.Type;
 
+/**
+ * The agent's latest thought in a running turn, already reduced to one
+ * plain-text line. Transient: held in server memory, never persisted, and
+ * replaced or cleared rather than appended.
+ */
+export const OrchestrationThreadLiveThought = Schema.Struct({
+  turnId: TurnId,
+  text: TrimmedNonEmptyString,
+  updatedAt: IsoDateTime,
+});
+export type OrchestrationThreadLiveThought = typeof OrchestrationThreadLiveThought.Type;
+
 export const OrchestrationThreadStreamItem = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("snapshot"),
@@ -1409,6 +1426,11 @@ export const OrchestrationThreadStreamItem = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("event"),
     event: OrchestrationEvent,
+  }),
+  /** Only sent to subscribers that set `includeLiveThought`. `null` clears it. */
+  Schema.Struct({
+    kind: Schema.Literal("live-thought"),
+    liveThought: Schema.NullOr(OrchestrationThreadLiveThought),
   }),
 ]);
 export type OrchestrationThreadStreamItem = typeof OrchestrationThreadStreamItem.Type;

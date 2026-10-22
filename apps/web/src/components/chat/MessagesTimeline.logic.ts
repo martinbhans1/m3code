@@ -92,7 +92,13 @@ export type MessagesTimelineRow =
       createdAt: string;
       handoff: HandoffState;
     }
-  | { kind: "working"; id: string; createdAt: string | null };
+  | {
+      kind: "working";
+      id: string;
+      createdAt: string | null;
+      /** Running turn whose live thought the row may show; null before it starts. */
+      turnId: TurnId | null;
+    };
 
 export interface StableMessagesTimelineRowsState {
   byId: Map<string, MessagesTimelineRow>;
@@ -483,6 +489,7 @@ export function deriveMessagesTimelineRows(input: {
       kind: "working",
       id: "working-indicator-row",
       createdAt: input.activeTurnStartedAt,
+      turnId: input.latestTurn?.state === "running" ? input.latestTurn.turnId : null,
     });
   }
 
@@ -514,8 +521,10 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
   if (a.kind !== b.kind || a.id !== b.id) return false;
 
   switch (a.kind) {
-    case "working":
-      return a.createdAt === (b as typeof a).createdAt;
+    case "working": {
+      const bw = b as typeof a;
+      return a.createdAt === bw.createdAt && a.turnId === bw.turnId;
+    }
 
     case "turn-fold": {
       const bf = b as typeof a;

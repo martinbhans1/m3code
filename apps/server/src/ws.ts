@@ -29,6 +29,8 @@ import {
   type GitManagerServiceError,
   OrchestrationDispatchCommandError,
   type OrchestrationEvent,
+  type OrchestrationThreadLiveThought,
+  type OrchestrationThreadStreamItem,
   type OrchestrationShellStreamEvent,
   OrchestrationGetFullThreadDiffError,
   OrchestrationGetSnapshotError,
@@ -66,6 +68,7 @@ import * as ExternalLauncher from "./process/externalLauncher.ts";
 import { normalizeDispatchCommand } from "./orchestration/Normalizer.ts";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ThreadLiveThoughts } from "./orchestration/Layers/ThreadLiveThoughts.ts";
 import { UsageReportQuery } from "./provider/Services/UsageReportQuery.ts";
 import { ConversationSearch } from "./conversationSearch/ConversationSearch.ts";
 import {
@@ -268,6 +271,7 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
       const crypto = yield* Crypto.Crypto;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
       const orchestrationEngine = yield* OrchestrationEngineService;
+      const threadLiveThoughts = yield* ThreadLiveThoughts;
       const conversationSearch = yield* ConversationSearch;
       const checkpointDiffQuery = yield* CheckpointDiffQuery;
       const keybindings = yield* Keybindings;
@@ -1046,15 +1050,32 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
                 })),
               );
 
+              const snapshotItem = Stream.make({
+                kind: "snapshot" as const,
+                snapshot: {
+                  snapshotSequence,
+                  thread: threadDetail.value,
+                },
+              });
+              if (input.includeLiveThought !== true) {
+                return Stream.concat(snapshotItem, liveStream);
+              }
+
+              // Transient and opt-in: the current thought follows the
+              // snapshot (clients drop any stale one on snapshot), then
+              // every change rides alongside the domain events.
+              const toLiveThoughtItem = (
+                liveThought: OrchestrationThreadLiveThought | null,
+              ): OrchestrationThreadStreamItem => ({ kind: "live-thought", liveThought });
+              const currentThought = yield* threadLiveThoughts.get(input.threadId);
               return Stream.concat(
-                Stream.make({
-                  kind: "snapshot" as const,
-                  snapshot: {
-                    snapshotSequence,
-                    thread: threadDetail.value,
-                  },
-                }),
-                liveStream,
+                currentThought === null
+                  ? snapshotItem
+                  : Stream.concat(snapshotItem, Stream.make(toLiveThoughtItem(currentThought))),
+                Stream.merge(
+                  liveStream,
+                  threadLiveThoughts.changes(input.threadId).pipe(Stream.map(toLiveThoughtItem)),
+                ),
               );
             }),
             { "rpc.aggregate": "orchestration" },

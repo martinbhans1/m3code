@@ -42,6 +42,7 @@ import ChatMarkdown from "../ChatMarkdown";
 import {
   ArrowRightIcon,
   BotIcon,
+  BrainIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -114,6 +115,7 @@ import {
   type ParsedPreviewAnnotation,
 } from "~/lib/previewAnnotation";
 import { cn } from "~/lib/utils";
+import { useLiveThoughtText } from "~/liveThoughtStore";
 import { formatQuoteBlocksForDisplay } from "~/quoteSelection";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import {
@@ -1363,6 +1365,7 @@ function HandoffTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "handof
 function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "working" }> }) {
   return (
     <div className="py-0.5 pl-1.5">
+      <LiveThoughtLine turnId={row.turnId} />
       <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/70 tabular-nums">
         <span className="inline-flex items-center gap-[3px]">
           <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse" />
@@ -1379,6 +1382,26 @@ function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "workin
           )}
         </span>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The agent's latest thought for the running turn. Subscribes to the live
+ * thought store itself so a new thought re-renders only this line.
+ */
+function LiveThoughtLine({ turnId }: { turnId: TurnId | null }) {
+  const { routeThreadKey } = use(TimelineRowCtx);
+  const text = useLiveThoughtText(routeThreadKey, turnId);
+  if (text === null) {
+    return null;
+  }
+  return (
+    <div className="flex min-w-0 items-start gap-1.5 pt-1 text-xs leading-snug text-muted-foreground/80">
+      <BrainIcon aria-hidden className="mt-px size-3 shrink-0 text-muted-foreground/60" />
+      <span className="line-clamp-2 min-w-0 break-words" title={text}>
+        {text}
+      </span>
     </div>
   );
 }
