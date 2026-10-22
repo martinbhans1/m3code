@@ -191,6 +191,10 @@ export const ClientSettingsSchema = Schema.Struct({
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
   ),
+  // Typeset LaTeX maths in rendered chat Markdown. Off keeps maths parsing and
+  // KaTeX out of the render path entirely — the escape hatch for a thread
+  // whose dollar signs the currency guard still misreads.
+  mathRenderingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
 });
 export type ClientSettings = typeof ClientSettingsSchema.Type;
 
@@ -907,5 +911,6 @@ export const ClientSettingsPatch = Schema.Struct({
   sidebarThreadPreviewCount: Schema.optionalKey(SidebarThreadPreviewCount),
   sidebarThreadShowMoreIncrement: Schema.optionalKey(SidebarThreadShowMoreIncrement),
   timestampFormat: Schema.optionalKey(TimestampFormat),
+  mathRenderingEnabled: Schema.optionalKey(Schema.Boolean),
 });
 export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

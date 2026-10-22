@@ -39,6 +39,7 @@
     "class-variance-authority": "^0.7.1",
     "effect": "catalog:",
     "jose": "catalog:",
+    "katex": "^0.16.47",
     "lexical": "^0.41.0",
     "lucide-react": "^0.564.0",
     "react": "19.2.6",
@@ -48,6 +49,7 @@
     "rehype-sanitize": "^6.0.0",
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
+    "remark-math": "6.0.0",
     "tailwind-merge": "^3.4.0",
     "zustand": "^5.0.11"
   },
@@ -63,6 +65,7 @@
     "@vercel/config": "^0.3.0",
     "@vitejs/plugin-react": "^6.0.0",
     "babel-plugin-react-compiler": "1.0.0",
+    "micromark-util-types": "^2.0.2",
     "msw": "2.12.11",
     "playwright": "^1.58.2",
     "tailwindcss": "^4.0.0",

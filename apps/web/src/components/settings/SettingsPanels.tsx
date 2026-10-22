@@ -554,6 +554,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.enableAssistantStreaming !== DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming
         ? ["Assistant output"]
         : []),
+      ...(settings.mathRenderingEnabled !== DEFAULT_UNIFIED_SETTINGS.mathRenderingEnabled
+        ? ["Render maths"]
+        : []),
       ...(Duration.toMillis(settings.automaticGitFetchInterval) !==
       Duration.toMillis(DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval)
         ? ["Automatic Git fetch interval"]
@@ -607,6 +610,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.diffWordWrap,
       settings.automaticGitFetchInterval,
       settings.enableAssistantStreaming,
+      settings.mathRenderingEnabled,
       settings.sidebarThreadPreviewCount,
       settings.sidebarThreadShowMoreIncrement,
       settings.timestampFormat,
@@ -634,6 +638,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarThreadShowMoreIncrement: DEFAULT_UNIFIED_SETTINGS.sidebarThreadShowMoreIncrement,
       autoOpenPlanSidebar: DEFAULT_UNIFIED_SETTINGS.autoOpenPlanSidebar,
       enableAssistantStreaming: DEFAULT_UNIFIED_SETTINGS.enableAssistantStreaming,
+      mathRenderingEnabled: DEFAULT_UNIFIED_SETTINGS.mathRenderingEnabled,
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       defaultThreadEnvMode: DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode,
       defaultModelEnabled: DEFAULT_UNIFIED_SETTINGS.defaultModelEnabled,
@@ -1109,6 +1114,32 @@ export function GeneralSettingsPanel() {
                   updateSettings({ enableAssistantStreaming: Boolean(checked) })
                 }
                 aria-label="Stream assistant messages"
+              />
+            }
+          />
+
+          <SettingsRow
+            title="Render maths"
+            description="Typeset LaTeX such as $x^2$ or \[x^2\] in replies. Turn off if prices or shell variables show up as formulas."
+            resetAction={
+              settings.mathRenderingEnabled !== DEFAULT_UNIFIED_SETTINGS.mathRenderingEnabled ? (
+                <SettingResetButton
+                  label="maths rendering"
+                  onClick={() =>
+                    updateSettings({
+                      mathRenderingEnabled: DEFAULT_UNIFIED_SETTINGS.mathRenderingEnabled,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.mathRenderingEnabled}
+                onCheckedChange={(checked) =>
+                  updateSettings({ mathRenderingEnabled: Boolean(checked) })
+                }
+                aria-label="Render maths"
               />
             }
           />
