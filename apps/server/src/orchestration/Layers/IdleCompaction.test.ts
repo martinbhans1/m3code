@@ -176,6 +176,11 @@ describe("decideIdleCompaction", () => {
       "awaiting_user_input",
     ],
     [
+      "a plan is waiting for review",
+      { thread: makeThread({ hasActionableProposedPlan: true }) },
+      "awaiting_plan_review",
+    ],
+    [
       "the turn was a /compact",
       { userTurn: { text: " /compact ", commandId: null } },
       "automatic_turn",
