@@ -51,10 +51,12 @@ describe("AssetAccess", () => {
       expect(yield* resolveAsset(token, "report.html")).toEqual({
         kind: "file",
         path: htmlPath,
+        sandboxed: false,
       });
       expect(yield* resolveAsset(token, "report.css")).toEqual({
         kind: "file",
         path: cssPath,
+        sandboxed: false,
       });
       expect(yield* resolveAsset(token, "../secret.txt")).toBeNull();
       expect(yield* resolveAsset(token, ".env")).toBeNull();
@@ -107,7 +109,40 @@ describe("AssetAccess", () => {
       expect(yield* resolveAsset(token, "ignored.png")).toEqual({
         kind: "file",
         path: attachmentPath,
+        sandboxed: true,
       });
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("sandboxes an attachment-store page reached through a workspace URL", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      yield* fileSystem.makeDirectory(config.attachmentsDir, { recursive: true });
+      const pagePath = path.join(
+        config.attachmentsDir,
+        "thread-1-00000000-0000-4000-8000-000000000002.html",
+      );
+      yield* fileSystem.writeFileString(pagePath, "<p>agent page</p>");
+      // The user opened the folder holding the attachment store as a project.
+      const workspaceRoot = path.dirname(config.attachmentsDir);
+
+      const result = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: ThreadId.make("thread-1"),
+          path: pagePath,
+        },
+        workspaceRoot,
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separatorIndex = suffix.indexOf("/");
+      const asset = yield* resolveAsset(
+        suffix.slice(0, separatorIndex),
+        suffix.slice(separatorIndex + 1),
+      );
+      expect(asset).toMatchObject({ kind: "file", sandboxed: true });
     }).pipe(Effect.provide(testLayer)),
   );
 
@@ -132,6 +167,7 @@ describe("AssetAccess", () => {
       expect(yield* resolveAsset(token, "anything.png")).toEqual({
         kind: "file",
         path: canonicalImagePath,
+        sandboxed: false,
       });
 
       for (const rejected of [
@@ -172,7 +208,7 @@ describe("AssetAccess", () => {
           faviconSuffix.slice(0, faviconSeparatorIndex),
           faviconSuffix.slice(faviconSeparatorIndex + 1),
         ),
-      ).toEqual({ kind: "file", path: faviconPath });
+      ).toEqual({ kind: "file", path: faviconPath, sandboxed: false });
 
       yield* fileSystem.remove(faviconPath);
       const fallbackResult = yield* issueAssetUrl({
