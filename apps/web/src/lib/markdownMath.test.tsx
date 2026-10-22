@@ -51,6 +51,11 @@ describe("chat maths parsing", () => {
       "Plans are $5/$10 monthly.",
       "Run $browser then $deploy on it.",
       "Set $HOME before running.",
+      "Export $PATH:$HOME/bin first.",
+      "Copy to $HOME/$USER/notes.",
+      "Pass $A=$B on the command line.",
+      "Join $FOO_$BAR here.",
+      "Run sed s/$foo/$bar/ over it.",
       "See note \\[1\\] and \\(2, 3\\).",
     ]) {
       const { formulas, html } = render(prose);
