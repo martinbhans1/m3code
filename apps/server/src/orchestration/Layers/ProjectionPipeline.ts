@@ -1011,11 +1011,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           );
           attachmentSideEffects.prunedThreadRelativePaths.set(
             event.payload.threadId,
-            collectThreadAttachmentRelativePaths(
-              event.payload.threadId,
-              keptRows,
-              keptActivities,
-            ),
+            collectThreadAttachmentRelativePaths(event.payload.threadId, keptRows, keptActivities),
           );
           return;
         }
