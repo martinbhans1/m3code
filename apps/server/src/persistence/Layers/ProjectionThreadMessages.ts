@@ -1,3 +1,4 @@
+import { IDLE_COMPACTION_ID_PREFIX } from "@t3tools/shared/idleCompaction";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import * as Effect from "effect/Effect";
@@ -152,6 +153,9 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
         FROM projection_thread_messages
         WHERE thread_id = ${threadId}
           AND role = 'user'
+          -- The server's idle /compact is not the user coming back: it must not
+          -- lift the thread to the top of the sidebar.
+          AND message_id NOT LIKE ${`${IDLE_COMPACTION_ID_PREFIX}%`}
         ORDER BY created_at DESC
         LIMIT 1
       `,

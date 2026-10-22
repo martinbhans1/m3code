@@ -998,6 +998,68 @@ describe("incremental orchestration updates", () => {
     expect(threadsOf(settled)[0]?.latestTurn?.completedAt).toBe("2026-02-27T00:00:04.000Z");
   });
 
+  it("marks a turn opened by the server's idle /compact, through to completion", () => {
+    const thread = makeThread();
+    const sessionSet = (status: "running" | "ready", activeTurnId: TurnId | null, at: string) =>
+      makeEvent("thread.session-set", {
+        threadId: thread.id,
+        session: {
+          threadId: thread.id,
+          status,
+          providerName: "claudeAgent",
+          runtimeMode: "full-access",
+          activeTurnId,
+          lastError: null,
+          updatedAt: at,
+        },
+      });
+    const next = applyOrchestrationEvents(
+      makeState(thread),
+      [
+        makeEvent("thread.message-sent", {
+          threadId: thread.id,
+          messageId: MessageId.make("idle-compact:thread-1:turn-1"),
+          role: "user",
+          text: "/compact",
+          turnId: null,
+          replyToMessageId: null,
+          streaming: false,
+          createdAt: "2026-02-27T01:00:00.000Z",
+          updatedAt: "2026-02-27T01:00:00.000Z",
+        }),
+        sessionSet("running", TurnId.make("turn-idle"), "2026-02-27T01:00:01.000Z"),
+        sessionSet("ready", null, "2026-02-27T01:00:30.000Z"),
+      ],
+      localEnvironmentId,
+    );
+    expect(threadsOf(next)[0]?.latestTurn).toMatchObject({
+      turnId: "turn-idle",
+      state: "completed",
+      initiatedBy: "idleCompaction",
+    });
+
+    const typed = applyOrchestrationEvents(
+      next,
+      [
+        makeEvent("thread.message-sent", {
+          threadId: thread.id,
+          messageId: MessageId.make("client-message-2"),
+          role: "user",
+          text: "carry on",
+          turnId: null,
+          replyToMessageId: null,
+          streaming: false,
+          createdAt: "2026-02-27T02:00:00.000Z",
+          updatedAt: "2026-02-27T02:00:00.000Z",
+        }),
+        sessionSet("running", TurnId.make("turn-user"), "2026-02-27T02:00:01.000Z"),
+      ],
+      localEnvironmentId,
+    );
+    expect(threadsOf(typed)[0]?.latestTurn?.turnId).toBe("turn-user");
+    expect(threadsOf(typed)[0]?.latestTurn?.initiatedBy).toBeUndefined();
+  });
+
   it("does not regress latestTurn when an older turn diff completes late", () => {
     const state = makeState(
       makeThread({

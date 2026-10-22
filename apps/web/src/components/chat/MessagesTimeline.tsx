@@ -7,6 +7,7 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 import { parseScopedThreadKey } from "@t3tools/client-runtime";
+import { isIdleCompactionMessageId } from "@t3tools/shared/idleCompaction";
 import {
   createContext,
   Fragment,
@@ -996,7 +997,13 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
     >
       {row.kind === "work" ? <WorkGroupSection groupedEntries={row.groupedEntries} /> : null}
       {row.kind === "turn-fold" ? <TurnFoldTimelineRow row={row} /> : null}
-      {row.kind === "message" && row.message.role === "user" ? <UserTimelineRow row={row} /> : null}
+      {row.kind === "message" && row.message.role === "user" ? (
+        isIdleCompactionMessageId(row.message.id) ? (
+          <IdleCompactionTimelineRow />
+        ) : (
+          <UserTimelineRow row={row} />
+        )
+      ) : null}
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
       ) : null}
@@ -1007,6 +1014,18 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
     </div>
   );
 });
+
+/**
+ * The `/compact` the server sent on its own before the prompt cache expired.
+ * Nobody typed it, so it reads as a quiet note rather than a message bubble.
+ */
+function IdleCompactionTimelineRow() {
+  return (
+    <div className="px-1 py-0.5">
+      <p className="select-none text-xs text-muted-foreground/70">Compacted while idle</p>
+    </div>
+  );
+}
 
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);

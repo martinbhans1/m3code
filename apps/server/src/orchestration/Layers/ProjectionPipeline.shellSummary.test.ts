@@ -231,4 +231,40 @@ it.layer(ShellSummaryTestLayer)("thread shell summary cost", (it) => {
       assert.deepEqual(rows, [{ latestUserMessageAt: at(5) }]);
     }),
   );
+
+  it.effect("does not count the server's idle /compact as the user coming back", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+
+      // Follows the previous test, whose user message landed at at(5).
+      const saved = yield* eventStore.append({
+        type: "thread.message-sent",
+        ...nextIds("idle-compact"),
+        aggregateKind: "thread",
+        aggregateId: THREAD_ID,
+        occurredAt: at(9),
+        causationEventId: null,
+        metadata: {},
+        payload: {
+          threadId: THREAD_ID,
+          messageId: MessageId.make(`idle-compact:${THREAD_ID}:turn-1`),
+          role: "user",
+          text: "/compact",
+          turnId: null,
+          streaming: false,
+          createdAt: at(9),
+          updatedAt: at(9),
+        },
+      });
+      yield* projectionPipeline.projectEvent(saved);
+
+      const rows = yield* sql<{ readonly latestUserMessageAt: string | null }>`
+        SELECT latest_user_message_at AS "latestUserMessageAt"
+        FROM projection_threads WHERE thread_id = ${THREAD_ID}
+      `;
+      assert.deepEqual(rows, [{ latestUserMessageAt: at(5) }]);
+    }),
+  );
 });

@@ -68,6 +68,9 @@ export function resolveThreadAttentionSignal(
   if (candidate.archivedAt) return null;
 
   const thread = candidate.thread;
+  // Nobody asked for a turn the server ran on its own (an idle `/compact`), so
+  // neither its end nor its failure is news worth a notification.
+  if (thread.latestTurn?.initiatedBy !== undefined) return null;
   // Turn identity, so a second failure or a second completed turn reads as new
   // news while the same one re-rendering does not.
   const turnKey = thread.latestTurn?.turnId ?? "";

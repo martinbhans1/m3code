@@ -463,6 +463,13 @@ const OrchestrationLatestTurnState = Schema.Literals([
 ]);
 export type OrchestrationLatestTurnState = typeof OrchestrationLatestTurnState.Type;
 
+/**
+ * Who started a turn the user did not type. `idleCompaction`: the `/compact`
+ * the server sends on an idle Claude thread before its prompt cache expires.
+ */
+export const OrchestrationTurnInitiator = Schema.Literals(["idleCompaction"]);
+export type OrchestrationTurnInitiator = typeof OrchestrationTurnInitiator.Type;
+
 export const OrchestrationLatestTurn = Schema.Struct({
   turnId: TurnId,
   state: OrchestrationLatestTurnState,
@@ -471,6 +478,9 @@ export const OrchestrationLatestTurn = Schema.Struct({
   completedAt: Schema.NullOr(IsoDateTime),
   assistantMessageId: Schema.NullOr(MessageId),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  // Absent for a turn the user started, which is every turn persisted before
+  // this field existed.
+  initiatedBy: Schema.optional(OrchestrationTurnInitiator),
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 

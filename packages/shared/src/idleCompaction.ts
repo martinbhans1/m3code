@@ -13,6 +13,7 @@ import {
   ClaudeSettings,
   defaultInstanceIdForDriver,
   type IdleCompactionMode,
+  type OrchestrationTurnInitiator,
   ProviderDriverKind,
   type ProviderInstanceId,
   type ServerSettings,
@@ -38,6 +39,38 @@ export const IDLE_COMPACTION_LEAD_MS = 2 * 60_000;
  * the user is still reading the reply.
  */
 export const IDLE_COMPACTION_REQUIRED_CACHE_TTL_MS = 60 * 60_000;
+
+/**
+ * Prefix of the command id, and of the user message id, of the `/compact` turn
+ * the server sends on an idle thread. The message id is how every reader —
+ * the projection, the sidebar, the timeline — tells that turn from one the
+ * user typed, with nothing extra persisted.
+ */
+export const IDLE_COMPACTION_ID_PREFIX = "idle-compact:";
+
+/** Whether a user message is the `/compact` the server sent on an idle thread. */
+export const isIdleCompactionMessageId = (messageId: string | null | undefined): boolean =>
+  messageId?.startsWith(IDLE_COMPACTION_ID_PREFIX) ?? false;
+
+/** Who started a turn the user did not: set on the turn, absent for the user's own. */
+export const turnInitiatedByForMessageId = (
+  messageId: string | null | undefined,
+): OrchestrationTurnInitiator | undefined =>
+  isIdleCompactionMessageId(messageId) ? "idleCompaction" : undefined;
+
+/**
+ * Who started the turn the latest user message opened, for a client building a
+ * new turn from live events before the server's shell says so.
+ */
+export function turnInitiatedByLatestUserMessage(
+  messages: ReadonlyArray<{ readonly id: string; readonly role: string }>,
+): OrchestrationTurnInitiator | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role === "user") return turnInitiatedByForMessageId(message.id);
+  }
+  return undefined;
+}
 
 const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
