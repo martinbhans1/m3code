@@ -248,3 +248,19 @@ export function resolveSelectionsToRestore<T extends MultiModelTargetLike>(
     .filter((result) => result.status === "not-started")
     .map((result) => result.target.selection);
 }
+
+/**
+ * What to put back in the composer once a send finishes. The prompt only
+ * returns when some pick can safely be retried: with nothing retryable the
+ * composer would fall back to its single model, which may be one that just
+ * started (or may have), and one Enter would send the prompt to it again.
+ */
+export function resolveMultiModelSendRestore<T extends MultiModelTargetLike>(
+  results: ReadonlyArray<MultiModelStartResult<T>>,
+): { readonly restorePrompt: boolean; readonly selections: ReadonlyArray<ModelSelection> } {
+  if (results.every((result) => result.status === "started")) {
+    return { restorePrompt: false, selections: [] };
+  }
+  const selections = resolveSelectionsToRestore(results);
+  return { restorePrompt: selections.length > 0, selections };
+}

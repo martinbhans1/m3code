@@ -14,6 +14,7 @@ import {
   formatMultiModelTriggerLabel,
   resolveMultiModelLabels,
   resolveMultiModelSendBlockReason,
+  resolveMultiModelSendRestore,
   resolveMultiModelTargets,
   resolveMultiModelTitleSuffixes,
   resolveSelectionsToRestore,
@@ -256,5 +257,31 @@ describe("startMultiModelThreads", () => {
     expect(results.map((result) => result.status)).toEqual(["not-started", "uncertain", "started"]);
     expect(results[1]?.threadId).toBe("t2");
     expect(resolveSelectionsToRestore(results)).toEqual([pick(claudeA, "opus")]);
+  });
+
+  it("puts the prompt back only when some pick can safely be retried", () => {
+    const target = (instanceId: ProviderInstanceId) => ({ selection: pick(instanceId, "opus") });
+    const threadId = ThreadId.make("t");
+    const error = new Error("boom");
+
+    expect(
+      resolveMultiModelSendRestore([{ status: "started", target: target(claudeA), threadId }]),
+    ).toEqual({ restorePrompt: false, selections: [] });
+
+    // Nothing definitely failed: the composer would fall back to a model that
+    // may already have the prompt, so it stays empty.
+    expect(
+      resolveMultiModelSendRestore([
+        { status: "started", target: target(claudeA), threadId },
+        { status: "uncertain", target: target(claudeB), threadId, error },
+      ]),
+    ).toEqual({ restorePrompt: false, selections: [] });
+
+    expect(
+      resolveMultiModelSendRestore([
+        { status: "uncertain", target: target(claudeA), threadId, error },
+        { status: "not-started", target: target(claudeB), threadId, error },
+      ]),
+    ).toEqual({ restorePrompt: true, selections: [pick(claudeB, "opus")] });
   });
 });

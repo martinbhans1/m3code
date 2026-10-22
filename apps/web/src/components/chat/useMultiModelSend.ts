@@ -27,7 +27,7 @@ import { useMultiModelSelectionStore } from "./multiModelSelectionStore";
 import {
   type MultiModelTarget,
   resolveMultiModelTargets,
-  resolveSelectionsToRestore,
+  resolveMultiModelSendRestore,
   startMultiModelThreads,
 } from "./multiModelSend";
 
@@ -202,8 +202,8 @@ export function useMultiModelSend() {
       }
       if (startedCount === results.length) return;
 
-      input.restoreComposer();
-      const toRestore = resolveSelectionsToRestore(results);
+      const { restorePrompt, selections: toRestore } = resolveMultiModelSendRestore(results);
+      if (restorePrompt) input.restoreComposer();
       if (toRestore.length >= 2) {
         setStoredSelections(input.draftId, toRestore);
       } else {
