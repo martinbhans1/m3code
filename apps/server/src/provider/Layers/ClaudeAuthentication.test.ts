@@ -16,6 +16,7 @@ const settings: ClaudeSettings = {
   homePath: "C:/accounts/claude-personal",
   customModels: [],
   launchArgs: "",
+  idleCompaction: "default",
 };
 
 function handle(code: number, stderr = "") {

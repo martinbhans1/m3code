@@ -41,7 +41,11 @@ import { CLAUDE_USAGE_METHOD } from "../ClaudeUsage.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import { clearProjectToolServers, setProjectToolServers } from "../ProjectToolServerRegistry.ts";
-import { makeClaudeAdapter, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
+import {
+  claudePromptCacheTtlMs,
+  makeClaudeAdapter,
+  type ClaudeAdapterLiveOptions,
+} from "./ClaudeAdapter.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
 // Test-local service tag so the rest of the file can keep using `yield* ClaudeAdapter`.
@@ -2226,6 +2230,121 @@ describe("ClaudeAdapterLive", () => {
       if (usageEvent && progressEvent) {
         assert.notStrictEqual(usageEvent.eventId, progressEvent.eventId);
       }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it("reads the prompt cache TTL Claude wrote a request under", () => {
+    assert.equal(
+      claudePromptCacheTtlMs({
+        cache_creation: { ephemeral_1h_input_tokens: 1200, ephemeral_5m_input_tokens: 0 },
+      }),
+      60 * 60_000,
+    );
+    assert.equal(
+      claudePromptCacheTtlMs({
+        cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 800 },
+      }),
+      5 * 60_000,
+    );
+    // The tail lapses first when both appear.
+    assert.equal(
+      claudePromptCacheTtlMs({
+        cache_creation: { ephemeral_1h_input_tokens: 1200, ephemeral_5m_input_tokens: 800 },
+      }),
+      5 * 60_000,
+    );
+    // Fully read from cache, or a transport that does not report the split.
+    assert.equal(
+      claudePromptCacheTtlMs({
+        cache_creation: { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0 },
+      }),
+      undefined,
+    );
+    assert.equal(claudePromptCacheTtlMs({ input_tokens: 5 }), undefined);
+    assert.equal(claudePromptCacheTtlMs(undefined), undefined);
+  });
+
+  it.effect("stamps token usage with the prompt cache expiry of the latest request", () => {
+    const harness = makeHarness();
+    const requestedAt = Date.parse("2026-10-22T10:00:00.000Z");
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(requestedAt);
+      const adapter = yield* ClaudeAdapter;
+
+      const usageFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.type === "thread.token-usage.updated"),
+        Stream.take(2),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+
+      const messageStart = (uuid: string, cacheCreation: Record<string, number>) =>
+        ({
+          type: "stream_event",
+          session_id: "sdk-session-cache",
+          uuid,
+          parent_tool_use_id: null,
+          event: {
+            type: "message_start",
+            message: {
+              id: `msg-${uuid}`,
+              usage: {
+                input_tokens: 3,
+                cache_creation_input_tokens: 1200,
+                cache_read_input_tokens: 240_000,
+                cache_creation: cacheCreation,
+                output_tokens: 1,
+              },
+            },
+          },
+        }) as unknown as SDKMessage;
+      const messageDelta = (uuid: string) =>
+        ({
+          type: "stream_event",
+          session_id: "sdk-session-cache",
+          uuid,
+          parent_tool_use_id: null,
+          event: {
+            type: "message_delta",
+            delta: { stop_reason: "end_turn" },
+            usage: {
+              input_tokens: 3,
+              cache_creation_input_tokens: 1200,
+              cache_read_input_tokens: 240_000,
+              output_tokens: 50,
+            },
+          },
+        }) as unknown as SDKMessage;
+
+      harness.query.emit(
+        messageStart("start-1", { ephemeral_1h_input_tokens: 1200, ephemeral_5m_input_tokens: 0 }),
+      );
+      harness.query.emit(messageDelta("delta-1"));
+      // A later request read fully from cache refreshes the same one-hour entry.
+      yield* TestClock.adjust("10 minutes");
+      harness.query.emit(
+        messageStart("start-2", { ephemeral_1h_input_tokens: 0, ephemeral_5m_input_tokens: 0 }),
+      );
+      harness.query.emit(messageDelta("delta-2"));
+
+      const usages = Array.from(yield* Fiber.join(usageFiber)).flatMap((event) =>
+        event.type === "thread.token-usage.updated" ? [event.payload.usage] : [],
+      );
+      assert.equal(usages.length, 2);
+      assert.equal(usages[0]?.promptCacheTtlMs, 60 * 60_000);
+      assert.equal(usages[0]?.promptCacheExpiresAt, "2026-10-22T11:00:00.000Z");
+      assert.equal(usages[1]?.promptCacheTtlMs, 60 * 60_000);
+      assert.equal(usages[1]?.promptCacheExpiresAt, "2026-10-22T11:10:00.000Z");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

@@ -324,6 +324,12 @@ export const ThreadTokenUsageSnapshot = Schema.Struct({
   toolUses: Schema.optional(NonNegativeInt),
   durationMs: Schema.optional(NonNegativeInt),
   compactsAutomatically: Schema.optional(Schema.Boolean),
+  // How long the provider keeps the conversation's prompt cache warm (Claude:
+  // 1h on subscriptions, 5m on API keys), and when the cache written by the
+  // latest request lapses. Coming back after that re-reads the whole context
+  // at full price.
+  promptCacheTtlMs: Schema.optional(PositiveInt),
+  promptCacheExpiresAt: Schema.optional(IsoDateTime),
 });
 export type ThreadTokenUsageSnapshot = typeof ThreadTokenUsageSnapshot.Type;
 

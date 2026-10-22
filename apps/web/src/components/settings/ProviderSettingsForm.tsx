@@ -6,12 +6,14 @@ import * as Schema from "effect/Schema";
 import type {
   ProviderSettingsFormAnnotation,
   ProviderSettingsFormControl,
+  ProviderSettingsFormOption,
   ProviderSettingsFormSchemaAnnotation,
 } from "@t3tools/contracts";
 
 import { cn } from "../../lib/utils";
 import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import type { ProviderClientDefinition } from "./providerDriverMeta";
@@ -24,6 +26,9 @@ export interface ProviderSettingsFieldModel {
   readonly placeholder?: string | undefined;
   readonly clearWhenEmpty: "omit" | "persist";
   readonly defaultBooleanValue?: boolean | undefined;
+  readonly options?: ReadonlyArray<ProviderSettingsFormOption> | undefined;
+  /** The value a `select` reads as when the config leaves the key out. */
+  readonly defaultStringValue?: string | undefined;
 }
 
 function titleizeFieldKey(key: string): string {
@@ -61,12 +66,25 @@ function readProviderSettingsFormSchemaAnnotation(
   return Schema.resolveAnnotations(definition.settingsSchema)?.providerSettingsFormSchema ?? {};
 }
 
+function readFieldDefault(
+  fieldSchema: ProviderClientDefinition["settingsSchema"]["fields"][string],
+): unknown {
+  const decodeDefault = Schema.decodeUnknownOption(fieldSchema as Schema.Decoder<unknown>);
+  return Option.getOrUndefined(decodeDefault(undefined));
+}
+
 function readFieldBooleanDefault(
   fieldSchema: ProviderClientDefinition["settingsSchema"]["fields"][string],
 ): boolean | undefined {
-  const decodeDefault = Schema.decodeUnknownOption(fieldSchema as Schema.Decoder<unknown>);
-  const decoded = decodeDefault(undefined);
-  return Option.isSome(decoded) && typeof decoded.value === "boolean" ? decoded.value : undefined;
+  const value = readFieldDefault(fieldSchema);
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function readFieldStringDefault(
+  fieldSchema: ProviderClientDefinition["settingsSchema"]["fields"][string],
+): string | undefined {
+  const value = readFieldDefault(fieldSchema);
+  return typeof value === "string" ? value : undefined;
 }
 
 export function deriveProviderSettingsFields(
@@ -105,6 +123,12 @@ export function deriveProviderSettingsFields(
           clearWhenEmpty: formAnnotation.clearWhenEmpty ?? "omit",
           ...(formAnnotation.control === "switch"
             ? { defaultBooleanValue: readFieldBooleanDefault(fieldSchema) }
+            : {}),
+          ...(formAnnotation.control === "select"
+            ? {
+                options: formAnnotation.options ?? [],
+                defaultStringValue: readFieldStringDefault(fieldSchema),
+              }
             : {}),
         } satisfies ProviderSettingsFieldModel,
       ];
@@ -146,7 +170,9 @@ export function nextProviderConfigWithFieldValue(
   }
 
   const trimmed = value.trim();
-  if (field.clearWhenEmpty === "omit" && trimmed.length === 0) {
+  const isEmpty =
+    field.control === "select" ? value === field.defaultStringValue : trimmed.length === 0;
+  if (field.clearWhenEmpty === "omit" && isEmpty) {
     delete base[field.key];
   } else {
     base[field.key] = value;
@@ -212,6 +238,41 @@ function ProviderSettingsFieldRow({
             }
             aria-label={field.label}
           />
+        </div>
+      </FieldFrame>
+    );
+  }
+
+  if (field.control === "select") {
+    const options = field.options ?? [];
+    const current = readProviderConfigString(value, field.key) || field.defaultStringValue || "";
+    return (
+      <FieldFrame variant={variant}>
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            {label}
+            {description}
+          </div>
+          <Select
+            value={current}
+            onValueChange={(next) => {
+              const option = options.find((candidate) => candidate.value === next);
+              if (option) onChange(nextProviderConfigWithFieldValue(value, field, option.value));
+            }}
+          >
+            <SelectTrigger size="sm" className="w-44 shrink-0 sm:w-56" aria-label={field.label}>
+              <SelectValue>
+                {options.find((option) => option.value === current)?.label ?? current}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              {options.map((option) => (
+                <SelectItem hideIndicator key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
         </div>
       </FieldFrame>
     );

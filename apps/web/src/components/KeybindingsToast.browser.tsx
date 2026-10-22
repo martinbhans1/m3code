@@ -158,6 +158,7 @@ function createBaseServerConfig(): ServerConfig {
           homePath: "",
           customModels: [],
           launchArgs: "",
+          idleCompaction: "default",
         },
         cursor: { enabled: true, binaryPath: "", apiEndpoint: "", customModels: [] },
         grok: { enabled: true, binaryPath: "", customModels: [] },

@@ -211,6 +211,14 @@ interface ClaudeSessionContext {
   lastKnownContextWindow: number | undefined;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
   lastKnownTotalProcessedTokens: number | undefined;
+  /**
+   * The prompt cache behind the latest top-level request: when that request
+   * started (the cache lifetime counts from then, not from when the reply
+   * ended) and the TTL Claude cached it under. The TTL outlives a request that
+   * created no cache entry: a request read fully from cache still refreshes
+   * the entry at the TTL it was written with.
+   */
+  promptCache: { requestedAtMs: number | undefined; ttlMs: number | undefined };
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
   stopped: boolean;
@@ -575,6 +583,44 @@ function claudeUsageCachedInputTokens(usage: Record<string, unknown>): number {
 
 function claudeUsageOutputTokens(usage: Record<string, unknown>): number {
   return finiteNonNegativeInteger(usage.output_tokens) ?? 0;
+}
+
+const CLAUDE_PROMPT_CACHE_TTL_1H_MS = 60 * 60_000;
+const CLAUDE_PROMPT_CACHE_TTL_5M_MS = 5 * 60_000;
+
+/**
+ * The cache TTL a Claude request wrote its prompt cache under, from
+ * `usage.cache_creation`. Undefined when the request wrote nothing (fully read
+ * from cache) or the transport does not report the split.
+ *
+ * When both TTLs appear, the short one wins: the conversation tail lapses
+ * first, and a compaction timed to the long one would pay for it uncached.
+ */
+export function claudePromptCacheTtlMs(usage: unknown): number | undefined {
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return undefined;
+  const creation = (usage as Record<string, unknown>).cache_creation;
+  if (!creation || typeof creation !== "object" || Array.isArray(creation)) return undefined;
+  const record = creation as Record<string, unknown>;
+  if ((finiteNonNegativeInteger(record.ephemeral_5m_input_tokens) ?? 0) > 0) {
+    return CLAUDE_PROMPT_CACHE_TTL_5M_MS;
+  }
+  if ((finiteNonNegativeInteger(record.ephemeral_1h_input_tokens) ?? 0) > 0) {
+    return CLAUDE_PROMPT_CACHE_TTL_1H_MS;
+  }
+  return undefined;
+}
+
+/** The snapshot fields describing the prompt cache, when both halves are known. */
+function promptCacheUsageFields(promptCache: ClaudeSessionContext["promptCache"]): {
+  readonly promptCacheTtlMs?: number;
+  readonly promptCacheExpiresAt?: string;
+} {
+  const { requestedAtMs, ttlMs } = promptCache;
+  if (requestedAtMs === undefined || ttlMs === undefined) return {};
+  return {
+    promptCacheTtlMs: ttlMs,
+    promptCacheExpiresAt: DateTime.formatIso(DateTime.makeUnsafe(requestedAtMs + ttlMs)),
+  };
 }
 
 function lastClaudeUsageIteration(
@@ -2219,15 +2265,22 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
 
   const emitThreadTokenUsage = Effect.fn("emitThreadTokenUsage")(function* (
     context: ClaudeSessionContext,
-    usage: ThreadTokenUsageSnapshot | undefined,
+    reported: ThreadTokenUsageSnapshot | undefined,
     options?: {
       readonly rawMethod?: string;
       readonly rawPayload?: unknown;
     },
   ) {
-    if (!usage) {
+    if (!reported) {
       return;
     }
+    // Every snapshot carries the cache of the latest request, including the
+    // end-of-turn one read back from the SDK, which knows nothing of caching.
+    const { promptCacheTtlMs: _ttl, promptCacheExpiresAt: _expiresAt, ...withoutCache } = reported;
+    const usage: ThreadTokenUsageSnapshot = {
+      ...withoutCache,
+      ...promptCacheUsageFields(context.promptCache),
+    };
 
     context.lastKnownTokenUsage = usage;
     context.lastKnownTotalProcessedTokens =
@@ -2670,6 +2723,19 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     }
 
     const { event } = message;
+
+    if (event.type === "message_start") {
+      // Subagent requests cache their own prefixes; only the main thread's
+      // request decides when coming back gets expensive.
+      if (message.parent_tool_use_id !== null && message.parent_tool_use_id !== undefined) {
+        return;
+      }
+      context.promptCache = {
+        requestedAtMs: DateTime.toEpochMillis(yield* DateTime.now),
+        ttlMs: claudePromptCacheTtlMs(event.message.usage) ?? context.promptCache.ttlMs,
+      };
+      return;
+    }
 
     if (event.type === "message_delta") {
       if (message.parent_tool_use_id !== null && message.parent_tool_use_id !== undefined) {
@@ -3241,6 +3307,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         });
         return;
       case "compact_boundary":
+        // The compacted context is a new prefix: the cache the last request
+        // wrote no longer describes it, so its expiry stops being reported
+        // until the next request writes one.
+        context.promptCache = { ...context.promptCache, requestedAtMs: undefined };
         yield* emitThreadTokenUsage(
           context,
           compactBoundaryTokenUsageSnapshot(
@@ -4437,6 +4507,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         lastKnownContextWindow: initialContextWindow,
         lastKnownTokenUsage: undefined,
         lastKnownTotalProcessedTokens: undefined,
+        promptCache: { requestedAtMs: undefined, ttlMs: undefined },
         lastAssistantUuid: resumeState?.resumeSessionAt,
         lastThreadStartedId: undefined,
         stopped: false,

@@ -17,6 +17,7 @@ import {
   DEFAULT_PROVIDER_USAGE_ALERT_REPEAT_MINUTES,
   DEFAULT_PROVIDER_USAGE_ALERT_THRESHOLDS,
   DEFAULT_UNIFIED_SETTINGS,
+  IDLE_COMPACTION_MODES,
 } from "@t3tools/contracts/settings";
 import {
   ORCHESTRATOR_ACCESS_LABELS,
@@ -1651,6 +1652,49 @@ export function GeneralSettingsPanel() {
                 spellCheck={false}
                 aria-label="Add project base directory"
               />
+            }
+          />
+
+          <SettingsRow
+            title="Compact idle Claude threads"
+            description="Compact an idle Claude thread over 200,000 tokens just before its one-hour prompt cache expires, so coming back costs a summary instead of the whole transcript. Each Claude provider can override this."
+            resetAction={
+              settings.compactIdleThreads !== DEFAULT_UNIFIED_SETTINGS.compactIdleThreads ? (
+                <SettingResetButton
+                  label="compact idle Claude threads"
+                  onClick={() =>
+                    updateSettings({
+                      compactIdleThreads: DEFAULT_UNIFIED_SETTINGS.compactIdleThreads,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Select
+                value={settings.compactIdleThreads}
+                onValueChange={(value) => {
+                  const mode = IDLE_COMPACTION_MODES.find((candidate) => candidate.value === value);
+                  if (mode) updateSettings({ compactIdleThreads: mode.value });
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-56" aria-label="Compact idle Claude threads">
+                  <SelectValue>
+                    {
+                      IDLE_COMPACTION_MODES.find(
+                        (mode) => mode.value === settings.compactIdleThreads,
+                      )?.label
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {IDLE_COMPACTION_MODES.map((mode) => (
+                    <SelectItem hideIndicator key={mode.value} value={mode.value}>
+                      {mode.label}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
             }
           />
 

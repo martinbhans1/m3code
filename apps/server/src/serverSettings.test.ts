@@ -159,6 +159,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         homePath: "",
         customModels: ["claude-custom"],
         launchArgs: "",
+        idleCompaction: "default",
       });
       assert.deepEqual(
         next.textGenerationModelSelection,
@@ -400,6 +401,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         homePath: "",
         customModels: [],
         launchArgs: "",
+        idleCompaction: "default",
       });
       assert.deepEqual(next.providers.opencode, {
         enabled: true,
