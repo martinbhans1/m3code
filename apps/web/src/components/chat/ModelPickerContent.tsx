@@ -114,6 +114,12 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       ),
     [activeModelKey, selectedModels],
   );
+  // Stable across renders so the combobox does not see a new value each time.
+  const canToggleModels = onToggleModel !== undefined;
+  const comboboxValue = useMemo(
+    () => (canToggleModels ? [...selectedModelKeySet] : activeModelKey),
+    [activeModelKey, canToggleModels, selectedModelKeySet],
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const [showTopScrollFade, setShowTopScrollFade] = useState(false);
   const [showBottomScrollFade, setShowBottomScrollFade] = useState(false);
@@ -584,8 +590,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           virtualized
           // Multiple mode where picks can be toggled, so clicking an already
           // picked row still reports a change (single mode swallows it).
-          multiple={onToggleModel !== undefined}
-          value={onToggleModel ? [...selectedModelKeySet] : activeModelKey}
+          multiple={canToggleModels}
+          value={comboboxValue}
           onItemHighlighted={(modelKey, eventDetails) => {
             highlightedModelKeyRef.current = typeof modelKey === "string" ? modelKey : null;
             if (eventDetails.reason === "keyboard" && eventDetails.index >= 0) {
