@@ -37,4 +37,12 @@ describe("liveThoughtLine", () => {
     );
     expect(liveThoughtLine("   ")).toBe("");
   });
+
+  it("drops code fence lines with their language tag, and blockquote markers", () => {
+    expect(liveThoughtLine("```ts\nconst a = b.c();\n```")).toBe("const a = b.c();");
+    expect(liveThoughtLine("Let me write:\n```ts\nconst a = 1;\n```\nDone.")).toBe(
+      "Let me write: const a = 1; Done.",
+    );
+    expect(liveThoughtLine("> Quoted thought. More.")).toBe("Quoted thought.");
+  });
 });

@@ -17,7 +17,10 @@ export const LIVE_THOUGHT_MAX_CHARS = 600;
 export function liveThoughtLine(markdown: string): string {
   const heading = /^\s*\*\*([^*\r\n]+)\*\*[ \t]*\r?(?:\n|$)/.exec(markdown)?.[1];
   const text = (heading ?? markdown)
+    // Fence lines go whole, so a code block's language tag never leads the line.
+    .replace(/^[ \t]*(?:```|~~~)[^\n]*$/gm, "")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^[ \t]*(?:>[ \t]?)+/gm, "")
     .replace(/^[ \t]*(?:#{1,6}|[-*+]|\d+\.)[ \t]+/gm, "")
     .replace(/`+|\*\*|~~/g, "")
     .replace(/(^|[^\w*])[*_]([^*_\n]+)[*_](?![\w*])/g, "$1$2")
