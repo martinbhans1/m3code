@@ -85,6 +85,27 @@ describe("liveThoughtTracker", () => {
     expect(tracker.observe(toolStarted(0.2))?.liveThought?.text).toBe("Checking the cache.");
   });
 
+  it("hands the throttled remainder to flushPending when the stream goes quiet", () => {
+    const tracker = makeLiveThoughtTracker({ throttleMs: 1_000 });
+    tracker.observe(reasoning(0, "Checking"));
+    expect(tracker.hasPending(threadId)).toBe(false);
+    expect(tracker.observe(reasoning(0.1, " the cache."))).toBeUndefined();
+    expect(tracker.hasPending(threadId)).toBe(true);
+    expect(tracker.flushPending(threadId)).toEqual({
+      threadId,
+      liveThought: { turnId: "turn-1", text: "Checking the cache.", updatedAt: at(0.1) },
+    });
+    expect(tracker.hasPending(threadId)).toBe(false);
+    expect(tracker.flushPending(threadId)).toBeUndefined();
+  });
+
+  it("sees a paragraph break split across deltas after a very long paragraph", () => {
+    const tracker = makeLiveThoughtTracker({ throttleMs: 0 });
+    tracker.observe(reasoning(0, `Long thought. ${"x".repeat(5_000)}`));
+    tracker.observe(reasoning(1, "\n"));
+    expect(tracker.observe(reasoning(2, "\nNext idea."))?.liveThought?.text).toBe("Next idea.");
+  });
+
   it("does not republish an unchanged line", () => {
     const tracker = makeLiveThoughtTracker({ throttleMs: 0 });
     tracker.observe(reasoning(0, "Same thought. "));
@@ -125,6 +146,19 @@ describe("liveThoughtTracker", () => {
       }),
     ).toEqual({ threadId, liveThought: null });
     expect(tracker.current(threadId)).toBeNull();
+  });
+
+  it("ignores a late completion for another turn", () => {
+    const tracker = makeLiveThoughtTracker();
+    tracker.observe(reasoning(0, "Current turn thought.", { turn: "turn-2" }));
+    expect(
+      tracker.observe({
+        ...base(1, "turn-1"),
+        type: "turn.completed",
+        payload: { state: "completed" },
+      }),
+    ).toBeUndefined();
+    expect(tracker.current(threadId)?.text).toBe("Current turn thought.");
   });
 
   it("starts fresh for a new turn", () => {

@@ -13,7 +13,9 @@
  *   reasoning is read paragraph by paragraph, so a long Claude thinking block
  *   keeps moving instead of pinning its first sentence.
  * - Publishing is throttled per thread and deduped on the derived line; any
- *   other agent activity (text, tool start/finish) flushes the pending line.
+ *   other agent activity (text, tool start/finish) flushes the pending line,
+ *   and the owning layer calls `flushPending` once the throttle window passes
+ *   so a stream that goes quiet still shows its last words.
  *
  * @module orchestration/liveThoughtTracker
  */
@@ -29,6 +31,8 @@ import { LIVE_THOUGHT_MAX_CHARS, liveThoughtLine } from "@t3tools/shared/liveTho
 export const LIVE_THOUGHT_THROTTLE_MS = 300;
 /** Longest reasoning segment kept in memory; the line comes from its start. */
 const SEGMENT_BUFFER_MAX_CHARS = 4_000;
+/** Newest characters kept past the cap; enough to hold a whole paragraph break. */
+const SEGMENT_TAIL_CHARS = 16;
 const PARAGRAPH_BREAK = /\n[ \t]*\r?\n/g;
 
 interface ThreadThoughtState {
@@ -39,6 +43,8 @@ interface ThreadThoughtState {
   summaryItemKey: string | null;
   segment: string;
   dirty: boolean;
+  /** `createdAt` of the newest reasoning delta folded into `segment`. */
+  pendingAt: string;
   published: OrchestrationThreadLiveThought | null;
   publishedAtMs: number;
 }
@@ -53,6 +59,10 @@ export interface LiveThoughtTracker {
   readonly observe: (event: ProviderRuntimeEvent) => LiveThoughtUpdate | undefined;
   /** Latest published thought for a thread, for late subscribers. */
   readonly current: (threadId: ThreadId) => OrchestrationThreadLiveThought | null;
+  /** Whether a thread holds reasoning the throttle has not published yet. */
+  readonly hasPending: (threadId: ThreadId) => boolean;
+  /** Publish a thread's held-back reasoning now (the throttle's trailing edge). */
+  readonly flushPending: (threadId: ThreadId) => LiveThoughtUpdate | undefined;
 }
 
 function lastParagraph(text: string): string {
@@ -99,9 +109,19 @@ export function makeLiveThoughtTracker(options?: {
 
   const observe: LiveThoughtTracker["observe"] = (event) => {
     switch (event.type) {
+      // Turn events are scoped to their turn: a late completion or a duplicate
+      // start for some other turn must not wipe the running turn's thought.
       case "turn.started":
+        return states.get(event.threadId)?.turnId === event.turnId
+          ? undefined
+          : clear(event.threadId);
       case "turn.completed":
-      case "turn.aborted":
+      case "turn.aborted": {
+        const turnId = states.get(event.threadId)?.turnId;
+        return event.turnId === undefined || event.turnId === turnId
+          ? clear(event.threadId)
+          : undefined;
+      }
       case "session.exited":
         return clear(event.threadId);
       case "content.delta":
@@ -142,6 +162,7 @@ export function makeLiveThoughtTracker(options?: {
         summaryItemKey: null,
         segment: "",
         dirty: false,
+        pendingAt: event.createdAt,
         published: null,
         publishedAtMs: Number.NEGATIVE_INFINITY,
       };
@@ -160,11 +181,16 @@ export function makeLiveThoughtTracker(options?: {
     state.blockKey = blockKey;
 
     const combined = (continuing ? state.segment : "") + event.payload.delta;
-    state.segment = (isSummary ? combined : lastParagraph(combined)).slice(
-      0,
-      SEGMENT_BUFFER_MAX_CHARS,
-    );
+    const segment = isSummary ? combined : lastParagraph(combined);
+    // Over the cap, keep the start (the line comes from there) plus a short
+    // tail, so a paragraph break split across two deltas is still seen.
+    state.segment =
+      segment.length <= SEGMENT_BUFFER_MAX_CHARS
+        ? segment
+        : segment.slice(0, SEGMENT_BUFFER_MAX_CHARS - SEGMENT_TAIL_CHARS) +
+          segment.slice(-SEGMENT_TAIL_CHARS);
     state.dirty = true;
+    state.pendingAt = event.createdAt;
 
     const atMs = Date.parse(event.createdAt);
     if (atMs - state.publishedAtMs < throttleMs) return undefined;
@@ -174,5 +200,12 @@ export function makeLiveThoughtTracker(options?: {
   return {
     observe,
     current: (threadId) => states.get(threadId)?.published ?? null,
+    hasPending: (threadId) => states.get(threadId)?.dirty === true,
+    flushPending: (threadId) => {
+      const state = states.get(threadId);
+      return state
+        ? flush(threadId, state, state.pendingAt, Date.parse(state.pendingAt))
+        : undefined;
+    },
   };
 }

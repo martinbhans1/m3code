@@ -279,7 +279,8 @@ describe("ProviderRuntimeIngestion", () => {
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const ingestion = await runtime.runPromise(Effect.service(ProviderRuntimeIngestionService));
-    const liveThoughts = await runtime.runPromise(Effect.service(ThreadLiveThoughts));
+    const liveThoughtsRuntime = runtime;
+    const liveThoughts = await liveThoughtsRuntime.runPromise(Effect.service(ThreadLiveThoughts));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(ingestion.start().pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(ingestion.drain);
@@ -349,7 +350,7 @@ describe("ProviderRuntimeIngestion", () => {
       emit: provider.emit,
       setProviderSession: provider.setSession,
       drain,
-      liveThought: () => Effect.runPromise(liveThoughts.get(asThreadId("thread-1"))),
+      liveThought: () => liveThoughtsRuntime.runPromise(liveThoughts.get(asThreadId("thread-1"))),
     };
   }
 

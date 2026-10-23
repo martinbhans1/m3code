@@ -1067,15 +1067,15 @@ const makeWsRpcLayer = (currentSession: AuthenticatedSession) =>
               const toLiveThoughtItem = (
                 liveThought: OrchestrationThreadLiveThought | null,
               ): OrchestrationThreadStreamItem => ({ kind: "live-thought", liveThought });
-              const currentThought = yield* threadLiveThoughts.get(input.threadId);
+              const liveThought = yield* threadLiveThoughts.subscribe(input.threadId);
               return Stream.concat(
-                currentThought === null
+                liveThought.current === null
                   ? snapshotItem
-                  : Stream.concat(snapshotItem, Stream.make(toLiveThoughtItem(currentThought))),
-                Stream.merge(
-                  liveStream,
-                  threadLiveThoughts.changes(input.threadId).pipe(Stream.map(toLiveThoughtItem)),
-                ),
+                  : Stream.concat(
+                      snapshotItem,
+                      Stream.make(toLiveThoughtItem(liveThought.current)),
+                    ),
+                Stream.merge(liveStream, liveThought.changes.pipe(Stream.map(toLiveThoughtItem))),
               );
             }),
             { "rpc.aggregate": "orchestration" },
