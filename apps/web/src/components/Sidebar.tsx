@@ -681,6 +681,27 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
               <TooltipPopup side="top">Marked done</TooltipPopup>
             </Tooltip>
           )}
+          {/* The agent's own "done" is a hint, not the user's stamp: muted, and
+              hidden once the user has stamped it themselves. */}
+          {thread.doneAt === null && thread.attention?.state === "done" && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span
+                    aria-label="Agent says done"
+                    className="inline-flex shrink-0 items-center justify-center text-muted-foreground/70"
+                  >
+                    <CheckCircle2Icon className="size-3" />
+                  </span>
+                }
+              />
+              <TooltipPopup side="top">
+                {thread.attention.reason
+                  ? `Agent says done: ${thread.attention.reason}`
+                  : "Agent says done"}
+              </TooltipPopup>
+            </Tooltip>
+          )}
           {isCold && (
             <Tooltip>
               <TooltipTrigger
@@ -1108,6 +1129,7 @@ interface SidebarProjectItemProps {
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   setThreadPinned: ReturnType<typeof useThreadActions>["setThreadPinned"];
   setThreadDone: ReturnType<typeof useThreadActions>["setThreadDone"];
+  clearThreadAttention: ReturnType<typeof useThreadActions>["clearThreadAttention"];
   threadJumpLabelByKey: ReadonlyMap<string, string>;
   attachThreadListAutoAnimateRef: (node: HTMLElement | null) => void;
   expandThreadListForProject: (projectKey: string, totalThreadCount: number) => void;
@@ -1133,6 +1155,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     deleteThread,
     setThreadPinned,
     setThreadDone,
+    clearThreadAttention,
     threadJumpLabelByKey,
     attachThreadListAutoAnimateRef,
     expandThreadListForProject,
@@ -2202,6 +2225,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
             id: isDone ? "unmark-done" : "mark-done",
             label: isDone ? "Reopen thread" : "Mark done",
           },
+          // Only offered while the flag is up: it is how a stale "needs you"
+          // goes away when the user handled it somewhere other than a reply.
+          ...(thread.attention?.state === "needs_you"
+            ? [{ id: "clear-attention", label: 'Dismiss "needs you"' }]
+            : []),
           // Hidden entirely until an orchestrator project exists: without one,
           // this names a feature the user has never turned on.
           ...(orchestratorProjectId === null
@@ -2243,6 +2271,11 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
       if (clicked === "mark-done" || clicked === "unmark-done") {
         void setThreadDone(threadRef, clicked === "mark-done");
+        return;
+      }
+
+      if (clicked === "clear-attention") {
+        void clearThreadAttention(threadRef);
         return;
       }
 
@@ -2313,6 +2346,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       pinnedThreadKeySet,
       project.cwd,
       setThreadDone,
+      clearThreadAttention,
       setThreadPinned,
       startThreadRename,
       updateSettings,
@@ -3372,6 +3406,7 @@ interface SidebarProjectsContentProps {
   deleteThread: ReturnType<typeof useThreadActions>["deleteThread"];
   setThreadPinned: ReturnType<typeof useThreadActions>["setThreadPinned"];
   setThreadDone: ReturnType<typeof useThreadActions>["setThreadDone"];
+  clearThreadAttention: ReturnType<typeof useThreadActions>["clearThreadAttention"];
   pinnedThreadGroups: readonly SidebarPinnedThreadGroup[];
   pinnedThreadKeySet: ReadonlySet<string>;
   onPinnedThreadUnpin: (threadKey: string) => void;
@@ -3420,6 +3455,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     deleteThread,
     setThreadPinned,
     setThreadDone,
+    clearThreadAttention,
     pinnedThreadGroups,
     pinnedThreadKeySet,
     onPinnedThreadUnpin,
@@ -3582,6 +3618,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                         deleteThread={deleteThread}
                         setThreadPinned={setThreadPinned}
                         setThreadDone={setThreadDone}
+                        clearThreadAttention={clearThreadAttention}
                         threadJumpLabelByKey={threadJumpLabelByKey}
                         attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
                         expandThreadListForProject={expandThreadListForProject}
@@ -3617,6 +3654,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                 deleteThread={deleteThread}
                 setThreadPinned={setThreadPinned}
                 setThreadDone={setThreadDone}
+                clearThreadAttention={clearThreadAttention}
                 threadJumpLabelByKey={threadJumpLabelByKey}
                 attachThreadListAutoAnimateRef={attachThreadListAutoAnimateRef}
                 expandThreadListForProject={expandThreadListForProject}
@@ -3670,7 +3708,8 @@ export default function Sidebar() {
   const sidebarThreadShowMoreIncrement = useSettings((s) => s.sidebarThreadShowMoreIncrement);
   const { updateSettings } = useUpdateSettings();
   const { handleNewThread } = useNewThreadHandler();
-  const { archiveThread, deleteThread, setThreadPinned, setThreadDone } = useThreadActions();
+  const { archiveThread, deleteThread, setThreadPinned, setThreadDone, clearThreadAttention } =
+    useThreadActions();
   const { isMobile, setOpenMobile } = useSidebar();
   const routeThreadRef = useParams({
     strict: false,
@@ -4445,6 +4484,7 @@ export default function Sidebar() {
             deleteThread={deleteThread}
             setThreadPinned={setThreadPinned}
             setThreadDone={setThreadDone}
+            clearThreadAttention={clearThreadAttention}
             pinnedThreadGroups={pinnedThreadGroups}
             pinnedThreadKeySet={pinnedThreadKeySet}
             onPinnedThreadUnpin={handlePinnedThreadUnpin}

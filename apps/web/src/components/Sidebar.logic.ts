@@ -34,15 +34,21 @@ export interface ThreadStatusPill {
     | "Pending Approval"
     | "Awaiting Input"
     | "Plan Ready"
-    | "Stalled";
+    | "Stalled"
+    | "Needs You";
   colorClass: string;
   dotClass: string;
   pulse: boolean;
+  /** Extra line for the tooltip, e.g. what the agent is waiting on. */
+  detail?: string | undefined;
 }
 
 const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
-  "Pending Approval": 6,
-  "Awaiting Input": 5,
+  "Pending Approval": 7,
+  "Awaiting Input": 6,
+  // Outranks Working: in a collapsed project, one thread stuck on the user
+  // matters more than another still churning.
+  "Needs You": 5,
   Working: 4,
   Connecting: 4,
   Stalled: 3,
@@ -55,6 +61,7 @@ export type ThreadStatusInput = Pick<
   | "hasActionableProposedPlan"
   | "hasPendingApprovals"
   | "hasPendingUserInput"
+  | "attention"
   | "interactionMode"
   | "latestTurn"
   | "session"
@@ -170,6 +177,7 @@ export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
 const UNREAD_THREAD_STATUS_LABELS: ReadonlySet<ThreadStatusPill["label"]> = new Set([
   "Pending Approval",
   "Awaiting Input",
+  "Needs You",
   "Plan Ready",
   "Completed",
 ]);
@@ -444,6 +452,19 @@ export function resolveThreadStatusPill(input: {
       colorClass: "text-sky-600 dark:text-sky-300/80",
       dotClass: "bg-sky-500 dark:bg-sky-300/80",
       pulse: true,
+    };
+  }
+
+  // Deliberately not gated on unread, unlike Completed: the point of the flag
+  // is that it survives a glance. Only a reply (which clears it server-side)
+  // or an explicit dismiss takes it away.
+  if (thread.attention?.state === "needs_you") {
+    return {
+      label: "Needs You",
+      colorClass: "text-rose-600 dark:text-rose-300/90",
+      dotClass: "bg-rose-500 dark:bg-rose-300/90",
+      pulse: false,
+      detail: thread.attention.reason ?? undefined,
     };
   }
 

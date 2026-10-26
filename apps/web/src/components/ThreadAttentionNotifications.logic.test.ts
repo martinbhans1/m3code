@@ -58,6 +58,7 @@ function makeCandidate(overrides?: {
       hasActionableProposedPlan: false,
       hasPendingApprovals: overrides?.hasPendingApprovals ?? false,
       hasPendingUserInput: overrides?.hasPendingUserInput ?? false,
+      attention: null,
       interactionMode: "default",
       latestTurn: overrides?.latestTurn === undefined ? makeLatestTurn() : overrides.latestTurn,
       updatedAt: "2026-03-09T10:05:00.000Z",

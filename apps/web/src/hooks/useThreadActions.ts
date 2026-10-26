@@ -118,6 +118,18 @@ export function useThreadActions() {
     });
   }, []);
 
+  /** Dismiss the agent's "needs you" flag without replying to it. */
+  const clearThreadAttention = useCallback(async (target: ScopedThreadRef) => {
+    const api = readEnvironmentApi(target.environmentId);
+    if (!api) return;
+    await api.orchestration.dispatchCommand({
+      type: "thread.attention.set",
+      commandId: newCommandId(),
+      threadId: target.threadId,
+      attention: null,
+    });
+  }, []);
+
   const deleteThread = useCallback(
     async (target: ScopedThreadRef, opts: { deletedThreadKeys?: ReadonlySet<string> } = {}) => {
       const api = readEnvironmentApi(target.environmentId);
@@ -308,6 +320,7 @@ export function useThreadActions() {
     unarchiveThread,
     setThreadPinned,
     setThreadDone,
+    clearThreadAttention,
     deleteThread,
     confirmAndDeleteThread,
   };

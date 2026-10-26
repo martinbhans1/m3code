@@ -46,6 +46,7 @@ function collectThreadAttentionCandidates(state: AppState): ThreadAttentionCandi
         hasActionableProposedPlan: thread.hasActionableProposedPlan,
         hasPendingApprovals: thread.hasPendingApprovals,
         hasPendingUserInput: thread.hasPendingUserInput,
+        attention: thread.attention,
         interactionMode: thread.interactionMode,
         latestTurn: thread.latestTurn,
         session: thread.session,

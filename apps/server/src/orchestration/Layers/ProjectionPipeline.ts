@@ -5,7 +5,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { readHtmlRenderFromToolData } from "@t3tools/shared/htmlRender";
-import { isDoneStampSuperseded } from "@t3tools/shared/threadDisposition";
+import { isAttentionSuperseded, isDoneStampSuperseded } from "@t3tools/shared/threadDisposition";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -598,10 +598,15 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       const doneAt = isDoneStampSuperseded(existingRow.value.doneAt, latestUserMessageAt)
         ? null
         : existingRow.value.doneAt;
+      // The agent's verdict expires the same way: a reply answers it.
+      const attention = isAttentionSuperseded(existingRow.value.attention, latestUserMessageAt)
+        ? null
+        : existingRow.value.attention;
 
       yield* projectionThreadRepository.upsert({
         ...existingRow.value,
         doneAt,
+        attention,
         latestUserMessageAt,
         pendingApprovalCount,
         pendingUserInputCount,
@@ -632,6 +637,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             archivedAt: null,
             pinnedAt: null,
             doneAt: null,
+            attention: null,
             latestUserMessageAt: null,
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
@@ -713,6 +719,21 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             doneAt: event.payload.doneAt,
+            updatedAt: event.payload.updatedAt,
+          });
+          return;
+        }
+
+        case "thread.attention-set": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            attention: event.payload.attention,
             updatedAt: event.payload.updatedAt,
           });
           return;

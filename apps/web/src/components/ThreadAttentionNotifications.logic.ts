@@ -97,6 +97,14 @@ export function resolveThreadAttentionSignal(
         headline: "Waiting for your answer",
         signature: `input:${turnKey}`,
       };
+    case "Needs You":
+      return {
+        kind: "input-needed",
+        headline: pill.detail ? `Needs you: ${pill.detail}` : "Needs you",
+        // Keyed on when the agent set it, so re-stating the same blocker in a
+        // later turn is news again but a re-render is not.
+        signature: `needs-you:${thread.attention?.setAt ?? turnKey}`,
+      };
     case "Plan Ready":
       return {
         kind: "input-needed",

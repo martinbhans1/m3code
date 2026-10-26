@@ -30,6 +30,7 @@ import {
   OrchestrationLatestTurn,
   ProjectId,
   ProviderInstanceId,
+  type ThreadAttention,
   ThreadId,
 } from "@t3tools/contracts";
 import {
@@ -62,6 +63,7 @@ describe("hasUnseenCompletion", () => {
         hasActionableProposedPlan: false,
         hasPendingApprovals: false,
         hasPendingUserInput: false,
+        attention: null,
         interactionMode: "default",
         latestTurn: makeLatestTurn(),
         lastVisitedAt: "2026-03-09T10:04:00.000Z",
@@ -75,6 +77,7 @@ describe("hasUnseenCompletion", () => {
         hasActionableProposedPlan: false,
         hasPendingApprovals: false,
         hasPendingUserInput: false,
+        attention: null,
         interactionMode: "default",
         latestTurn: { ...makeLatestTurn(), initiatedBy: "idleCompaction" },
         lastVisitedAt: "2026-03-09T10:04:00.000Z",
@@ -512,6 +515,7 @@ describe("resolveThreadStatusPill", () => {
     hasActionableProposedPlan: false,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
+    attention: null as ThreadAttention | null,
     interactionMode: "plan" as const,
     latestTurn: null,
     lastVisitedAt: undefined,
@@ -523,6 +527,52 @@ describe("resolveThreadStatusPill", () => {
       orchestrationStatus: "running" as const,
     },
   };
+
+  const needsYou = {
+    state: "needs_you" as const,
+    reason: "Run the migration on staging",
+    setAt: "2026-03-09T10:06:00.000Z",
+  };
+
+  it("flags a settled thread the agent says is blocked on the user, with the reason", () => {
+    const pill = resolveThreadStatusPill({
+      thread: {
+        ...baseThread,
+        interactionMode: "default",
+        attention: needsYou,
+        latestTurn: makeLatestTurn(),
+        // Read already: unlike Completed, the flag must survive a visit.
+        lastVisitedAt: "2026-03-09T10:10:00.000Z",
+        session: { ...baseThread.session, status: "ready", orchestrationStatus: "ready" },
+      },
+    });
+    expect(pill?.label).toBe("Needs You");
+    expect(pill?.detail).toBe("Run the migration on staging");
+  });
+
+  it("lets a running turn win over a needs-you flag", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: { ...baseThread, interactionMode: "default", attention: needsYou },
+        now: Date.parse("2026-03-09T10:01:00.000Z"),
+      })?.label,
+    ).toBe("Working");
+  });
+
+  it("shows nothing extra for an agent's done verdict", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...baseThread,
+          interactionMode: "default",
+          attention: { ...needsYou, state: "done" },
+          latestTurn: makeLatestTurn(),
+          lastVisitedAt: "2026-03-09T10:10:00.000Z",
+          session: { ...baseThread.session, status: "ready", orchestrationStatus: "ready" },
+        },
+      }),
+    ).toBeNull();
+  });
 
   it("shows pending approval before all other statuses", () => {
     expect(

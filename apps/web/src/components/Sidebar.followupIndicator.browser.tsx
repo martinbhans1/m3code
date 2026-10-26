@@ -33,6 +33,7 @@ function buildThread(hasPendingFollowups: boolean): SidebarThreadSummary {
     archivedAt: null,
     pinnedAt: null,
     doneAt: null,
+    attention: null,
     updatedAt: undefined,
     latestTurn: null,
     branch: null,

@@ -418,6 +418,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.attention.set": {
+      // No invariant on the previous verdict: an agent re-stating "needs you"
+      // with a new reason, or the user dismissing a flag that already cleared,
+      // must both succeed silently.
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const occurredAt = yield* nowIso;
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.attention-set",
+        payload: {
+          threadId: command.threadId,
+          attention: command.attention,
+          updatedAt: occurredAt,
+        },
+      };
+    }
+
     case "thread.meta.update": {
       yield* requireThread({
         readModel,

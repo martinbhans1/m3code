@@ -92,6 +92,7 @@ const makeShell = (
     archivedAt: null,
     pinnedAt: null,
     doneAt: null,
+    attention: null,
     session: null,
     latestUserMessageAt: "2026-08-05T09:00:00.000Z",
     hasPendingApprovals: false,

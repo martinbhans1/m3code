@@ -484,6 +484,23 @@ export const OrchestrationLatestTurn = Schema.Struct({
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
+/**
+ * The agent's own verdict on where a conversation stands once its turn ends:
+ * blocked until the user does something ("needs_you"), or finished with
+ * nothing left to add ("done"). Absent means the agent did not say, which is
+ * the honest answer whenever only the user knows what comes next.
+ */
+export const ThreadAttentionState = Schema.Literals(["needs_you", "done"]);
+export type ThreadAttentionState = typeof ThreadAttentionState.Type;
+
+export const ThreadAttention = Schema.Struct({
+  state: ThreadAttentionState,
+  /** One line on what the user has to do, or what was finished. */
+  reason: Schema.NullOr(Schema.String),
+  setAt: IsoDateTime,
+});
+export type ThreadAttention = typeof ThreadAttention.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -504,6 +521,9 @@ export const OrchestrationThread = Schema.Struct({
   // as soon as a newer user message arrives, so a thread you pick back up stops
   // reading as done without anyone having to un-stamp it.
   doneAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  // The agent's end-of-turn verdict. Cleared by the projection the same way
+  // doneAt is: a newer user message means the user has answered it.
+  attention: Schema.NullOr(ThreadAttention).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
@@ -559,6 +579,9 @@ export const OrchestrationThreadShell = Schema.Struct({
   // as soon as a newer user message arrives, so a thread you pick back up stops
   // reading as done without anyone having to un-stamp it.
   doneAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  // The agent's end-of-turn verdict. Cleared by the projection the same way
+  // doneAt is: a newer user message means the user has answered it.
+  attention: Schema.NullOr(ThreadAttention).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
@@ -721,6 +744,18 @@ const ThreadUnmarkDoneCommand = Schema.Struct({
   type: Schema.Literal("thread.unmark-done"),
   commandId: CommandId,
   threadId: ThreadId,
+});
+
+/**
+ * Set or clear the agent's end-of-turn verdict. Dispatched server-side by the
+ * set_attention tool, and client-side with `attention: null` when the user
+ * dismisses a "needs you" flag without replying.
+ */
+const ThreadAttentionSetCommand = Schema.Struct({
+  type: Schema.Literal("thread.attention.set"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  attention: Schema.NullOr(ThreadAttention),
 });
 
 const ThreadMetaUpdateCommand = Schema.Struct({
@@ -910,6 +945,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadUnpinCommand,
   ThreadMarkDoneCommand,
   ThreadUnmarkDoneCommand,
+  ThreadAttentionSetCommand,
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
@@ -941,6 +977,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadUnpinCommand,
   ThreadMarkDoneCommand,
   ThreadUnmarkDoneCommand,
+  ThreadAttentionSetCommand,
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
@@ -1049,6 +1086,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.unpinned",
   "thread.marked-done",
   "thread.unmarked-done",
+  "thread.attention-set",
   "thread.meta-updated",
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
@@ -1147,6 +1185,12 @@ export const ThreadMarkedDonePayload = Schema.Struct({
 
 export const ThreadUnmarkedDonePayload = Schema.Struct({
   threadId: ThreadId,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadAttentionSetPayload = Schema.Struct({
+  threadId: ThreadId,
+  attention: Schema.NullOr(ThreadAttention),
   updatedAt: IsoDateTime,
 });
 
@@ -1337,6 +1381,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.unmarked-done"),
     payload: ThreadUnmarkedDonePayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.attention-set"),
+    payload: ThreadAttentionSetPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

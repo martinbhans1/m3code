@@ -31,6 +31,7 @@ function makeThread(
     >,
 ): EnvironmentScopedThreadShell {
   return {
+    attention: null,
     handoffThreadId: null,
     sourceThreadId: null,
     runtimeMode: "full-access",

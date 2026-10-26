@@ -16,6 +16,7 @@ import type {
   CheckpointRef,
   ProviderInteractionMode,
   RuntimeMode,
+  ThreadAttention,
 } from "@t3tools/contracts";
 
 export type SessionPhase = "disconnected" | "connecting" | "ready" | "running";
@@ -168,6 +169,8 @@ export interface SidebarThreadSummary {
   hasPendingApprovals: boolean;
   hasPendingUserInput: boolean;
   hasPendingFollowups: boolean;
+  /** The agent's end-of-turn verdict; cleared when the user replies. */
+  attention: ThreadAttention | null;
   hasActionableProposedPlan: boolean;
   /** Set when this thread's work was deliberately continued in another one. */
   handoffThreadId: ThreadId | null;

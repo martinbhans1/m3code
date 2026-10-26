@@ -91,6 +91,7 @@ describe("orchestration projector", () => {
         archivedAt: null,
         pinnedAt: null,
         doneAt: null,
+        attention: null,
         deletedAt: null,
         handoffThreadId: null,
         sourceThreadId: null,
@@ -207,6 +208,113 @@ describe("orchestration projector", () => {
       ),
     );
     expect(unarchived.threads[0]?.archivedAt).toBeNull();
+  });
+
+  it("sets the agent's attention flag and clears it when the user replies", async () => {
+    const now = "2026-01-01T00:00:00.000Z";
+    const flaggedAt = "2026-01-01T00:00:01.000Z";
+    const repliedAt = "2026-01-01T00:00:02.000Z";
+    const created = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(now),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: now,
+          commandId: "cmd-thread-create",
+          payload: {
+            threadId: "thread-1",
+            projectId: "project-1",
+            title: "demo",
+            modelSelection: {
+              provider: ProviderDriverKind.make("codex"),
+              model: "gpt-5-codex",
+            },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+    expect(created.threads[0]?.attention).toBeNull();
+
+    const attention = {
+      state: "needs_you",
+      reason: "Run the migration on staging",
+      setAt: flaggedAt,
+    } as const;
+    const flagged = await Effect.runPromise(
+      projectEvent(
+        created,
+        makeEvent({
+          sequence: 2,
+          type: "thread.attention-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: flaggedAt,
+          commandId: "cmd-attention",
+          payload: { threadId: "thread-1", attention, updatedAt: flaggedAt },
+        }),
+      ),
+    );
+    expect(flagged.threads[0]?.attention).toEqual(attention);
+
+    // An assistant message does not answer the flag; only the user can.
+    const assistantSpoke = await Effect.runPromise(
+      projectEvent(
+        flagged,
+        makeEvent({
+          sequence: 3,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: repliedAt,
+          commandId: "cmd-assistant",
+          payload: {
+            threadId: "thread-1",
+            messageId: "assistant:msg-1",
+            role: "assistant",
+            text: "still here",
+            turnId: null,
+            streaming: false,
+            createdAt: repliedAt,
+            updatedAt: repliedAt,
+          },
+        }),
+      ),
+    );
+    expect(assistantSpoke.threads[0]?.attention).toEqual(attention);
+
+    const replied = await Effect.runPromise(
+      projectEvent(
+        assistantSpoke,
+        makeEvent({
+          sequence: 4,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: repliedAt,
+          commandId: "cmd-user",
+          payload: {
+            threadId: "thread-1",
+            messageId: "user:msg-1",
+            role: "user",
+            text: "done, migration ran",
+            turnId: null,
+            streaming: false,
+            createdAt: repliedAt,
+            updatedAt: repliedAt,
+          },
+        }),
+      ),
+    );
+    expect(replied.threads[0]?.attention).toBeNull();
   });
 
   it("keeps projector forward-compatible for unhandled event types", async () => {

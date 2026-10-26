@@ -68,6 +68,18 @@ export function isDoneStampSuperseded(
 }
 
 /**
+ * Whether the agent's end-of-turn verdict has been overtaken by the user
+ * replying. A "needs you" flag is answered by the reply; a "done" verdict is
+ * reopened by it. Either way it stops describing the thread.
+ */
+export function isAttentionSuperseded(
+  attention: { readonly setAt: string } | null,
+  latestUserMessageAt: string | null,
+): boolean {
+  return isDoneStampSuperseded(attention?.setAt ?? null, latestUserMessageAt);
+}
+
+/**
  * Whether a conversation has gone cold: quiet for long enough to have dropped
  * out of the user's head, with work its own agent recorded as still open.
  *

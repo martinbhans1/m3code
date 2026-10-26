@@ -116,7 +116,9 @@ export function ThreadStatusLabel({ status }: { status: ThreadStatusPill }) {
           }`}
         />
       </TooltipTrigger>
-      <TooltipPopup side="top">{status.label}</TooltipPopup>
+      <TooltipPopup side="top">
+        {status.detail ? `${status.label}: ${status.detail}` : status.label}
+      </TooltipPopup>
     </Tooltip>
   );
 }

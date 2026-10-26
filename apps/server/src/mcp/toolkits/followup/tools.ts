@@ -219,9 +219,39 @@ export const RenameConversationTool = Tool.make("rename_conversation", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+export const SetAttentionInput = Schema.Struct({
+  state: Schema.Literals(["needs_you", "done", "clear"]).annotate({
+    description:
+      "'needs_you' when this conversation cannot finish until the user does something only they can: run a migration, make a product decision, approve something outside this chat, test on a real device, supply a credential. 'done' when what they asked for is finished and you have nothing more to add. 'clear' to withdraw a verdict you set earlier this turn that no longer holds.",
+  }),
+  reason: Schema.optional(
+    Schema.String.annotate({
+      description:
+        "One short line the user reads in the sidebar without opening the conversation. For 'needs_you', the action itself, imperative and specific: 'Run the 045 migration on staging', 'Pick monthly or annual billing'. For 'done', what was finished. Required for 'needs_you'.",
+    }),
+  ),
+});
+
+export const SetAttentionTool = Tool.make("set_attention", {
+  description:
+    "Tell the user, through the sidebar, where this conversation stands now that your turn is ending. The user runs many conversations at once and cannot read them all; this flag is how they find the ones that are stuck waiting on them.\n\nCall it once, as the last thing you do in a turn that settles something:\n- 'needs_you' — you are blocked, or the work cannot be finished, until the user acts. The conversation is flagged in the sidebar until they reply or dismiss it, so use it only for a real blocker. A question you asked in passing is not one; an open follow-up card is not one.\n- 'done' — the request is complete and verified as far as you can verify it, and nothing more is expected from you.\n\nSkip it when neither is true — mid-discussion, exploring options, or when only the user knows whether they want to keep going. Absence is an honest answer; a wrong 'needs_you' teaches the user to ignore the flag.\n\nFor a question with fixed choices that you need answered right now, use AskUserQuestion instead; this is for what remains after your turn is over. The user replying clears the flag automatically.",
+  parameters: SetAttentionInput,
+  success: Schema.Struct({
+    state: Schema.Literals(["needs_you", "done", "clear"]),
+  }),
+  failure: FollowupToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Flag where this conversation stands")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const FollowupToolkit = Toolkit.make(
   SuggestFollowupTool,
   ListFollowupsTool,
   ResolveFollowupTool,
   RenameConversationTool,
+  SetAttentionTool,
 );

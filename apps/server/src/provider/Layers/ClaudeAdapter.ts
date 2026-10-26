@@ -919,6 +919,13 @@ function isSuggestFollowupTool(toolName: string): boolean {
   return toolName === "mcp__t3-code__suggest_followup" || toolName === "suggest_followup";
 }
 
+// `set_attention` only writes this conversation's own sidebar flag. Asking the
+// user to approve the agent telling them it needs them would park the thread
+// on an approval for the very thing the flag exists to announce.
+function isSetAttentionTool(toolName: string): boolean {
+  return toolName === "mcp__t3-code__set_attention" || toolName === "set_attention";
+}
+
 interface FollowupSuggestion {
   readonly title: string;
   readonly detail?: string;
@@ -1236,6 +1243,8 @@ const FOLLOWUP_SYSTEM_PROMPT_APPEND = `When you finish a turn, record what shoul
 A turn that shipped something substantial almost always leaves a next rung. Satisfying the request is not the same as exhausting the work, and this is the only cheap moment to name it — you are holding context nobody reading a summary later can reconstruct. Four moves worth reaching for: **extend** (the same technique has other targets), **deepen** (is this at the floor? what would the next increment cost and buy?), **verify** (what would actually prove the claim you just made, and what did you not check?), **generalise** (the lint rule, helper or test that kills the whole class). Record the ordinary out-of-scope things too — a bug you spotted but did not fix, a refactor you skipped, a missing test.
 
 Only for work you are NOT doing this turn: use your todo list for work in progress, and ask the user directly for questions. Write the detail for a human skimming one card — plain language first, then only the specifics needed to start; markdown lists render, run-on "(a) … (b) …" prose does not. A specific rung beats a vague one — "audit the other five list endpoints for the same N+1" earns a chip, "consider further improvements" does not; skip it only when you genuinely cannot name one.
+
+When your turn ends with the conversation blocked on the user — they must run a migration, make a decision only they can make, test on a device, or supply something — call \`mcp__t3-code__set_attention\` with \`needs_you\` and the one action, in a line they can act on from the sidebar. When what they asked for is finished and verified and you have nothing to add, call it with \`done\`. Otherwise do not call it: mid-discussion, or when only they know whether they want to keep going, no flag is the honest answer, and a wrong \`needs_you\` teaches them to ignore it.
 
 The deck is readable: \`mcp__t3-code__list_followups\` shows what is still on it, what was already spun off into another conversation, and what has been closed. Check it when the user asks what is outstanding here, or asks you to work out which chips still apply — a follow-up is somebody's note from earlier, so verify the code before calling one stale. When you have finished the work a chip describes, or found it no longer applies, close it with \`mcp__t3-code__resolve_followup\` after the user agrees; never close one because you intend to do it.
 
@@ -4149,6 +4158,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
               },
             });
           }
+          return {
+            behavior: "allow",
+            updatedInput: toolInput,
+          } satisfies PermissionResult;
+        }
+
+        if (isSetAttentionTool(toolName)) {
           return {
             behavior: "allow",
             updatedInput: toolInput,

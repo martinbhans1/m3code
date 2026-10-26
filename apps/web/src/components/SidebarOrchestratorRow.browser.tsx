@@ -49,6 +49,7 @@ function orchestratorThread(overrides: Record<string, unknown>) {
     archivedAt: null,
     pinnedAt: null,
     doneAt: null,
+    attention: null,
     latestTurn: null,
     branch: null,
     worktreePath: null,

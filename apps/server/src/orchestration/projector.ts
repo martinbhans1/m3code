@@ -5,7 +5,7 @@ import {
   OrchestrationSession,
   OrchestrationThread,
 } from "@t3tools/contracts";
-import { isDoneStampSuperseded } from "@t3tools/shared/threadDisposition";
+import { isAttentionSuperseded, isDoneStampSuperseded } from "@t3tools/shared/threadDisposition";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -27,6 +27,7 @@ import {
   ThreadMarkedDonePayload,
   ThreadPinnedPayload,
   ThreadUnmarkedDonePayload,
+  ThreadAttentionSetPayload,
   ThreadUnpinnedPayload,
   ThreadRevertedPayload,
   ThreadSessionSetPayload,
@@ -293,6 +294,7 @@ export function projectEvent(
             archivedAt: null,
             pinnedAt: null,
             doneAt: null,
+            attention: null,
             deletedAt: null,
             messages: [],
             activities: [],
@@ -383,6 +385,17 @@ export function projectEvent(
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             doneAt: null,
+            updatedAt: payload.updatedAt,
+          }),
+        })),
+      );
+
+    case "thread.attention-set":
+      return decodeForEvent(ThreadAttentionSetPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            attention: payload.attention,
             updatedAt: payload.updatedAt,
           }),
         })),
@@ -491,12 +504,18 @@ export function projectEvent(
           message.role === "user" && isDoneStampSuperseded(thread.doneAt, message.createdAt)
             ? null
             : thread.doneAt;
+        // The agent's verdict yields the same way: replying is answering it.
+        const attention =
+          message.role === "user" && isAttentionSuperseded(thread.attention, message.createdAt)
+            ? null
+            : thread.attention;
 
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: cappedMessages,
             doneAt,
+            attention,
             updatedAt: event.occurredAt,
           }),
         };

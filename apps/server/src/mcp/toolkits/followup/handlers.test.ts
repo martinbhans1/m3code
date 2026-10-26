@@ -168,6 +168,7 @@ const spinOffThread = {
   archivedAt: null,
   pinnedAt: null,
   doneAt: null,
+  attention: null,
   session: null,
   latestUserMessageAt: "2026-08-05T08:40:00.000Z",
   hasPendingApprovals: false,

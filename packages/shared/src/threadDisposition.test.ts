@@ -3,6 +3,7 @@ import * as DateTime from "effect/DateTime";
 
 import {
   DEFAULT_COLD_THREAD_AFTER_MS,
+  isAttentionSuperseded,
   isDoneStampSuperseded,
   isThreadCold,
   threadQuietDays,
@@ -23,6 +24,20 @@ const coldThread = (overrides: Partial<ThreadDispositionInput> = {}): ThreadDisp
   hasPendingUserInput: false,
   isRunning: false,
   ...overrides,
+});
+
+describe("isAttentionSuperseded", () => {
+  it("clears the agent's verdict once the user replies after it", () => {
+    expect(isAttentionSuperseded({ setAt: daysAgo(2) }, daysAgo(1))).toBe(true);
+  });
+
+  it("keeps a verdict set after the user's last message", () => {
+    expect(isAttentionSuperseded({ setAt: daysAgo(1) }, daysAgo(2))).toBe(false);
+  });
+
+  it("has nothing to clear when there is no verdict", () => {
+    expect(isAttentionSuperseded(null, daysAgo(1))).toBe(false);
+  });
 });
 
 describe("isDoneStampSuperseded", () => {

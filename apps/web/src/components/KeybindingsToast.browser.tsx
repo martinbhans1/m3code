@@ -213,6 +213,7 @@ function createMinimalSnapshot(): OrchestrationReadModel {
         archivedAt: null,
         pinnedAt: null,
         doneAt: null,
+        attention: null,
         deletedAt: null,
         messages: [
           {

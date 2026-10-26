@@ -66,6 +66,7 @@ function makeThread(overrides: {
     archivedAt: null,
     pinnedAt: null,
     doneAt: null,
+    attention: null,
     session:
       overrides.sessionStatus === undefined
         ? null

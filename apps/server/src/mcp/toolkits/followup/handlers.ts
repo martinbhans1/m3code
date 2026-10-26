@@ -255,6 +255,48 @@ const handlers = {
 
       return { previousTitle, title };
     }),
+  set_attention: (input) =>
+    Effect.gen(function* () {
+      const invocation = yield* McpInvocationContext.McpInvocationContext;
+      const orchestrationEngine = yield* OrchestrationEngineService;
+      const startup = yield* ServerRuntimeStartup;
+      const crypto = yield* Crypto.Crypto;
+
+      const reason = input.reason?.trim() || null;
+      if (input.state === "needs_you" && reason === null) {
+        return yield* new FollowupToolError({
+          message:
+            "A 'needs_you' flag needs a reason: the one thing the user has to do, in a line they can act on from the sidebar.",
+        });
+      }
+
+      const now = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
+      const commandUuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      yield* startup
+        .enqueueCommand(
+          orchestrationEngine.dispatch({
+            type: "thread.attention.set",
+            commandId: CommandId.make(`attention:${commandUuid}`),
+            threadId: invocation.threadId,
+            attention:
+              input.state === "clear"
+                ? null
+                : { state: input.state, reason, setAt: now as IsoDateTime },
+          }),
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new FollowupToolError({
+                message: `Failed to set the flag: ${
+                  cause instanceof Error ? cause.message : String(cause)
+                }`,
+              }),
+          ),
+        );
+
+      return { state: input.state };
+    }),
 } satisfies Parameters<typeof FollowupToolkit.toLayer>[0];
 
 export const FollowupToolkitHandlersLive = FollowupToolkit.toLayer(handlers);

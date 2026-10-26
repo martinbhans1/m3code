@@ -48,6 +48,7 @@ export const GROUP_ORDER: ReadonlyArray<{
 const GROUP_BY_PILL_LABEL: Record<ThreadStatusPill["label"], BoardGroupId> = {
   "Pending Approval": "needsYou",
   "Awaiting Input": "needsYou",
+  "Needs You": "needsYou",
   "Plan Ready": "needsYou",
   Stalled: "stalled",
   Working: "working",
@@ -73,8 +74,11 @@ export function classifyThread(thread: SidebarThreadSummary): {
   detail: string | null;
 } {
   const pill = resolveThreadStatusPill({ thread });
-  // No detail: the dot beside the title is already labelled with exactly this.
-  if (pill !== null) return { group: GROUP_BY_PILL_LABEL[pill.label], detail: null };
+  // The dot already carries the label, so the only detail worth a line is what
+  // the agent said it is waiting on.
+  if (pill !== null) {
+    return { group: GROUP_BY_PILL_LABEL[pill.label], detail: pill.detail ?? null };
+  }
 
   // The pill has no colour for a failed thread, but it is the case most worth
   // surfacing.

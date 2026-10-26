@@ -21,6 +21,7 @@ function thread(overrides: Partial<SidebarThreadSummary> = {}): SidebarThreadSum
     archivedAt: null,
     pinnedAt: null,
     doneAt: null,
+    attention: null,
     updatedAt: new Date().toISOString(),
     latestTurn: null,
     branch: null,

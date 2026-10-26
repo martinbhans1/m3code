@@ -93,6 +93,7 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         archivedAt: null,
         pinnedAt: null,
         doneAt: null,
+        attention: null,
         latestUserMessageAt: null,
         pendingApprovalCount: 0,
         pendingUserInputCount: 0,

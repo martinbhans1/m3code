@@ -12,6 +12,7 @@ import {
   ThreadMarkedDonePayload as ContractsThreadMarkedDonePayloadSchema,
   ThreadPinnedPayload as ContractsThreadPinnedPayloadSchema,
   ThreadUnmarkedDonePayload as ContractsThreadUnmarkedDonePayloadSchema,
+  ThreadAttentionSetPayload as ContractsThreadAttentionSetPayloadSchema,
   ThreadUnpinnedPayload as ContractsThreadUnpinnedPayloadSchema,
   ThreadMessageSentPayload as ContractsThreadMessageSentPayloadSchema,
   ThreadProposedPlanUpsertedPayload as ContractsThreadProposedPlanUpsertedPayloadSchema,
@@ -42,6 +43,7 @@ export const ThreadPinnedPayload = ContractsThreadPinnedPayloadSchema;
 export const ThreadUnpinnedPayload = ContractsThreadUnpinnedPayloadSchema;
 export const ThreadMarkedDonePayload = ContractsThreadMarkedDonePayloadSchema;
 export const ThreadUnmarkedDonePayload = ContractsThreadUnmarkedDonePayloadSchema;
+export const ThreadAttentionSetPayload = ContractsThreadAttentionSetPayloadSchema;
 
 export const MessageSentPayloadSchema = ContractsThreadMessageSentPayloadSchema;
 export const ThreadProposedPlanUpsertedPayload = ContractsThreadProposedPlanUpsertedPayloadSchema;

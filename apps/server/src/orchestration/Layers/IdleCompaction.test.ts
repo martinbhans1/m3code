@@ -64,6 +64,7 @@ function makeThread(overrides: Partial<OrchestrationThreadShell> = {}): Orchestr
     archivedAt: null,
     pinnedAt: null,
     doneAt: null,
+    attention: null,
     session: {
       threadId: THREAD_ID,
       status: "ready",

@@ -51,6 +51,7 @@ const BASE_SNAPSHOT: OrchestrationShellSnapshot = {
       archivedAt: null,
       pinnedAt: null,
       doneAt: null,
+      attention: null,
       session: null,
       latestUserMessageAt: null,
       hasPendingApprovals: false,
