@@ -1,3 +1,5 @@
+import { workspaceRelativePath } from "@t3tools/shared/path";
+
 import { formatWorkspaceRelativePath } from "./filePathDisplay";
 import { resolvePathLinkTarget, splitPathAndPosition } from "./terminal-links";
 
@@ -173,47 +175,6 @@ export function resolveMarkdownFileLinkTarget(
 function basenameOfPath(path: string): string {
   const separatorIndex = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   return separatorIndex >= 0 ? path.slice(separatorIndex + 1) : path;
-}
-
-function workspaceRelativePath(path: string, workspaceRoot: string | undefined): string | null {
-  if (!workspaceRoot) return null;
-  const normalizedPath = normalizeWindowsDrivePath(path.replaceAll("\\", "/"));
-  const normalizedRoot = normalizeWindowsDrivePath(workspaceRoot.replaceAll("\\", "/")).replace(
-    /\/+$/,
-    "",
-  );
-  const pathForCompare = normalizedPath.toLowerCase();
-  const rootForCompare = normalizedRoot.toLowerCase();
-  if (!pathForCompare.startsWith(`${rootForCompare}/`)) return null;
-  return normalizedPath.slice(normalizedRoot.length + 1);
-}
-
-/**
- * Which of the known workspace roots actually contains this absolute path, and
- * where inside it.
- *
- * A conversation can name a file belonging to a different project than its own
- * — the orchestrator does it constantly, since its own "workspace" is an empty
- * state directory. The file preview needs a root that really contains the file,
- * not the root of whichever thread happens to be open, or the read fails with a
- * bare "could not read workspace file".
- *
- * Longest match wins, so a worktree nested inside a project beats the project.
- */
-export function resolveOwningWorkspaceRoot(
-  absolutePath: string,
-  candidateRoots: Iterable<string | null | undefined>,
-): { workspaceRoot: string; relativePath: string } | null {
-  let best: { workspaceRoot: string; relativePath: string } | null = null;
-  for (const root of candidateRoots) {
-    if (!root) continue;
-    const relativePath = workspaceRelativePath(absolutePath, root);
-    if (relativePath === null) continue;
-    if (best === null || root.length > best.workspaceRoot.length) {
-      best = { workspaceRoot: root, relativePath };
-    }
-  }
-  return best;
 }
 
 export function resolveMarkdownFileLinkMeta(

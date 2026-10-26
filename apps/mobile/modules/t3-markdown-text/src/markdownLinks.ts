@@ -29,6 +29,8 @@ export type MarkdownLinkPresentation =
       readonly kind: "file";
       readonly icon: MarkdownFileIcon;
       readonly label: string;
+      /** The path as written, including any `:line[:column]` suffix. */
+      readonly target: string;
     }
   | {
       readonly kind: "link";
@@ -339,6 +341,7 @@ export function resolveMarkdownLinkPresentation(href: string): MarkdownLinkPrese
       kind: "file",
       icon: resolveMarkdownFileIcon(fileTarget),
       label: fileLabel(fileTarget),
+      target: fileTarget,
     };
   }
 

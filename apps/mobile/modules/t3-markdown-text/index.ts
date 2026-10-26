@@ -1,5 +1,10 @@
 export { markdownFileIconSource } from "./src/markdownFileIcons";
 export {
+  MarkdownFileLinkHandlerProvider,
+  useMarkdownFileLinkHandler,
+  type MarkdownFileLinkHandler,
+} from "./src/markdownFileLinkHandler";
+export {
   resolveMarkdownFileIcon,
   resolveMarkdownLinkPresentation,
   type MarkdownFileIcon,

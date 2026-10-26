@@ -11,6 +11,7 @@ import {
   WrapTextIcon,
 } from "lucide-react";
 import type { ScopedThreadRef, ServerProviderSkill } from "@t3tools/contracts";
+import { resolveOwningWorkspaceRoot } from "@t3tools/shared/path";
 import React, {
   Children,
   Suspense,
@@ -67,7 +68,6 @@ import {
   normalizeMarkdownLinkDestination,
   resolveMarkdownFileLinkMeta,
   resolveMarkdownFileLinkTarget,
-  resolveOwningWorkspaceRoot,
   rewriteMarkdownFileUriHref,
 } from "../markdown-links";
 import {

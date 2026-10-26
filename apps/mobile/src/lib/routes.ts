@@ -71,6 +71,21 @@ export function buildThreadTerminalNavigation(
   };
 }
 
+/** Open a file a chat message linked to, as written in the message (`:line` suffix allowed). */
+export function buildThreadFileNavigation(
+  input: ThreadRouteInput | PlainThreadRouteInput,
+  target: string,
+): Href {
+  return {
+    pathname: "/threads/[environmentId]/[threadId]/file",
+    params: {
+      environmentId: String(input.environmentId),
+      threadId: String("threadId" in input ? input.threadId : input.id),
+      path: target,
+    },
+  };
+}
+
 export function dismissRoute(router: Router) {
   if (router.canGoBack()) {
     router.back();

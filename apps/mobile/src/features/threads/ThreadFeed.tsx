@@ -4,6 +4,7 @@ import { KeyboardAvoidingLegendList } from "@legendapp/list/keyboard";
 import { type LegendListRef } from "@legendapp/list/react-native";
 import type { EnvironmentId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import { SymbolView } from "expo-symbols";
+import { useRouter } from "expo-router";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Markdown,
@@ -21,6 +22,7 @@ import {
   StyleSheet,
   Text as NativeText,
   type ColorValue,
+  type TextStyle,
   useColorScheme,
   useWindowDimensions,
   View,
@@ -53,13 +55,19 @@ import {
 } from "../review/nativeReviewDiffAdapter";
 import { buildReviewParsedDiff } from "../review/reviewModel";
 import { cn } from "../../lib/cn";
+import { buildThreadFileNavigation } from "../../lib/routes";
 import type { MobileLayoutVariant } from "../../lib/mobileLayout";
 import {
+  MarkdownFileLinkHandlerProvider,
   MarkdownImageRendererProvider,
+  useMarkdownFileLinkHandler,
   type MarkdownImageRenderer,
 } from "@t3tools/mobile-markdown-text";
 import { markdownFileIconSource } from "@t3tools/mobile-markdown-text/file-icons";
-import { resolveMarkdownLinkPresentation } from "@t3tools/mobile-markdown-text/links";
+import {
+  resolveMarkdownLinkPresentation,
+  type MarkdownLinkPresentation,
+} from "@t3tools/mobile-markdown-text/links";
 import {
   deriveThreadFeedPresentation,
   type ThreadFeedEntry,
@@ -314,6 +322,26 @@ const markdownLinkStyles = StyleSheet.create({
   },
 });
 
+const MarkdownFileLinkChip = memo(function MarkdownFileLinkChip(props: {
+  readonly presentation: Extract<MarkdownLinkPresentation, { kind: "file" }>;
+  readonly style: TextStyle;
+}) {
+  const onPressFile = useMarkdownFileLinkHandler();
+  const { target } = props.presentation;
+  return (
+    <NativeText
+      onPress={onPressFile ? () => onPressFile(target) : undefined}
+      style={[markdownLinkStyles.file, props.style]}
+    >
+      <Image
+        source={markdownFileIconSource(props.presentation.icon)}
+        style={markdownLinkStyles.fileIcon}
+      />
+      {props.presentation.label}
+    </NativeText>
+  );
+});
+
 const MarkdownExternalLink = memo(function MarkdownExternalLink(props: {
   readonly children: ReactNode;
   readonly color: string;
@@ -374,6 +402,26 @@ function useReviewCommentColors(): ReviewCommentColors {
     [background, border, codeBackground, mutedBackground, mutedText, text],
   );
 }
+
+/** Markdown laid out exactly the way an assistant reply looks in the feed. */
+export const AssistantMarkdownText = memo(function AssistantMarkdownText(props: {
+  readonly markdown: string;
+}) {
+  const styles = useMarkdownStyles().assistant;
+  if (hasNativeSelectableMarkdownText()) {
+    return <SelectableMarkdownText markdown={props.markdown} textStyle={styles.nativeTextStyle} />;
+  }
+  return (
+    <Markdown
+      options={{ gfm: true }}
+      renderers={styles.renderers}
+      styles={styles.styles}
+      theme={styles.theme}
+    >
+      {props.markdown}
+    </Markdown>
+  );
+});
 
 function useMarkdownStyles(): MarkdownStyleSets {
   const colorScheme = useColorScheme();
@@ -491,22 +539,14 @@ function useMarkdownStyles(): MarkdownStyleSets {
         const presentation = resolveMarkdownLinkPresentation(href);
         if (presentation.kind === "file") {
           return (
-            <NativeText
-              style={[
-                markdownLinkStyles.file,
-                {
-                  backgroundColor: inlineBackgroundColor,
-                  borderColor: markdownHrColor,
-                  color: inlineTextColor,
-                },
-              ]}
-            >
-              <Image
-                source={markdownFileIconSource(presentation.icon)}
-                style={markdownLinkStyles.fileIcon}
-              />
-              {presentation.label}
-            </NativeText>
+            <MarkdownFileLinkChip
+              presentation={presentation}
+              style={{
+                backgroundColor: inlineBackgroundColor,
+                borderColor: markdownHrColor,
+                color: inlineTextColor,
+              }}
+            />
           );
         }
         if (presentation.kind === "external") {
@@ -1376,6 +1416,18 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const iconSubtleColor = useThemeColor("--color-icon-subtle");
   const userBubbleColor = useThemeColor("--color-user-bubble");
   const markdownStyles = useMarkdownStyles();
+  const router = useRouter();
+  const openFileLink = useCallback(
+    (target: string) => {
+      router.push(
+        buildThreadFileNavigation(
+          { environmentId: props.environmentId, threadId: props.threadId },
+          target,
+        ),
+      );
+    },
+    [props.environmentId, props.threadId, router],
+  );
   const reviewCommentColors = useReviewCommentColors();
   const listAppearanceData = useMemo(
     () => ({
@@ -1649,56 +1701,58 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   }
 
   return (
-    <MarkdownImageRendererProvider value={renderMarkdownImage}>
-      <View style={{ flex: 1 }}>
-        <KeyboardAvoidingLegendList
-          ref={listRef}
-          key={props.threadId}
-          style={{ flex: 1 }}
-          automaticallyAdjustsScrollIndicatorInsets={false}
-          contentInset={{ top: 0, bottom: 0 }}
-          scrollIndicatorInsets={{ top: topContentInset, bottom: 0 }}
-          alignItemsAtEnd
-          maintainScrollAtEnd={{
-            animated: false,
-            on: {
-              dataChange: true,
-              itemLayout: true,
-              layout: true,
-            },
-          }}
-          data={presentedFeed}
-          extraData={listAppearanceData}
-          renderItem={renderItem}
-          keyExtractor={(entry) => `${entry.type}:${entry.id}`}
-          getItemType={(entry) =>
-            entry.type === "message" ? `message:${entry.message.role}` : entry.type
-          }
-          keyboardShouldPersistTaps="always"
-          keyboardDismissMode="none"
-          estimatedItemSize={180}
-          initialScrollAtEnd
-          onContentSizeChange={onListContentSizeChange}
-          onLoad={onListLoad}
-          onScroll={onListScroll}
-          scrollEventThrottle={16}
-          ListHeaderComponent={<View style={{ height: topContentInset }} />}
-          contentContainerStyle={{
-            paddingTop: 12,
-            paddingBottom: bottomContentInset,
-            paddingHorizontal: horizontalPadding,
-          }}
-        />
-      </View>
+    <MarkdownFileLinkHandlerProvider value={openFileLink}>
+      <MarkdownImageRendererProvider value={renderMarkdownImage}>
+        <View style={{ flex: 1 }}>
+          <KeyboardAvoidingLegendList
+            ref={listRef}
+            key={props.threadId}
+            style={{ flex: 1 }}
+            automaticallyAdjustsScrollIndicatorInsets={false}
+            contentInset={{ top: 0, bottom: 0 }}
+            scrollIndicatorInsets={{ top: topContentInset, bottom: 0 }}
+            alignItemsAtEnd
+            maintainScrollAtEnd={{
+              animated: false,
+              on: {
+                dataChange: true,
+                itemLayout: true,
+                layout: true,
+              },
+            }}
+            data={presentedFeed}
+            extraData={listAppearanceData}
+            renderItem={renderItem}
+            keyExtractor={(entry) => `${entry.type}:${entry.id}`}
+            getItemType={(entry) =>
+              entry.type === "message" ? `message:${entry.message.role}` : entry.type
+            }
+            keyboardShouldPersistTaps="always"
+            keyboardDismissMode="none"
+            estimatedItemSize={180}
+            initialScrollAtEnd
+            onContentSizeChange={onListContentSizeChange}
+            onLoad={onListLoad}
+            onScroll={onListScroll}
+            scrollEventThrottle={16}
+            ListHeaderComponent={<View style={{ height: topContentInset }} />}
+            contentContainerStyle={{
+              paddingTop: 12,
+              paddingBottom: bottomContentInset,
+              paddingHorizontal: horizontalPadding,
+            }}
+          />
+        </View>
 
-      <ImageViewing
-        images={expandedImage ? [{ uri: expandedImage }] : []}
-        imageIndex={0}
-        visible={expandedImage !== null}
-        onRequestClose={() => setExpandedImage(null)}
-        swipeToCloseEnabled
-        doubleTapToZoomEnabled
-      />
-    </MarkdownImageRendererProvider>
+        <ImageViewing
+          images={expandedImage ? [{ uri: expandedImage }] : []}
+          imageIndex={0}
+          visible={expandedImage !== null}
+          onRequestClose={() => setExpandedImage(null)}
+          swipeToCloseEnabled
+          doubleTapToZoomEnabled
+        />
+      </MarkdownImageRendererProvider>
+    </MarkdownFileLinkHandlerProvider>
   );
 });

@@ -18,6 +18,7 @@ describe("resolveMarkdownLinkPresentation", () => {
       kind: "file",
       icon: "typescript",
       label: "main.ts:42:7",
+      target: "/Users/julius/project/src/main.ts:42:7",
     });
   });
 
@@ -26,16 +27,19 @@ describe("resolveMarkdownLinkPresentation", () => {
       kind: "file",
       icon: "typescript",
       label: "index.ts:10",
+      target: "apps/mobile/src/index.ts:10",
     });
     expect(resolveMarkdownLinkPresentation("AGENTS.md")).toEqual({
       kind: "file",
       icon: "agents",
       label: "AGENTS.md",
+      target: "AGENTS.md",
     });
     expect(resolveMarkdownLinkPresentation("package.json")).toEqual({
       kind: "file",
       icon: "package",
       label: "package.json",
+      target: "package.json",
     });
   });
 

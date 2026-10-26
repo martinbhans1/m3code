@@ -4,6 +4,7 @@ import { Image, Linking, type TextStyle, useColorScheme } from "react-native";
 
 import { MarkdownTextPrimitive } from "./MarkdownTextPrimitive";
 import { markdownFileIconSource } from "./markdownFileIcons";
+import { useMarkdownFileLinkHandler } from "./markdownFileLinkHandler";
 import type { MarkdownFileIcon } from "./markdownLinks";
 import type { NativeMarkdownTextRun } from "./nativeMarkdownText";
 import type { NativeMarkdownTextStyle } from "./SelectableMarkdownText.types";
@@ -66,6 +67,7 @@ function runKeySignature(run: NativeMarkdownTextRun): string {
     run.href,
     run.externalHost,
     run.fileIcon,
+    run.fileTarget,
     run.skillName,
     run.skillLabel,
     run.role,
@@ -172,6 +174,7 @@ export function NativeMarkdownSelectableText(props: {
   readonly textStyle: NativeMarkdownTextStyle;
 }) {
   const colorScheme = useColorScheme();
+  const onPressFile = useMarkdownFileLinkHandler();
   const fileIconUris = useFileIconUris(props.runs);
   const occurrences = new Map<string, number>();
   const prefixedExternalLinks = new Set<string>();
@@ -226,6 +229,7 @@ export function NativeMarkdownSelectableText(props: {
     >
       {keyedRuns.map(({ key, run, text }) => {
         const href = run.href;
+        const fileTarget = run.fileTarget;
         return (
           <MarkdownTextPrimitive
             key={key}
@@ -241,11 +245,13 @@ export function NativeMarkdownSelectableText(props: {
             }
             style={runStyle(run, props.textStyle)}
             onPress={
-              href
-                ? () => {
-                    void Linking.openURL(href);
-                  }
-                : undefined
+              fileTarget && onPressFile
+                ? () => onPressFile(fileTarget)
+                : href
+                  ? () => {
+                      void Linking.openURL(href);
+                    }
+                  : undefined
             }
           >
             {text}

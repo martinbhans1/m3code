@@ -12,6 +12,7 @@ export interface NativeMarkdownTextRun {
   readonly href?: string;
   readonly externalHost?: string;
   readonly fileIcon?: MarkdownFileIcon;
+  readonly fileTarget?: string;
   readonly skillName?: string;
   readonly skillLabel?: string;
   readonly role?:
@@ -52,6 +53,7 @@ interface RunContext {
   readonly href?: string;
   readonly externalHost?: string;
   readonly fileIcon?: MarkdownFileIcon;
+  readonly fileTarget?: string;
   readonly role?: NativeMarkdownTextRun["role"];
   readonly headingLevel?: number;
   readonly depth?: number;
@@ -132,6 +134,7 @@ function sameRunStyle(left: NativeMarkdownTextRun, right: NativeMarkdownTextRun)
     left.href === right.href &&
     left.externalHost === right.externalHost &&
     left.fileIcon === right.fileIcon &&
+    left.fileTarget === right.fileTarget &&
     left.skillName === right.skillName &&
     left.skillLabel === right.skillLabel &&
     left.role === right.role &&
@@ -162,6 +165,7 @@ function appendRun(
     ...(context.href ? { href: context.href } : {}),
     ...(context.externalHost ? { externalHost: context.externalHost } : {}),
     ...(context.fileIcon ? { fileIcon: context.fileIcon } : {}),
+    ...(context.fileTarget ? { fileTarget: context.fileTarget } : {}),
     ...(context.role ? { role: context.role } : {}),
     ...(context.headingLevel ? { headingLevel: context.headingLevel } : {}),
     ...(context.depth ? { depth: context.depth } : {}),
@@ -294,6 +298,7 @@ function appendNode(
         return appendRun(runs, presentation.label, {
           ...context,
           fileIcon: presentation.icon,
+          fileTarget: presentation.target,
         });
       }
       if (presentation.kind === "external") {

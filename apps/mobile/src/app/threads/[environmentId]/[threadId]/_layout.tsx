@@ -67,6 +67,18 @@ export default function ThreadLayout() {
         }}
       />
       <Stack.Screen
+        name="file"
+        options={{
+          animation: "slide_from_right",
+          contentStyle: sheetStyle,
+          headerBackButtonDisplayMode: "minimal",
+          headerShown: true,
+          headerBackTitle: "",
+          headerShadowVisible: false,
+          headerStyle: headerBg,
+        }}
+      />
+      <Stack.Screen
         name="terminal"
         options={{
           animation: "slide_from_right",
