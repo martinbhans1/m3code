@@ -119,6 +119,15 @@ static NSArray<NSDictionary<NSString *, id> *> *T3MarkdownTextExtractChipBackgro
 
 @implementation T3MarkdownTextBackingView
 
+- (void)setChipBackgrounds:(NSArray<NSDictionary<NSString *, id> *> *)chipBackgrounds
+{
+  if ([_chipBackgrounds isEqualToArray:chipBackgrounds]) {
+    return;
+  }
+  _chipBackgrounds = [chipBackgrounds copy];
+  [self setNeedsDisplay];
+}
+
 - (void)drawRect:(CGRect)rect
 {
   [self.layoutManager ensureLayoutForTextContainer:self.textContainer];
@@ -309,6 +318,11 @@ T3MarkdownOutsideTapCoordinatorForWindow(UIWindow *window)
     self.clipsToBounds = true;
 
     _textView = [[T3MarkdownTextBackingView alloc] init];
+    // Chip backgrounds are painted into the text view's own layer. The default
+    // scale-to-fill content mode stretches that old bitmap when the frame
+    // changes (a streaming message growing, a recycled cell resizing), which
+    // leaves tall, empty boxes floating over unrelated text.
+    _textView.contentMode = UIViewContentModeRedraw;
     _attachmentImages = [[NSMutableDictionary alloc] init];
     _pendingAttachmentUris = [[NSMutableSet alloc] init];
     _textView.scrollEnabled = false;
@@ -373,6 +387,7 @@ T3MarkdownOutsideTapCoordinatorForWindow(UIWindow *window)
   // Reset the frame to zero so that when it properly lays out on the next use
   _textView.frame = CGRectZero;
   _textView.attributedText = nil;
+  _textView.chipBackgrounds = @[];
 }
 
 - (void)layoutSubviews
@@ -435,6 +450,9 @@ T3MarkdownOutsideTapCoordinatorForWindow(UIWindow *window)
   if (frameChanged) {
     _textView.frame = _view.frame;
   }
+  // Chip rects follow glyph positions, which move whenever the text or the
+  // wrapping width changes even if the chip list itself is identical.
+  [_textView setNeedsDisplay];
 
   __block std::vector<std::string> lines;
   const int maxLines = props.numberOfLines;
