@@ -1,3 +1,5 @@
+import { FILE_LINK_INSTRUCTIONS } from "./FileLinkInstructions.ts";
+
 const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 
 ## M3 Code collaborative browser
@@ -132,6 +134,7 @@ Do not ask "should I proceed?" in the final output. The user can easily switch o
 
 Only produce at most one \`<proposed_plan>\` block per turn, and only when you are presenting a complete spec.
 ${T3_CODE_BROWSER_TOOL_INSTRUCTIONS}
+${FILE_LINK_INSTRUCTIONS}
 </collaboration_mode>`;
 
 export const CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Collaboration Mode: Default
@@ -148,4 +151,5 @@ The blocking \`request_user_input\` tool is only available in the modes listed b
 
 In Default mode, prefer making reasonable assumptions and executing the user's request when clarification is unnecessary. When you need an answer, use the structured question tool if available. Use a concise plain-text question only when no supported question tool is available; never render multiple-choice options as ordinary assistant bullet points.
 ${T3_CODE_BROWSER_TOOL_INSTRUCTIONS}
+${FILE_LINK_INSTRUCTIONS}
 </collaboration_mode>`;

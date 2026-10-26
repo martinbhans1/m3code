@@ -7,6 +7,7 @@ import { ThreadId, TurnId } from "@t3tools/contracts";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 
+import { FILE_LINK_INSTRUCTIONS } from "../FileLinkInstructions.ts";
 import {
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
@@ -171,6 +172,7 @@ describe("T3 browser developer instructions", () => {
       CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
       CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
     ]) {
+      assert.ok(instructions.includes(FILE_LINK_INSTRUCTIONS));
       assert.match(instructions, /t3-code/);
       assert.match(instructions, /preview_status/);
       assert.match(instructions, /preview_open/);

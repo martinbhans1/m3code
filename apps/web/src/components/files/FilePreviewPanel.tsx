@@ -10,7 +10,7 @@ import { EditorProvider, File, type FileOptions, Virtualizer } from "@pierre/dif
 import {
   Check,
   ChevronRight,
-  Code2,
+  Pencil,
   Copy,
   DatabaseIcon,
   Eye,
@@ -52,12 +52,11 @@ import { installFileEditorDismissal } from "./fileEditorDismissal";
 import { LocalCommentAnnotation } from "./LocalCommentAnnotation";
 import { projectFileCacheKey } from "./fileContentRevision";
 import { fileBreadcrumbs } from "./filePath";
-import { isMarkdownPreviewFile, isSqlFile, setMarkdownTaskChecked } from "./filePreviewMode";
+import { isMarkdownPreviewFile, isSqlFile } from "./filePreviewMode";
 import { RunSqlDialog } from "../database/RunSqlDialog";
 import { FileSaveCoordinator } from "./fileSaveCoordinator";
 import {
   confirmProjectFileQueryData,
-  getOptimisticProjectFileQueryData,
   setProjectFileQueryData,
   useProjectFileQuery,
 } from "./projectFilesQueryState";
@@ -552,25 +551,14 @@ function EditableFileSurface({
 }
 
 function RenderedMarkdownSurface({
-  environmentId,
   cwd,
-  relativePath,
   contents,
   threadRef,
-  onPendingChange,
-}: Omit<
-  EditableFileSurfaceProps,
-  "resolvedTheme" | "composerDraftTarget" | "revealLine" | "revealRequestId" | "onPostRender"
-> & {
+}: {
+  cwd: string;
+  contents: string;
   threadRef: ScopedThreadRef;
 }) {
-  const saveCoordinator = useFileSaveCoordinator({
-    environmentId,
-    cwd,
-    relativePath,
-    onPendingChange,
-  });
-
   return (
     <ScrollArea className="min-h-0 flex-1">
       <ChatMarkdown
@@ -578,15 +566,6 @@ function RenderedMarkdownSurface({
         cwd={cwd}
         threadRef={threadRef}
         className="mx-auto max-w-4xl px-6 py-5"
-        onTaskListChange={({ markerOffset, checked }) => {
-          const currentContents =
-            getOptimisticProjectFileQueryData(environmentId, cwd, relativePath)?.contents ??
-            contents;
-          const nextContents = setMarkdownTaskChecked(currentContents, markerOffset, checked);
-          if (nextContents === currentContents) return;
-          setProjectFileQueryData(environmentId, cwd, relativePath, nextContents);
-          saveCoordinator.change(nextContents);
-        }}
       />
     </ScrollArea>
   );
@@ -629,18 +608,21 @@ export default function FilePreviewPanel({
   });
   const [explorerOpen, setExplorerOpen] = useState(initialExplorerOpen);
   const [runSqlOpen, setRunSqlOpen] = useState(false);
-  const [markdownView, setMarkdownView] = useState<{
-    path: string | null;
-    revealRequestId: number | null;
-  }>({ path: null, revealRequestId: null });
+  const [markdownEditView, setMarkdownEditView] = useState<{
+    fileKey: string;
+    revealRequestId: number;
+  } | null>(null);
   const breadcrumbRef = useRef<HTMLDivElement>(null);
   const fileBrowserRef = useRef<FileBrowserPanelHandle>(null);
   const pendingRevealRef = useRef<string | null>(null);
   const isMarkdown = relativePath ? isMarkdownPreviewFile(relativePath) : false;
+  const markdownFileKey = JSON.stringify([environmentId, cwd, relativePath]);
   const renderMarkdown =
     isMarkdown &&
-    markdownView.path === relativePath &&
-    (revealLine === null || markdownView.revealRequestId === revealRequestId);
+    !(
+      markdownEditView?.fileKey === markdownFileKey &&
+      markdownEditView.revealRequestId === revealRequestId
+    );
   const canOpenInBrowser =
     relativePath !== null && isPreviewSupportedInRuntime() && isBrowserPreviewFile(relativePath);
   // Running SQL needs the file's contents, so the action only appears once the
@@ -793,23 +775,32 @@ export default function FilePreviewPanel({
                 render={
                   <Toggle
                     className="shrink-0"
-                    pressed={renderMarkdown}
-                    onPressedChange={(pressed) => {
-                      setMarkdownView({
-                        path: pressed ? relativePath : null,
-                        revealRequestId: pressed ? revealRequestId : null,
-                      });
+                    pressed={!renderMarkdown}
+                    disabled={!file.data || file.data.truncated}
+                    onPressedChange={(editing) => {
+                      setMarkdownEditView(
+                        editing ? { fileKey: markdownFileKey, revealRequestId } : null,
+                      );
                     }}
-                    aria-label={renderMarkdown ? "Show markdown source" : "Show rendered markdown"}
+                    aria-label={renderMarkdown ? "Edit markdown" : "Read markdown"}
                     variant="ghost"
                     size="sm"
                   >
-                    {renderMarkdown ? <Code2 className="size-3.5" /> : <Eye className="size-3.5" />}
+                    {renderMarkdown ? (
+                      <Pencil className="size-3.5" />
+                    ) : (
+                      <Eye className="size-3.5" />
+                    )}
+                    {renderMarkdown ? "Edit" : "Read"}
                   </Toggle>
                 }
               />
               <TooltipPopup>
-                {renderMarkdown ? "Show markdown source" : "Show rendered markdown"}
+                {file.data?.truncated
+                  ? "This file is too large to edit"
+                  : renderMarkdown
+                    ? "Edit markdown source"
+                    : "Read formatted markdown"}
               </TooltipPopup>
             </Tooltip>
           ) : null}
@@ -906,12 +897,9 @@ export default function FilePreviewPanel({
           ) : relativePath && file.data ? (
             isMarkdown && renderMarkdown ? (
               <RenderedMarkdownSurface
-                environmentId={environmentId}
                 cwd={cwd}
-                relativePath={relativePath}
                 threadRef={threadRef}
                 contents={file.data.contents}
-                onPendingChange={onPendingChange}
               />
             ) : file.data.truncated ? (
               <Virtualizer

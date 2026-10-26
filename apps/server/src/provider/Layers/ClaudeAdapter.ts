@@ -6,6 +6,7 @@
  *
  * @module ClaudeAdapterLive
  */
+import { FILE_LINK_INSTRUCTIONS } from "../FileLinkInstructions.ts";
 import {
   type CanUseTool,
   query,
@@ -4343,6 +4344,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
             ]
           : []),
         RESPONSE_STYLE_SYSTEM_PROMPT_APPEND,
+        FILE_LINK_INSTRUCTIONS,
       ].join("\n\n");
       const queryOptions: ClaudeQueryOptions = {
         ...(input.cwd ? { cwd: input.cwd } : {}),
