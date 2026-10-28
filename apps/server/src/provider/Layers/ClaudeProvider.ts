@@ -711,12 +711,16 @@ const settleProbeLeg = <A, E, R>(
  * `binaryPath`. An older CLI that doesn't implement the request may simply
  * never answer.
  */
-const readClaudeUsage = (query: object) =>
+const readClaudeUsage = (query: object, onRequest?: (request: Promise<unknown>) => void) =>
   Effect.gen(function* () {
     const usageMethod = (query as Record<string, unknown>)[CLAUDE_USAGE_METHOD];
     if (typeof usageMethod !== "function") return undefined;
     const capturedAt = DateTime.formatIso(yield* DateTime.now);
-    const response = yield* Effect.tryPromise(() => usageMethod.call(query) as Promise<unknown>);
+    const response = yield* Effect.tryPromise(() => {
+      const request = usageMethod.call(query) as Promise<unknown>;
+      onRequest?.(request);
+      return request;
+    });
     return normalizeClaudeUsage({ raw: response, capturedAt });
   });
 
@@ -793,6 +797,61 @@ function waitForAbortSignal(signal: AbortSignal): Promise<void> {
 }
 
 /**
+ * How long a finished probe's `claude` process may keep running before it is
+ * killed outright.
+ *
+ * The usage read is the probe's first network call, so when the access token
+ * has lapsed it is the probe that renews it. Claude rotates the refresh token
+ * on every renewal and cancels the old one: a process killed after Anthropic
+ * issued the new token but before Claude saved it leaves a dead refresh token
+ * on disk, the next renewal is refused, and Claude answers that by blanking
+ * the account's sign-in. The probe's short deadlines bound how long we wait
+ * for an *answer*; they must never bound how long the process lives.
+ */
+const PROBE_SHUTDOWN_GRACE_MS = 30_000;
+
+/**
+ * Let a probe session end the way a finished conversation does, and only kill
+ * it if it refuses to.
+ *
+ * Waits for the legs still in flight (a renewal may be running inside one),
+ * then closes stdin so `claude` exits on its own, then waits for that exit.
+ * The hard abort is the fallback once the grace period runs out.
+ */
+const retireProbeSession = (input: {
+  readonly query: AsyncIterable<unknown>;
+  readonly pending: ReadonlyArray<Promise<unknown>>;
+  readonly endPrompt: AbortController;
+  readonly abort: AbortController;
+}): Effect.Effect<void> => {
+  const { query, pending, endPrompt, abort } = input;
+  const exited = Effect.promise(async () => {
+    try {
+      for await (const _message of query) {
+        // Drain until the process exits.
+      }
+    } catch {
+      // An exit with an error is still an exit.
+    }
+  });
+  return Effect.promise(() => Promise.allSettled(pending)).pipe(
+    Effect.andThen(
+      Effect.sync(() => {
+        if (!endPrompt.signal.aborted) endPrompt.abort();
+      }),
+    ),
+    Effect.andThen(exited),
+    Effect.timeoutOption(PROBE_SHUTDOWN_GRACE_MS),
+    Effect.ensuring(
+      Effect.sync(() => {
+        if (!abort.signal.aborted) abort.abort();
+      }),
+    ),
+    Effect.asVoid,
+  );
+};
+
+/**
  * Probe account information by spawning a lightweight Claude Agent SDK
  * session and reading the initialization result.
  *
@@ -816,15 +875,22 @@ const probeClaudeCapabilities = (
   environment?: NodeJS.ProcessEnv,
 ) => {
   const abort = new AbortController();
+  const endPrompt = new AbortController();
+  const pending: Array<Promise<unknown>> = [];
+  let query: ReturnType<typeof claudeQuery> | undefined;
   return Effect.gen(function* () {
     const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
-    const query = yield* Effect.sync(() =>
+    query = yield* Effect.sync(() =>
       claudeQuery({
         // Never yield — we only need initialization data, not a conversation.
-        // This prevents any prompt from reaching the Anthropic API.
+        // This prevents any prompt from reaching the Anthropic API. Returning
+        // closes stdin, which is how `retireProbeSession` asks `claude` to exit.
         // oxlint-disable-next-line require-yield
         prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
-          await waitForAbortSignal(abort.signal);
+          await Promise.race([
+            waitForAbortSignal(endPrompt.signal),
+            waitForAbortSignal(abort.signal),
+          ]);
         })(),
         options: {
           persistSession: false,
@@ -838,9 +904,12 @@ const probeClaudeCapabilities = (
       }),
     );
 
+    const session = query;
     const capabilities = yield* settleProbeLeg(
       Effect.tryPromise(async () => {
-        const init = await query.initializationResult();
+        const initialization = session.initializationResult();
+        pending.push(initialization);
+        const init = await initialization;
         const account = init.account as
           | {
               readonly email?: string;
@@ -860,15 +929,27 @@ const probeClaudeCapabilities = (
 
     if (!capabilities) return undefined;
 
-    const usage = yield* settleProbeLeg(readClaudeUsage(query), CLAUDE_USAGE_TIMEOUT_MS);
+    const usage = yield* settleProbeLeg(
+      readClaudeUsage(session, (request) => pending.push(request)),
+      CLAUDE_USAGE_TIMEOUT_MS,
+    );
     return {
       ...capabilities,
       ...(usage ? { usage } : {}),
     } satisfies ClaudeCapabilitiesProbe;
   }).pipe(
     Effect.ensuring(
-      Effect.sync(() => {
-        if (!abort.signal.aborted) abort.abort();
+      Effect.suspend(() => {
+        if (!query) {
+          return Effect.sync(() => {
+            if (!abort.signal.aborted) abort.abort();
+          });
+        }
+        // Detached on purpose: the probe's answer is ready now, the process
+        // may still be saving a renewed sign-in.
+        return Effect.asVoid(
+          Effect.forkDetach(retireProbeSession({ query, pending, endPrompt, abort })),
+        );
       }),
     ),
   );
