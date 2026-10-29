@@ -20,6 +20,24 @@ describe("deriveThreadTags", () => {
     expect(deriveThreadTags(["Solo — one", "Fix - two", "Fix - three"])).toEqual([]);
   });
 
+  it("lets a spaced single hyphen join an existing chip", () => {
+    const titles = [
+      "Dealy Dev — fix importer",
+      "Dealy Dev — new eval",
+      "Dealy Dev - Mariendal",
+      "Fix - login",
+      "Re-run the import",
+    ];
+    const tags = deriveThreadTags(titles);
+    expect(tags).toEqual([
+      { key: "dealy dev", label: "Dealy Dev", count: 3 },
+      { key: OTHER_THREAD_TAG_KEY, label: "Other", count: 2 },
+    ]);
+    expect(resolveThreadTag("Dealy Dev - Mariendal", tags)).toBe("dealy dev");
+    expect(resolveThreadTag("Fix - login", tags)).toBe(OTHER_THREAD_TAG_KEY);
+    expect(resolveThreadTag("Re-run the import", tags)).toBe(OTHER_THREAD_TAG_KEY);
+  });
+
   it("files threads with a non-chip prefix under Other", () => {
     const tags = deriveThreadTags(["A — 1", "A — 2", "B — 1"]);
     expect(resolveThreadTag("B — 1", tags)).toBe(OTHER_THREAD_TAG_KEY);
