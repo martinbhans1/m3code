@@ -43,6 +43,17 @@ export default function ThreadLayout() {
         }}
       />
       <Stack.Screen
+        name="followups"
+        options={{
+          contentStyle: sheetStyle,
+          gestureEnabled: true,
+          headerShown: false,
+          presentation: "formSheet" as const,
+          sheetAllowedDetents: [0.85],
+          sheetGrabberVisible: true,
+        }}
+      />
+      <Stack.Screen
         name="review"
         options={{
           animation: "slide_from_right",

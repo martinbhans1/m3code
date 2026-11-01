@@ -12,7 +12,11 @@ import { dismissGitActionResult, useGitActionProgress } from "../../state/use-vc
 
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingScreen } from "../../components/LoadingScreen";
-import { buildThreadRoutePath, buildThreadTerminalNavigation } from "../../lib/routes";
+import {
+  buildThreadFollowupsRoutePath,
+  buildThreadRoutePath,
+  buildThreadTerminalNavigation,
+} from "../../lib/routes";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { connectionTone } from "../connection/connectionTone";
 
@@ -39,6 +43,7 @@ import { ThreadDetailScreen } from "./ThreadDetailScreen";
 import { ThreadGitControls } from "./ThreadGitControls";
 import { ThreadNavigationDrawer } from "./ThreadNavigationDrawer";
 import { useSelectedThreadCommands } from "../../state/use-selected-thread-commands";
+import { useSelectedThreadFollowups } from "../../state/use-selected-thread-followups";
 import { useSelectedThreadGitActions } from "../../state/use-selected-thread-git-actions";
 import { useSelectedThreadGitState } from "../../state/use-selected-thread-git-state";
 import { useSelectedThreadRequests } from "../../state/use-selected-thread-requests";
@@ -88,6 +93,7 @@ export function ThreadRouteScreen() {
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
+  const { followups } = useSelectedThreadFollowups();
   const commands = useSelectedThreadCommands({
     refreshSelectedThreadGitStatus: gitActions.refreshSelectedThreadGitStatus,
   });
@@ -391,6 +397,8 @@ export function ThreadRouteScreen() {
           environmentId={selectedThread.environmentId}
           projectWorkspaceRoot={selectedThreadProject?.workspaceRoot ?? null}
           selectedThreadQueueCount={composer.selectedThreadQueueCount}
+          pendingFollowupCount={followups.length}
+          onOpenFollowups={() => router.push(buildThreadFollowupsRoutePath(selectedThread))}
           onOpenDrawer={handleOpenDrawer}
           onOpenConnectionEditor={handleOpenConnectionEditor}
           onChangeDraftMessage={composer.onChangeDraftMessage}

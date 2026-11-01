@@ -32,6 +32,12 @@ export function buildThreadReviewRoutePath(
   return `${buildThreadRoutePath(input)}/review`;
 }
 
+export function buildThreadFollowupsRoutePath(
+  input: ThreadRouteInput | PlainThreadRouteInput,
+): string {
+  return `${buildThreadRoutePath(input)}/followups`;
+}
+
 export function buildThreadTerminalRoutePath(
   input: ThreadRouteInput | PlainThreadRouteInput,
   terminalId?: string | null,

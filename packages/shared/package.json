@@ -27,6 +27,10 @@
       "types": "./src/threadDisposition.ts",
       "import": "./src/threadDisposition.ts"
     },
+    "./followups": {
+      "types": "./src/followups.ts",
+      "import": "./src/followups.ts"
+    },
     "./desktopIdentity": {
       "types": "./src/desktopIdentity.ts",
       "import": "./src/desktopIdentity.ts"

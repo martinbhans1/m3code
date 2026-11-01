@@ -63,7 +63,7 @@ import {
 import { FollowupChipDeck, type FollowupProjectChoice } from "./chat/FollowupChipDeck";
 import { FollowupCustomStartDialog } from "./chat/FollowupCustomStartDialog";
 import { QuoteSelectionOverlay } from "./chat/QuoteSelectionOverlay";
-import { buildFollowupPrompt, buildFollowupThreadTitle } from "../followup";
+import { buildFollowupPrompt, buildFollowupThreadTitle } from "@t3tools/shared/followups";
 import { buildQuoteInsertion } from "../quoteSelection";
 import { type LegendListRef } from "@legendapp/list/react";
 import {

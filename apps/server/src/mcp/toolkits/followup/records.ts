@@ -4,14 +4,17 @@ import {
   type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
 } from "@t3tools/contracts";
+import { collectFollowupToolCallBodies } from "@t3tools/shared/followups";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+
+export { collectFollowupToolCallBodies };
 
 /**
  * Follow-ups ride the activity log rather than a thread column: each create or
  * status change appends another `turn.followup.suggested` activity carrying the
- * full record, and the latest one per id wins. Mirrors `deriveFollowups` on the
- * web side; kept separate because that lives in the web bundle.
+ * full record, and the latest one per id wins. Mirrors `deriveFollowups` in
+ * shared, but keeps whole decoded records so they can be written back.
  *
  * Shared by the in-thread followup toolkit (a conversation reading and closing
  * its own chips) and the orchestrator toolkit (doing the same across threads),
@@ -54,72 +57,6 @@ export function deriveFollowupRecords(
   }
 
   return byId;
-}
-
-// Field names the model actually uses for a follow-up's body, beyond the
-// `detail` the tool declares. Kept in step with the same list in ClaudeAdapter,
-// which reads them as calls come in; this side repairs the chips recorded
-// before it did.
-const FOLLOWUP_DETAIL_ALIASES = [
-  "detail",
-  "description",
-  "body",
-  "details",
-  "prompt",
-  "text",
-  "notes",
-  "summary",
-] as const;
-const FOLLOWUP_RATIONALE_ALIASES = ["rationale", "why", "reason"] as const;
-
-function readAliasedString(
-  input: Record<string, unknown>,
-  keys: ReadonlyArray<string>,
-): string | null {
-  for (const key of keys) {
-    const value = input[key];
-    if (typeof value === "string" && value.trim().length > 0) {
-      return value.trim();
-    }
-  }
-  return null;
-}
-
-/**
- * The bodies the agent actually sent to `suggest_followup`, keyed by tool_use
- * id — which is also the follow-up's own id, so a record missing its detail can
- * be matched back to the call that made it.
- */
-export function collectFollowupToolCallBodies(
-  activities: ReadonlyArray<OrchestrationThreadActivity>,
-): Map<string, { detail: string | null; rationale: string | null }> {
-  const byToolUseId = new Map<string, { detail: string | null; rationale: string | null }>();
-  for (const activity of activities) {
-    if (activity.kind !== "tool.completed") continue;
-    const payload =
-      activity.payload && typeof activity.payload === "object"
-        ? (activity.payload as Record<string, unknown>)
-        : null;
-    const data =
-      payload?.data && typeof payload.data === "object"
-        ? (payload.data as Record<string, unknown>)
-        : null;
-    if (!data || typeof data.toolName !== "string" || !data.toolName.endsWith("suggest_followup")) {
-      continue;
-    }
-    const result =
-      data.result && typeof data.result === "object"
-        ? (data.result as Record<string, unknown>)
-        : null;
-    const input =
-      data.input && typeof data.input === "object" ? (data.input as Record<string, unknown>) : null;
-    if (!result || typeof result.tool_use_id !== "string" || !input) continue;
-    byToolUseId.set(result.tool_use_id, {
-      detail: readAliasedString(input, FOLLOWUP_DETAIL_ALIASES),
-      rationale: readAliasedString(input, FOLLOWUP_RATIONALE_ALIASES),
-    });
-  }
-  return byToolUseId;
 }
 
 /** True when at least one record is missing text the tool call may still hold. */

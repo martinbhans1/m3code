@@ -14,7 +14,8 @@ import { formatElapsed } from "@t3tools/shared/orchestrationTiming";
 import * as Haptics from "expo-haptics";
 import { useHeaderHeight } from "expo-router/build/react-navigation/elements";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { View, type GestureResponderEvent, type LayoutChangeEvent } from "react-native";
+import { SymbolView } from "expo-symbols";
+import { Pressable, View, type GestureResponderEvent, type LayoutChangeEvent } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -62,6 +63,8 @@ export interface ThreadDetailScreenProps {
   readonly environmentId: EnvironmentId;
   readonly projectWorkspaceRoot: string | null;
   readonly selectedThreadQueueCount: number;
+  readonly pendingFollowupCount: number;
+  readonly onOpenFollowups: () => void;
   readonly serverConfig: T3ServerConfig | null;
   readonly layoutVariant?: MobileLayoutVariant;
   readonly onOpenDrawer: () => void;
@@ -201,6 +204,27 @@ const WorkingDurationPill = memo(function WorkingDurationPill(props: {
   );
 });
 
+const SuggestedTasksPill = memo(function SuggestedTasksPill(props: {
+  readonly count: number;
+  readonly onPress: () => void;
+}) {
+  return (
+    <View className="ml-auto px-4 pb-2" style={{ flexShrink: 0 }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Show ${props.count} suggested task${props.count === 1 ? "" : "s"}`}
+        className="flex-row items-center gap-1.5 rounded-full border border-neutral-200/80 bg-neutral-50/90 px-3 py-2 dark:border-white/[0.08] dark:bg-white/[0.04]"
+        onPress={props.onPress}
+      >
+        <SymbolView name="lightbulb" size={13} tintColor="#d97706" type="monochrome" />
+        <Text className="font-t3-medium text-xs text-neutral-600 dark:text-neutral-400">
+          {props.count} suggested
+        </Text>
+      </Pressable>
+    </View>
+  );
+});
+
 export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: ThreadDetailScreenProps) {
   const { onOpenDrawer } = props;
 
@@ -213,7 +237,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const composerBottomInset = composerExpanded ? 0 : Math.max(insets.bottom, 12);
   const composerChrome = composerExpanded ? COMPOSER_EXPANDED_CHROME : COMPOSER_COLLAPSED_CHROME;
   const composerOverlapHeight = composerChrome + composerBottomInset;
-  const activeWorkIndicatorHeight = props.activeWorkStartedAt ? WORKING_INDICATOR_HEIGHT : 0;
+  const activeWorkIndicatorHeight =
+    props.activeWorkStartedAt || props.pendingFollowupCount > 0 ? WORKING_INDICATOR_HEIGHT : 0;
   const estimatedOverlayHeight = composerOverlapHeight + activeWorkIndicatorHeight;
   const [measuredOverlayHeight, setMeasuredOverlayHeight] = useState(0);
   const showContent = props.showContent ?? true;
@@ -335,8 +360,18 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             offset={{ closed: 0, opened: 0 }}
           >
             <View onLayout={handleOverlayLayout}>
-              {props.activeWorkStartedAt ? (
-                <WorkingDurationPill startedAt={props.activeWorkStartedAt} />
+              {props.activeWorkStartedAt || props.pendingFollowupCount > 0 ? (
+                <View className="flex-row items-center">
+                  {props.activeWorkStartedAt ? (
+                    <WorkingDurationPill startedAt={props.activeWorkStartedAt} />
+                  ) : null}
+                  {props.pendingFollowupCount > 0 ? (
+                    <SuggestedTasksPill
+                      count={props.pendingFollowupCount}
+                      onPress={props.onOpenFollowups}
+                    />
+                  ) : null}
+                </View>
               ) : null}
 
               {props.activePendingApproval || props.activePendingUserInput ? (
