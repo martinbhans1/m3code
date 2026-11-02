@@ -28,14 +28,23 @@ interface HomeScreenProps {
   readonly catalogState: RemoteCatalogState;
   readonly savedConnectionsById: Readonly<Record<string, SavedRemoteConnection>>;
   readonly searchQuery: string;
+  /** Scoped keys of each environment's orchestrator project. */
+  readonly orchestratorProjectKeys: ReadonlySet<string>;
   readonly onAddConnection: () => void;
   readonly onSelectThread: (thread: EnvironmentScopedThreadShell) => void;
 }
 
+type ProjectGroupKind = "orchestrator" | "pinned" | "project";
+
 interface ProjectGroup {
   readonly key: string;
+  readonly kind: ProjectGroupKind;
   readonly project: EnvironmentScopedProjectShell;
   readonly threads: ReadonlyArray<EnvironmentScopedThreadShell>;
+}
+
+function pinnedTime(thread: EnvironmentScopedThreadShell): number {
+  return thread.pinnedAt ? new Date(thread.pinnedAt).getTime() : 0;
 }
 
 const projectGroupActivityOrder = Order.mapInput(
@@ -65,6 +74,12 @@ function statusColors(thread: EnvironmentScopedThreadShell): { bg: string; fg: s
 }
 
 const COLLAPSED_THREAD_LIMIT = 6;
+// The orchestrator is read for its latest conversation; older ones stay one tap away.
+const ORCHESTRATOR_COLLAPSED_LIMIT = 1;
+
+function collapsedLimit(kind: ProjectGroupKind): number {
+  return kind === "orchestrator" ? ORCHESTRATOR_COLLAPSED_LIMIT : COLLAPSED_THREAD_LIMIT;
+}
 
 function deriveEmptyState(props: {
   readonly catalogState: RemoteCatalogState;
@@ -128,13 +143,15 @@ function deriveEmptyState(props: {
 
 function ProjectGroupLabel(props: {
   readonly project: EnvironmentScopedProjectShell;
+  readonly kind: ProjectGroupKind;
   readonly totalThreadCount: number;
   readonly httpBaseUrl: string | null;
   readonly bearerToken: string | null;
   readonly isExpanded: boolean;
   readonly onToggleExpand: () => void;
 }) {
-  const hiddenCount = props.totalThreadCount - COLLAPSED_THREAD_LIMIT;
+  const iconSubtleColor = useThemeColor("--color-icon-subtle");
+  const hiddenCount = props.totalThreadCount - collapsedLimit(props.kind);
 
   return (
     <View className="flex-row items-center gap-2.5 px-1 pb-2">
@@ -152,6 +169,10 @@ function ProjectGroupLabel(props: {
       >
         {props.project.title}
       </Text>
+
+      {props.kind === "pinned" ? (
+        <SymbolView name="pin.fill" size={11} tintColor={iconSubtleColor} type="monochrome" />
+      ) : null}
 
       {hiddenCount > 0 ? (
         <Pressable onPress={props.onToggleExpand} hitSlop={8}>
@@ -336,17 +357,50 @@ export function HomeScreen(props: HomeScreenProps) {
       else byProject.set(key, [thread]);
     }
 
-    const groups: ProjectGroup[] = [];
+    // Fixed order: orchestrator first, then pinned conversations (in the order
+    // they were pinned), then the remaining projects by most recent activity.
+    const orchestratorGroups: ProjectGroup[] = [];
+    const pinnedGroups: ProjectGroup[] = [];
+    const activityGroups: ProjectGroup[] = [];
     for (const project of props.projects) {
       const key = scopedProjectKey(project.environmentId, project.id);
       const threads = byProject.get(key);
-      if (threads && threads.length > 0) {
-        groups.push({ key, project, threads });
+      if (!threads || threads.length === 0) continue;
+
+      if (props.orchestratorProjectKeys.has(key)) {
+        orchestratorGroups.push({ key, kind: "orchestrator", project, threads });
+        continue;
+      }
+
+      const pinned = threads.filter((thread) => thread.pinnedAt);
+      const unpinned = threads.filter((thread) => !thread.pinnedAt);
+      if (pinned.length > 0) {
+        pinnedGroups.push({
+          key: `pinned:${key}`,
+          kind: "pinned",
+          project,
+          threads: Arr.sort(
+            pinned,
+            Order.mapInput(Order.Number, (thread: EnvironmentScopedThreadShell) =>
+              pinnedTime(thread),
+            ),
+          ),
+        });
+      }
+      if (unpinned.length > 0) {
+        activityGroups.push({ key, kind: "project", project, threads: unpinned });
       }
     }
 
-    return Arr.sort(groups, projectGroupActivityOrder);
-  }, [props.projects, filteredThreads]);
+    return [
+      ...Arr.sort(orchestratorGroups, projectGroupActivityOrder),
+      ...Arr.sort(
+        pinnedGroups,
+        Order.mapInput(Order.Number, (group: ProjectGroup) => pinnedTime(group.threads[0]!)),
+      ),
+      ...Arr.sort(activityGroups, projectGroupActivityOrder),
+    ];
+  }, [props.projects, props.orchestratorProjectKeys, filteredThreads]);
 
   /* Empty states */
   const hasAnyThreads = props.threads.length > 0;
@@ -392,12 +446,13 @@ export function HomeScreen(props: HomeScreenProps) {
           const isExpanded = expandedProjects.has(group.key);
           const visibleThreads = isExpanded
             ? group.threads
-            : group.threads.slice(0, COLLAPSED_THREAD_LIMIT);
+            : group.threads.slice(0, collapsedLimit(group.kind));
 
           return (
             <View key={group.key}>
               <ProjectGroupLabel
                 project={group.project}
+                kind={group.kind}
                 totalThreadCount={group.threads.length}
                 httpBaseUrl={connection?.httpBaseUrl ?? null}
                 bearerToken={connection?.bearerToken ?? null}
