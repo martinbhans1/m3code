@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import { FILE_LINK_INSTRUCTIONS } from "../FileLinkInstructions.ts";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -387,6 +388,7 @@ describe("ClaudeAdapterLive", () => {
       // The response-style brief composes with the tool brief rather than
       // replacing it, so both are present on an ordinary thread.
       assert.include(append ?? "", "Noticed");
+      assert.include(append ?? "", FILE_LINK_INSTRUCTIONS);
       // An ordinary thread must not be given the cross-thread server, nor told
       // it is an orchestrator.
       const mcpServers = harness.getLastCreateQueryInput()?.options.mcpServers ?? {};
@@ -450,6 +452,7 @@ describe("ClaudeAdapterLive", () => {
         // The response-style brief is orthogonal to the role brief and rides
         // on this thread too.
         assert.include(append ?? "", "Noticed");
+        assert.include(append ?? "", FILE_LINK_INSTRUCTIONS);
       }).pipe(
         Effect.scoped,
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -481,6 +484,7 @@ describe("ClaudeAdapterLive", () => {
       assert.notInclude(append ?? "", "suggest_followup");
       // The response-style brief is not about a tool, so it still rides along.
       assert.include(append ?? "", "Noticed");
+      assert.include(append ?? "", FILE_LINK_INSTRUCTIONS);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

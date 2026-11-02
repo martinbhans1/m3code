@@ -22,7 +22,21 @@ interface OptimisticProjectFile {
   readonly confirmed: boolean;
 }
 
-const optimisticProjectFiles = new Map<string, OptimisticProjectFile>();
+// Local edits must notify readers immediately, before the debounced write is
+// confirmed. A plain Map left rendered previews on the previous file contents.
+const optimisticProjectFiles = Atom.family((key: string) =>
+  Atom.make<OptimisticProjectFile | undefined>(undefined).pipe(
+    Atom.keepAlive,
+    Atom.withLabel(`projects:file-draft:${key}`),
+  ),
+);
+const optimisticProjectFileKeys = new Set<string>();
+
+function setOptimisticProjectFile(key: string, value: OptimisticProjectFile | undefined): void {
+  if (value) optimisticProjectFileKeys.add(key);
+  else optimisticProjectFileKeys.delete(key);
+  appAtomRegistry.set(optimisticProjectFiles(key), value);
+}
 
 class ProjectQueryError extends Data.TaggedError("ProjectQueryError")<{
   readonly message: string;
@@ -110,7 +124,7 @@ export function setProjectFileQueryData(
   contents: string,
 ): void {
   const key = fileKey(environmentId, cwd, relativePath);
-  optimisticProjectFiles.set(key, {
+  setOptimisticProjectFile(key, {
     confirmed: false,
     data: {
       relativePath,
@@ -126,7 +140,10 @@ export function getOptimisticProjectFileQueryData(
   cwd: string,
   relativePath: string,
 ): ProjectReadFileResult | null {
-  return optimisticProjectFiles.get(fileKey(environmentId, cwd, relativePath))?.data ?? null;
+  return (
+    appAtomRegistry.get(optimisticProjectFiles(fileKey(environmentId, cwd, relativePath)))?.data ??
+    null
+  );
 }
 
 export function confirmProjectFileQueryData(
@@ -136,10 +153,10 @@ export function confirmProjectFileQueryData(
   contents: string,
 ): boolean {
   const key = fileKey(environmentId, cwd, relativePath);
-  const optimisticFile = optimisticProjectFiles.get(key);
+  const optimisticFile = appAtomRegistry.get(optimisticProjectFiles(key));
   if (optimisticFile?.data.contents !== contents) return false;
 
-  optimisticProjectFiles.set(key, { ...optimisticFile, confirmed: true });
+  setOptimisticProjectFile(key, { ...optimisticFile, confirmed: true });
   appAtomRegistry.refresh(getProjectFileQueryAtom(environmentId, cwd, relativePath));
   return true;
 }
@@ -151,11 +168,14 @@ export function resolveProjectFileQueryData(
   data: ProjectReadFileResult | null,
 ): ProjectReadFileResult | null {
   if (relativePath === null) return data;
-  return optimisticProjectFiles.get(fileKey(environmentId, cwd, relativePath))?.data ?? data;
+  return (
+    appAtomRegistry.get(optimisticProjectFiles(fileKey(environmentId, cwd, relativePath)))?.data ??
+    data
+  );
 }
 
 export function __resetProjectFileQueryDataForTests(): void {
-  optimisticProjectFiles.clear();
+  for (const key of optimisticProjectFileKeys) setOptimisticProjectFile(key, undefined);
 }
 
 function errorMessage<A>(result: AsyncResult.AsyncResult<A, unknown>): string | null {
@@ -188,10 +208,9 @@ export function useProjectFileQuery(
   const result = useAtomValue(atom);
   const refresh = useCallback(() => appAtomRegistry.refresh(atom), [atom]);
   const data = Option.getOrNull(AsyncResult.value(result));
-  const optimisticFile =
-    relativePath === null
-      ? undefined
-      : optimisticProjectFiles.get(fileKey(environmentId, cwd, relativePath));
+  const optimisticFile = useAtomValue(
+    optimisticProjectFiles(fileKey(environmentId, cwd, relativePath ?? EMPTY_PROJECT_FILE_PATH)),
+  );
 
   useEffect(() => {
     if (
@@ -202,7 +221,7 @@ export function useProjectFileQuery(
     ) {
       return;
     }
-    optimisticProjectFiles.delete(fileKey(environmentId, cwd, relativePath));
+    setOptimisticProjectFile(fileKey(environmentId, cwd, relativePath), undefined);
   }, [cwd, data?.contents, environmentId, optimisticFile, relativePath]);
 
   return {
