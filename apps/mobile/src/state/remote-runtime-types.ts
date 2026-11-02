@@ -14,6 +14,8 @@ export interface ConnectedEnvironmentSummary {
   readonly isRelayManaged: boolean;
   readonly connectionState: EnvironmentConnectionState;
   readonly connectionError: string | null;
+  /** The environment refused this phone's sign-in; it has to pair again. */
+  readonly credentialRejected: boolean;
 }
 
 export interface SelectedThreadRef {

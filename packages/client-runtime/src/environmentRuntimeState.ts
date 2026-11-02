@@ -11,6 +11,11 @@ export type EnvironmentConnectionState =
 export interface EnvironmentRuntimeState {
   readonly connectionState: EnvironmentConnectionState;
   readonly connectionError: string | null;
+  /**
+   * The environment refused this device's credential. Reconnecting cannot fix
+   * it; the device has to pair again.
+   */
+  readonly credentialRejected: boolean;
   readonly serverConfig: T3ServerConfig | null;
 }
 
@@ -21,6 +26,7 @@ export interface EnvironmentRuntimeTarget {
 export const EMPTY_ENVIRONMENT_RUNTIME_STATE = Object.freeze<EnvironmentRuntimeState>({
   connectionState: "idle",
   connectionError: null,
+  credentialRejected: false,
   serverConfig: null,
 });
 

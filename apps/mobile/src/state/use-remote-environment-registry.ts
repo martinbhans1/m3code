@@ -14,6 +14,7 @@ import {
   remoteEndpointUrl,
   resolveRemoteDpopWebSocketConnectionUrl,
   resolveRemoteWebSocketConnectionUrl,
+  isRemoteCredentialRejected,
   waitForManagedRelayClerkToken,
 } from "@t3tools/client-runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -175,7 +176,40 @@ function setEnvironmentConnectionStatus(
     ...current,
     connectionState: state,
     connectionError: error === undefined ? current.connectionError : error,
+    // A rejected credential stays flagged until a fresh attempt starts.
+    credentialRejected: state === "disconnected" ? current.credentialRejected : false,
   }));
+}
+
+export const CREDENTIAL_REJECTED_MESSAGE =
+  "This phone's sign-in has expired or been revoked. Pair it again from the desktop app.";
+
+function markCredentialRejected(environmentId: EnvironmentId) {
+  environmentRuntimeManager.patch({ environmentId }, (current) => ({
+    ...current,
+    connectionState: "disconnected",
+    connectionError: CREDENTIAL_REJECTED_MESSAGE,
+    credentialRejected: true,
+  }));
+}
+
+/**
+ * The server refused the stored credential, so every reconnect would be
+ * refused the same way. Stop the reconnect loop (keeping the cached chat list
+ * on screen) and leave the environment flagged so the phone asks to pair again
+ * instead of failing silently.
+ */
+function settleRejectedCredential(environmentId: EnvironmentId, isCurrentAttempt: () => boolean) {
+  markCredentialRejected(environmentId);
+  // Deferred: this runs inside the transport's own URL lookup, which the
+  // disconnect is about to tear down.
+  setTimeout(() => {
+    if (!isCurrentAttempt()) return;
+    void mobileRuntime
+      .runPromise(disconnectEnvironment(environmentId, { preserveShellSnapshot: true }))
+      .catch(() => undefined)
+      .finally(() => markCredentialRejected(environmentId));
+  }, 0);
 }
 
 function fromPromise<T>(tryPromise: () => Promise<T>): Effect.Effect<T, unknown> {
@@ -327,7 +361,15 @@ export function connectSavedEnvironment(
                   wsBaseUrl: activeConnection.wsBaseUrl,
                   httpBaseUrl: activeConnection.httpBaseUrl,
                   bearerToken: activeConnection.bearerToken ?? "",
-                });
+                }).pipe(
+                  Effect.mapError((error) => {
+                    if (!isRemoteCredentialRejected(error)) return error;
+                    if (isCurrentAttempt()) {
+                      settleRejectedCredential(connection.environmentId, isCurrentAttempt);
+                    }
+                    return new Error(CREDENTIAL_REJECTED_MESSAGE);
+                  }),
+                );
               }),
         ),
       {
@@ -349,6 +391,7 @@ export function connectSavedEnvironment(
                 ...previous,
                 connectionState: keepSettledFailure ? "disconnected" : nextState,
                 connectionError: keepSettledFailure ? previous.connectionError : null,
+                credentialRejected: keepSettledFailure ? previous.credentialRejected : false,
               };
             },
           );
@@ -407,6 +450,7 @@ export function connectSavedEnvironment(
           ...runtime,
           connectionState: "ready",
           connectionError: null,
+          credentialRejected: false,
         }));
       },
       onShellResubscribe: (environmentId) => {
@@ -610,6 +654,7 @@ function deriveConnectedEnvironments(
         isRelayManaged: isRelayManagedConnection(connection),
         connectionState: runtime?.connectionState ?? "idle",
         connectionError: runtime?.connectionError ?? null,
+        credentialRejected: runtime?.credentialRejected ?? false,
       };
     }),
     environmentsSortOrder,

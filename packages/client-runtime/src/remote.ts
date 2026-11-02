@@ -98,6 +98,16 @@ export class RemoteEnvironmentAuthTimeoutError extends Data.TaggedError(
   }
 }
 
+/**
+ * True when the environment refused the stored credential itself (expired,
+ * revoked, unknown or missing). Unlike a network failure, retrying cannot
+ * succeed: the device has to pair again.
+ */
+export const isRemoteCredentialRejected = (cause: unknown): cause is EnvironmentAuthInvalidError =>
+  typeof cause === "object" &&
+  cause !== null &&
+  (cause as { readonly _tag?: unknown })._tag === "EnvironmentAuthInvalidError";
+
 export type RemoteEnvironmentAuthError =
   | EnvironmentRequestInvalidError
   | EnvironmentAuthInvalidError

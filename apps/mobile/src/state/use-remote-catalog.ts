@@ -77,6 +77,8 @@ export interface RemoteCatalogState {
   readonly hasConnectingEnvironment: boolean;
   readonly connectionState: EnvironmentConnectionState;
   readonly connectionError: string | null;
+  /** Environments that refused this phone's sign-in and need pairing again. */
+  readonly signedOutEnvironmentLabels: ReadonlyArray<string>;
   readonly shellSnapshotError: string | null;
   readonly isUsingCachedData: boolean;
   readonly latestCachedSnapshotReceivedAt: string | null;
@@ -170,6 +172,9 @@ export function useRemoteCatalog() {
       ),
       connectionState: connectionState ?? overallConnectionState,
       connectionError,
+      signedOutEnvironmentLabels: connectedEnvironments
+        .filter((environment) => environment.credentialRejected)
+        .map((environment) => environment.environmentLabel),
       shellSnapshotError,
       isUsingCachedData: cachedSnapshotReceivedAts.length > 0,
       latestCachedSnapshotReceivedAt:

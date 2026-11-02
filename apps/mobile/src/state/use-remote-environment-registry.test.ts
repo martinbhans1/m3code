@@ -167,6 +167,7 @@ vi.mock("./use-terminal-session", () => ({
 }));
 
 import {
+  CREDENTIAL_REJECTED_MESSAGE,
   connectSavedEnvironment,
   disconnectEnvironment,
   reconnectEnvironmentConnectionsAfterAppResume,
@@ -223,6 +224,59 @@ describe("mobile remote environment registry effects", () => {
       );
       expect(mocks.registerAgentAwarenessConnection).toHaveBeenCalledWith(connection);
       expect(mocks.environmentConnection.ensureBootstrapped).toHaveBeenCalledTimes(1);
+    }),
+  );
+
+  it.effect("flags a refused sign-in and stops reconnecting instead of failing silently", () =>
+    Effect.gen(function* () {
+      mocks.resolveRemoteWebSocketConnectionUrl.mockReturnValue(
+        Effect.fail({
+          _tag: "EnvironmentAuthInvalidError",
+          code: "auth_invalid",
+          reason: "invalid_credential",
+          traceId: "trace-1",
+        }) as never,
+      );
+      mocks.mobileRunPromise.mockImplementationOnce((effect?: unknown) =>
+        Effect.runPromise(effect as Effect.Effect<string, unknown>),
+      );
+
+      yield* connectSavedEnvironment(connection);
+      const openSocket = mocks.wsTransportConstructor.mock.calls[0]?.[0] as
+        | (() => Promise<string>)
+        | undefined;
+      const failure = yield* Effect.promise(() =>
+        openSocket!().then(
+          () => null,
+          (error: unknown) => error,
+        ),
+      );
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toBe(CREDENTIAL_REJECTED_MESSAGE);
+
+      const applyPatches = () =>
+        mocks.environmentRuntimePatch.mock.calls.reduce(
+          (state, call) =>
+            (call as unknown as [unknown, (current: typeof state) => typeof state])[1](state),
+          {
+            connectionState: "connecting" as string,
+            connectionError: null as string | null,
+            credentialRejected: false,
+            serverConfig: null,
+          },
+        );
+      expect(applyPatches()).toMatchObject({
+        connectionState: "disconnected",
+        connectionError: CREDENTIAL_REJECTED_MESSAGE,
+        credentialRejected: true,
+      });
+
+      // The reconnect loop is torn down on the next tick, keeping the cached list.
+      mocks.environmentRuntimePatch.mockClear();
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 5)));
+      expect(mocks.mobileRunPromise).toHaveBeenCalledTimes(2);
+      expect(mocks.shellSnapshotInvalidate).not.toHaveBeenCalled();
+      expect(applyPatches()).toMatchObject({ credentialRejected: true });
     }),
   );
 

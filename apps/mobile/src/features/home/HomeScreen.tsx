@@ -405,6 +405,7 @@ export function HomeScreen(props: HomeScreenProps) {
   /* Empty states */
   const hasAnyThreads = props.threads.length > 0;
   const hasResults = filteredThreads.length > 0;
+  const signedOutLabels = props.catalogState.signedOutEnvironmentLabels;
   const emptyState = deriveEmptyState({
     catalogState: props.catalogState,
     projectCount: props.projects.length,
@@ -424,7 +425,15 @@ export function HomeScreen(props: HomeScreenProps) {
         gap: 20,
       }}
     >
-      {!hasAnyThreads ? (
+      {signedOutLabels.length > 0 ? (
+        <EmptyState
+          title={`Signed out of ${signedOutLabels.join(", ")}`}
+          detail="This phone's sign-in has expired or been revoked, so chats can't load. Pair it again from the desktop app."
+          actionLabel="Pair again"
+          onAction={props.onAddConnection}
+        />
+      ) : null}
+      {!hasAnyThreads && signedOutLabels.length > 0 ? null : !hasAnyThreads ? (
         <View>
           <EmptyState
             title={emptyState.title}
