@@ -1267,9 +1267,10 @@ describe("ClaudeAdapterLive", () => {
           "content.delta",
           "item.completed",
           "item.started",
-          "account.rate-limits.updated",
           "item.completed",
           "turn.completed",
+          // Fetched after the turn is announced so it cannot delay Stop.
+          "account.rate-limits.updated",
         ],
       );
 
@@ -1313,7 +1314,7 @@ describe("ClaudeAdapterLive", () => {
         true,
       );
 
-      const turnCompleted = runtimeEvents[runtimeEvents.length - 1];
+      const turnCompleted = runtimeEvents[runtimeEvents.length - 2];
       assert.equal(turnCompleted?.type, "turn.completed");
       if (turnCompleted?.type === "turn.completed") {
         assert.equal(String(turnCompleted.turnId), String(turn.turnId));

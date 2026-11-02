@@ -437,6 +437,8 @@ function useThreadPlanCatalog(threadIds: readonly ThreadId[]): ThreadPlanCatalog
 
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
+/** How long Stop may spin before the composer reports that nothing stopped. */
+const STOP_CONFIRM_TIMEOUT_MS = 10_000;
 
 type ChatViewProps =
   | {
@@ -2741,6 +2743,29 @@ function ChatViewContent(props: ChatViewProps) {
     [draftId, routeThreadRef, serverThread, setStoreThreadError],
   );
 
+  // Stop shows as in-flight from the click until the turn actually ends, so a
+  // slow agent reads as "stopping", not as an ignored click. If the turn is
+  // still running after STOP_CONFIRM_TIMEOUT_MS, say so instead of spinning.
+  const [stoppingThreadId, setStoppingThreadId] = useState<ThreadId | null>(null);
+  const isStopping =
+    stoppingThreadId !== null && stoppingThreadId === activeThread?.id && phase === "running";
+  useEffect(() => {
+    if (stoppingThreadId === null) return;
+    if (stoppingThreadId !== activeThread?.id || phase !== "running") {
+      setStoppingThreadId(null);
+      return;
+    }
+    const threadId = stoppingThreadId;
+    const timer = window.setTimeout(() => {
+      setStoppingThreadId((current) => (current === threadId ? null : current));
+      setThreadError(
+        threadId,
+        `Stop was sent ${STOP_CONFIRM_TIMEOUT_MS / 1000} seconds ago, but the agent still has not confirmed the turn ended. The server may have lost track of it. Check the timeline for an error, or try Stop again.`,
+      );
+    }, STOP_CONFIRM_TIMEOUT_MS);
+    return () => window.clearTimeout(timer);
+  }, [stoppingThreadId, activeThread?.id, phase, setThreadError]);
+
   const focusComposer = useCallback(() => {
     composerRef.current?.focusAtEnd();
   }, [composerRef]);
@@ -4525,12 +4550,22 @@ function ChatViewContent(props: ChatViewProps) {
   const onInterrupt = async () => {
     const api = readEnvironmentApi(environmentId);
     if (!api || !activeThread) return;
-    await api.orchestration.dispatchCommand({
-      type: "thread.turn.interrupt",
-      commandId: newCommandId(),
-      threadId: activeThread.id,
-      createdAt: new Date().toISOString(),
-    });
+    const threadId = activeThread.id;
+    setStoppingThreadId(threadId);
+    try {
+      await api.orchestration.dispatchCommand({
+        type: "thread.turn.interrupt",
+        commandId: newCommandId(),
+        threadId,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      setStoppingThreadId((current) => (current === threadId ? null : current));
+      setThreadError(
+        threadId,
+        `Stop did not reach the server: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   };
 
   const onRespondToApproval = useCallback(
@@ -6133,6 +6168,7 @@ function ChatViewContent(props: ChatViewProps) {
                       isServerThread={isServerThread}
                       isLocalDraftThread={isLocalDraftThread}
                       phase={phase}
+                      isStopping={isStopping}
                       isConnecting={isConnecting}
                       isSendBusy={isSendBusy}
                       isPreparingWorktree={isPreparingWorktree}

@@ -967,8 +967,49 @@ const make = Effect.gen(function* () {
       });
     }
 
+    // No live agent process behind a "running" thread means the turn already
+    // died with it (server restart, crashed CLI). Interrupting would first
+    // revive a fresh process — seconds of dead air — only to stop a turn that
+    // process never had, leaving the thread spinning forever. Settle it here.
+    const liveSessions = yield* providerService.listSessions();
+    const hasLiveSession = liveSessions.some(
+      (session) => session.threadId === event.payload.threadId,
+    );
+    if (!hasLiveSession) {
+      yield* setThreadSession({
+        threadId: thread.id,
+        session: {
+          ...thread.session,
+          status: "interrupted",
+          activeTurnId: null,
+          updatedAt: event.payload.createdAt,
+        },
+        createdAt: event.payload.createdAt,
+      });
+      return yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.turn.interrupt.failed",
+        summary: "Stopped a turn that had already died",
+        detail:
+          "The agent behind this conversation was no longer running — usually because the app's server restarted mid-turn — so nothing was left to stop. The conversation is marked as stopped and you can send a new message.",
+        turnId: event.payload.turnId ?? thread.session.activeTurnId ?? null,
+        createdAt: event.payload.createdAt,
+      });
+    }
+
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
-    yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+    yield* providerService.interruptTurn({ threadId: event.payload.threadId }).pipe(
+      Effect.catch((error) =>
+        appendProviderFailureActivity({
+          threadId: event.payload.threadId,
+          kind: "provider.turn.interrupt.failed",
+          summary: "Stop failed",
+          detail: `The agent did not accept the stop request: ${formatFailureDetail(Cause.fail(error))}`,
+          turnId: event.payload.turnId ?? null,
+          createdAt: event.payload.createdAt,
+        }),
+      ),
+    );
   });
 
   const processApprovalResponseRequested = Effect.fn("processApprovalResponseRequested")(function* (

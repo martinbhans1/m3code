@@ -2555,7 +2555,6 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       context,
       accumulatedTotalProcessedTokens ?? context.lastKnownTotalProcessedTokens,
     );
-    yield* refreshClaudePlanUsage(context);
     const resultUsageRecord =
       result?.usage && typeof result.usage === "object" && !Array.isArray(result.usage)
         ? (result.usage as Record<string, unknown>)
@@ -2637,6 +2636,7 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
         },
         providerRefs: {},
       });
+      yield* refreshClaudePlanUsage(context);
       return;
     }
 
@@ -2723,6 +2723,10 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       ...(status === "failed" && errorMessage ? { lastError: errorMessage } : {}),
     };
     yield* updateResumeCursor(context);
+    // After the turn is announced, not before: this account-limits fetch can
+    // take its full 2-second timeout, and every Stop and every finished turn
+    // used to sit on it before the UI heard the turn was over.
+    yield* refreshClaudePlanUsage(context);
   });
 
   const handleStreamEvent = Effect.fn("handleStreamEvent")(function* (
