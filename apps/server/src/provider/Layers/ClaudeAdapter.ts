@@ -2770,6 +2770,13 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
       return;
     }
 
+    // Content streamed by a subagent is its own working: rendering it would
+    // splice the agent's text into the main reply and its tool calls into the
+    // main thread's tool slots, which are keyed by the same block indices.
+    if (message.parent_tool_use_id !== null && message.parent_tool_use_id !== undefined) {
+      return;
+    }
+
     if (event.type === "content_block_delta") {
       if (
         (event.delta.type === "text_delta" || event.delta.type === "thinking_delta") &&
@@ -3137,6 +3144,16 @@ export const makeClaudeAdapter = Effect.fn("makeClaudeAdapter")(function* (
     message: SDKMessage,
   ) {
     if (message.type !== "assistant") {
+      return;
+    }
+
+    // A subagent's messages carry the id of the Agent tool call that spawned
+    // it. They are the agent's own working, not the main thread's reply: its
+    // final report used to be backfilled as the assistant's answer, so every
+    // background agent dumped its raw report into the chat. The main thread
+    // reads that report itself and replies in its own words. Skipping here also
+    // keeps the resume cursor on the main thread's last message.
+    if (message.parent_tool_use_id !== null && message.parent_tool_use_id !== undefined) {
       return;
     }
 

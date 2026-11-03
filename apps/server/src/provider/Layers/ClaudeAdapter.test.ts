@@ -2896,6 +2896,82 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("does not show a subagent's report as the assistant's reply", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 8).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: ProviderDriverKind.make("claudeAgent"),
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      // A background agent's final report, streamed and as a snapshot.
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-subagent",
+        uuid: "subagent-stream",
+        parent_tool_use_id: "toolu_agent",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "text_delta", text: "Raw agent report" },
+        },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-subagent",
+        uuid: "subagent-report",
+        parent_tool_use_id: "toolu_agent",
+        message: {
+          id: "subagent-message",
+          content: [{ type: "text", text: "Raw agent report" }],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-subagent",
+        uuid: "main-reply",
+        parent_tool_use_id: null,
+        message: {
+          id: "main-message",
+          content: [{ type: "text", text: "Condensed reply" }],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-subagent",
+        uuid: "result-subagent",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const deltas = runtimeEvents.flatMap((event) =>
+        event.type === "content.delta" ? [event.payload.delta] : [],
+      );
+      assert.deepEqual(deltas, ["Condensed reply"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("segments Claude assistant text blocks around tool calls", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
