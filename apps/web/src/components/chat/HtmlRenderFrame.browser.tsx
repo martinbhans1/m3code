@@ -15,7 +15,7 @@ vi.mock("../../localApi", () => ({
   readLocalApi: () => null,
 }));
 
-import { HtmlRenderFrame } from "./HtmlRenderFrame";
+import { HtmlRenderCard, HtmlRenderFrame } from "./HtmlRenderFrame";
 
 describe("HtmlRenderFrame", () => {
   it("sandboxes the page and sizes the frame to the height the page reports", async () => {
@@ -45,6 +45,35 @@ describe("HtmlRenderFrame", () => {
       );
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(frame.style.height).toBe("150px");
+    } finally {
+      await screen.unmount();
+      URL.revokeObjectURL(pageUrl.current);
+    }
+  });
+});
+
+describe("HtmlRenderCard", () => {
+  const environmentId = EnvironmentId.make("environment-html-render");
+  const reference = { attachmentId: "thread-1-page", title: "Mockup" };
+
+  it("offers the side panel only where there is one to open the page in", async () => {
+    pageUrl.current = URL.createObjectURL(new Blob(["<p>mockup</p>"], { type: "text/html" }));
+    const onOpenInPanel = vi.fn();
+    const screen = await render(
+      <HtmlRenderCard
+        environmentId={environmentId}
+        reference={reference}
+        onOpenInPanel={onOpenInPanel}
+      />,
+    );
+
+    try {
+      await screen.getByRole("button", { name: "Open in side panel" }).click();
+      expect(onOpenInPanel).toHaveBeenCalledTimes(1);
+
+      await screen.rerender(<HtmlRenderCard environmentId={environmentId} reference={reference} />);
+      expect(document.querySelector('[aria-label="Open in side panel"]')).toBeNull();
+      expect(document.querySelector('[aria-label="Open full screen"]')).not.toBeNull();
     } finally {
       await screen.unmount();
       URL.revokeObjectURL(pageUrl.current);
