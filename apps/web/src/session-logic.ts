@@ -1,6 +1,10 @@
 import * as Option from "effect/Option";
 import * as Arr from "effect/Array";
-import { readHtmlRenderFromToolData, type HtmlRenderReference } from "@t3tools/shared/htmlRender";
+import {
+  htmlRenderPageKey,
+  readHtmlRenderFromToolData,
+  type HtmlRenderReference,
+} from "@t3tools/shared/htmlRender";
 import {
   ApprovalRequestId,
   isToolLifecycleItemType,
@@ -137,12 +141,27 @@ export interface HandoffState {
   createdAt: string;
 }
 
-/** A page an agent showed inline with `html_render`. */
+/** One `html_render` call: a page, or one version of a page the agent revised. */
 export interface HtmlRenderState {
   id: string;
   createdAt: string;
   turnId: TurnId | null;
   reference: HtmlRenderReference;
+  /** The page this is a version of; shared by every call the agent gave the same key. */
+  pageKey: string;
+  /** 1-based position among the page's versions. */
+  version: number;
+  /** False once a later call replaced this version. */
+  latest: boolean;
+}
+
+/** A page an agent showed in this thread, with every version it went through. */
+export interface HtmlPageState {
+  pageKey: string;
+  /** The newest version's title. */
+  title: string;
+  /** Oldest first; never empty. */
+  versions: HtmlRenderState[];
 }
 
 export type TimelineEntry =
@@ -611,14 +630,14 @@ export function deriveActivePlanState(
 export function deriveHtmlRenders(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
 ): HtmlRenderState[] {
-  const renders: HtmlRenderState[] = [];
+  const found: Array<Omit<HtmlRenderState, "pageKey" | "version" | "latest">> = [];
   for (const activity of activities) {
     if (activity.kind !== "tool.completed") continue;
     const payload = asRecord(activity.payload);
     if (payload?.itemType !== "mcp_tool_call") continue;
     const reference = readHtmlRenderFromToolData(payload.data);
     if (!reference) continue;
-    renders.push({
+    found.push({
       // Not the bare activity id: the same activity is also a work-log entry,
       // and a page sharing its id is folded away with the turn's tool calls.
       id: `html-render:${activity.id}`,
@@ -627,10 +646,75 @@ export function deriveHtmlRenders(
       reference,
     });
   }
-  return renders.toSorted(
+  found.sort(
     (left, right) =>
       left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
   );
+  const versionCountByPageKey = new Map<string, number>();
+  const renders = found.map((render): HtmlRenderState => {
+    const pageKey = htmlRenderPageKey(render.reference);
+    const version = (versionCountByPageKey.get(pageKey) ?? 0) + 1;
+    versionCountByPageKey.set(pageKey, version);
+    return { ...render, pageKey, version, latest: false };
+  });
+  for (const render of renders) {
+    render.latest = render.version === versionCountByPageKey.get(render.pageKey);
+  }
+  return renders;
+}
+
+/** The thread's pages, in the order each first appeared, with their versions. */
+export function deriveHtmlPages(renders: ReadonlyArray<HtmlRenderState>): HtmlPageState[] {
+  const pagesByKey = new Map<string, HtmlPageState>();
+  for (const render of renders) {
+    const page = pagesByKey.get(render.pageKey);
+    if (page) {
+      page.versions.push(render);
+      page.title = render.reference.title;
+    } else {
+      pagesByKey.set(render.pageKey, {
+        pageKey: render.pageKey,
+        title: render.reference.title,
+        versions: [render],
+      });
+    }
+  }
+  return [...pagesByKey.values()];
+}
+
+/** The version a page's tab shows: the one the reader stayed on if it exists, else the newest. */
+export function resolveHtmlPageVersion(
+  page: HtmlPageState,
+  pinnedVersion: number | null,
+): HtmlRenderState {
+  const pinned =
+    pinnedVersion === null
+      ? undefined
+      : page.versions.find((render) => render.version === pinnedVersion);
+  return pinned ?? page.versions.at(-1)!;
+}
+
+/**
+ * The pages to open beside the conversation right now: ones the agent asked to
+ * have opened, that this client has not handled yet, in the turn that is
+ * running. Tying it to the running turn is what tells news from history —
+ * a conversation's old pages arrive the same way when it is opened, and must
+ * not throw the panel open. `handledIds` is updated in place.
+ */
+export function takeHtmlRendersToOpenInPanel(
+  renders: ReadonlyArray<HtmlRenderState>,
+  handledIds: Set<string>,
+  runningTurnId: TurnId | null,
+): HtmlRenderState[] {
+  const toOpen: HtmlRenderState[] = [];
+  for (const render of renders) {
+    if (handledIds.has(render.id)) continue;
+    handledIds.add(render.id);
+    if (render.reference.panel && runningTurnId !== null && render.turnId === runningTurnId) {
+      toOpen.push(render);
+    }
+  }
+  return toOpen;
 }
 
 export function deriveHandoffs(

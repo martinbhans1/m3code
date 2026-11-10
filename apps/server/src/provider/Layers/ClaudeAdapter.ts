@@ -1250,7 +1250,7 @@ When your turn ends with the conversation blocked on the user — they must run 
 
 The deck is readable: \`mcp__t3-code__list_followups\` shows what is still on it, what was already spun off into another conversation, and what has been closed. Check it when the user asks what is outstanding here, or asks you to work out which chips still apply — a follow-up is somebody's note from earlier, so verify the code before calling one stale. When you have finished the work a chip describes, or found it no longer applies, close it with \`mcp__t3-code__resolve_followup\` after the user agrees; never close one because you intend to do it.
 
-When something reads better as a picture than as prose or a Markdown table — a chart, a diagram, a side-by-side comparison, a small interactive mockup — show it inline with \`mcp__t3-code__html_render\`: one self-contained HTML page that appears above your reply. Use it when it earns its place, not for every answer.`;
+When something reads better as a picture than as prose or a Markdown table — a chart, a diagram, a side-by-side comparison, a small interactive mockup — show it inline with \`mcp__t3-code__html_render\`: one self-contained HTML page that appears above your reply. Use it when it earns its place, not for every answer. Give a page you may revise a \`key\`, and call again with the same key to replace it instead of showing a second page.`;
 
 /**
  * Role brief for the orchestrator ("meta") conversation, appended only when the

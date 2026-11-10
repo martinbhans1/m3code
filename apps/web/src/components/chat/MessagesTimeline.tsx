@@ -46,6 +46,7 @@ import {
   BrainIcon,
   CheckIcon,
   ChevronDownIcon,
+  HistoryIcon,
   ChevronRightIcon,
   ChevronUpIcon,
   CircleAlertIcon,
@@ -1353,10 +1354,36 @@ function ProposedPlanTimelineRow({
 function HtmlRenderTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "html-render" }> }) {
   const ctx = use(TimelineRowCtx);
   const { threadRef } = ctx;
-  const { reference } = row.htmlRender;
+  const { reference, pageKey, version, latest } = row.htmlRender;
   const openInPanel = useCallback(() => {
-    if (threadRef) useRightPanelStore.getState().openHtmlRender(threadRef, reference);
-  }, [threadRef, reference]);
+    if (!threadRef) return;
+    // The newest version opens a tab that follows later revisions; an earlier
+    // one opens the tab on exactly that version.
+    useRightPanelStore.getState().openHtmlRender(threadRef, {
+      pageKey,
+      title: reference.title,
+      version: latest ? null : version,
+    });
+  }, [threadRef, pageKey, reference.title, version, latest]);
+  if (!latest) {
+    // The agent has since replaced this version. The page itself is shown once,
+    // where its newest version is; this keeps the place it used to be.
+    return (
+      <div className="min-w-0 px-1 py-0.5" data-html-render-superseded={reference.attachmentId}>
+        <button
+          type="button"
+          disabled={!threadRef}
+          onClick={openInPanel}
+          className="flex max-w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground disabled:pointer-events-none"
+        >
+          <HistoryIcon className="size-3 shrink-0" />
+          <span className="truncate">
+            {reference.title} · version {version}, since updated
+          </span>
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="min-w-0 px-1 py-0.5">
       <HtmlRenderCard

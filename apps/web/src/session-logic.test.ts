@@ -12,7 +12,10 @@ import {
   deriveActivePlanState,
   deriveFollowups,
   deriveHandoffs,
+  deriveHtmlPages,
   deriveHtmlRenders,
+  resolveHtmlPageVersion,
+  takeHtmlRendersToOpenInPanel,
   derivePendingFollowups,
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -1902,10 +1905,134 @@ describe("deriveHtmlRenders", () => {
         createdAt: "2026-02-23T00:00:03.000Z",
         turnId: "turn-1",
         reference: { attachmentId: "thread-1-page", title: "Revenue", height: 500 },
+        pageKey: "page:thread-1-page",
+        version: 1,
+        latest: true,
       },
     ]);
     const entries = deriveTimelineEntries([], [], [], [], renders);
     expect(entries.map((entry) => entry.kind)).toEqual(["html-render"]);
+  });
+
+  const showPage = (input: {
+    id: string;
+    second: number;
+    attachmentId: string;
+    title: string;
+    key?: string;
+    panel?: boolean;
+    turnId?: string;
+  }) =>
+    makeActivity({
+      id: input.id,
+      createdAt: `2026-02-23T00:00:${String(input.second).padStart(2, "0")}.000Z`,
+      kind: "tool.completed",
+      turnId: input.turnId ?? "turn-1",
+      payload: {
+        itemType: "mcp_tool_call",
+        data: {
+          toolName: "mcp__t3-code__html_render",
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  htmlRender: {
+                    attachmentId: input.attachmentId,
+                    title: input.title,
+                    ...(input.key ? { key: input.key } : {}),
+                    ...(input.panel ? { panel: true } : {}),
+                  },
+                }),
+              },
+            ],
+          },
+        },
+      },
+    });
+
+  it("treats calls that share a key as versions of one page", () => {
+    const renders = deriveHtmlRenders([
+      showPage({ id: "a1", second: 1, attachmentId: "file-1", title: "Mockup", key: "mockup" }),
+      showPage({ id: "b1", second: 2, attachmentId: "file-2", title: "Chart" }),
+      showPage({
+        id: "a2",
+        second: 3,
+        attachmentId: "file-3",
+        title: "Mockup, tighter",
+        key: "mockup",
+      }),
+      showPage({ id: "c1", second: 4, attachmentId: "file-4", title: "Chart" }),
+    ]);
+
+    expect(renders.map((render) => [render.pageKey, render.version, render.latest])).toEqual([
+      ["key:mockup", 1, false],
+      ["page:file-2", 1, true],
+      ["key:mockup", 2, true],
+      // Same title, no key: a separate page, not a version.
+      ["page:file-4", 1, true],
+    ]);
+
+    const pages = deriveHtmlPages(renders);
+    expect(pages.map((page) => [page.pageKey, page.title, page.versions.length])).toEqual([
+      ["key:mockup", "Mockup, tighter", 2],
+      ["page:file-2", "Chart", 1],
+      ["page:file-4", "Chart", 1],
+    ]);
+
+    const mockup = pages[0]!;
+    expect(resolveHtmlPageVersion(mockup, null).reference.attachmentId).toBe("file-3");
+    expect(resolveHtmlPageVersion(mockup, 1).reference.attachmentId).toBe("file-1");
+    // A version that is not there falls back to the newest rather than nothing.
+    expect(resolveHtmlPageVersion(mockup, 9).reference.attachmentId).toBe("file-3");
+  });
+
+  it("opens a page beside the conversation only when it is news from the running turn", () => {
+    const history = deriveHtmlRenders([
+      showPage({
+        id: "old",
+        second: 1,
+        attachmentId: "f1",
+        title: "Old",
+        panel: true,
+        turnId: "turn-1",
+      }),
+    ]);
+    const handled = new Set<string>();
+    // Opening a conversation: its old pages arrive, and nothing is running.
+    expect(takeHtmlRendersToOpenInPanel(history, handled, null)).toEqual([]);
+
+    const live = deriveHtmlRenders([
+      showPage({
+        id: "old",
+        second: 1,
+        attachmentId: "f1",
+        title: "Old",
+        panel: true,
+        turnId: "turn-1",
+      }),
+      showPage({
+        id: "quiet",
+        second: 2,
+        attachmentId: "f2",
+        title: "Inline only",
+        turnId: "turn-2",
+      }),
+      showPage({
+        id: "new",
+        second: 3,
+        attachmentId: "f3",
+        title: "New",
+        panel: true,
+        turnId: "turn-2",
+      }),
+    ]);
+    const turnTwo = live[2]!.turnId;
+    expect(takeHtmlRendersToOpenInPanel(live, handled, turnTwo).map((render) => render.id)).toEqual(
+      ["html-render:new"],
+    );
+    // Handled once: closing the tab must not bring it back on the next update.
+    expect(takeHtmlRendersToOpenInPanel(live, handled, turnTwo)).toEqual([]);
   });
 });
 

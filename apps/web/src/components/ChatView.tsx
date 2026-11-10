@@ -51,7 +51,9 @@ import {
   deriveActiveWorkStartedAt,
   deriveActivePlanState,
   deriveHandoffs,
+  deriveHtmlPages,
   deriveHtmlRenders,
+  takeHtmlRendersToOpenInPanel,
   derivePendingFollowups,
   type FollowupState,
   findSidebarProposedPlan,
@@ -129,7 +131,7 @@ import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
 import { OrchestratorBoardPanel } from "./OrchestratorBoardPanel";
-import { HtmlRenderFrame } from "./chat/HtmlRenderFrame";
+import { HtmlPagePanel, HtmlPagesPanel } from "./chat/HtmlPagePanel";
 import { MessageThreadPanel, type MessageThreadPendingQuote } from "./chat/MessageThreadPanel";
 import type { MessagesTimelineSharedProps } from "./chat/MessagesTimeline";
 import {
@@ -2373,6 +2375,35 @@ function ChatViewContent(props: ChatViewProps) {
     [threadHandoffs],
   );
   const htmlRenders = useMemo(() => deriveHtmlRenders(threadActivities), [threadActivities]);
+  const htmlPages = useMemo(() => deriveHtmlPages(htmlRenders), [htmlRenders]);
+  const htmlPageTitlesByKey = useMemo(
+    () => new Map(htmlPages.map((page) => [page.pageKey, page.title])),
+    [htmlPages],
+  );
+  // Pages the agent asked to have opened beside the conversation. Handled ids
+  // are per conversation, so switching threads starts from that thread's own.
+  const handledPanelRendersRef = useRef<{ threadKey: string; ids: Set<string> } | null>(null);
+  const runningTurnId = activeLatestTurn?.state === "running" ? activeLatestTurn.turnId : null;
+  useEffect(() => {
+    if (!activeThreadRef || activeThreadKey === null) return;
+    if (handledPanelRendersRef.current?.threadKey !== activeThreadKey) {
+      handledPanelRendersRef.current = { threadKey: activeThreadKey, ids: new Set() };
+    }
+    const toOpen = takeHtmlRendersToOpenInPanel(
+      htmlRenders,
+      handledPanelRendersRef.current.ids,
+      runningTurnId,
+    );
+    for (const render of toOpen) {
+      useRightPanelStore
+        .getState()
+        .openHtmlRender(
+          activeThreadRef,
+          { pageKey: render.pageKey, title: render.reference.title },
+          { background: true },
+        );
+    }
+  }, [activeThreadKey, activeThreadRef, htmlRenders, runningTurnId]);
   const timelineEntries = useMemo(
     () =>
       deriveTimelineEntries(
@@ -2595,6 +2626,19 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef || !activeProject) return;
     useRightPanelStore.getState().openFile(activeThreadRef, relativePath);
   };
+  const openPagesSurface = useCallback(() => {
+    if (!activeThreadRef) return;
+    useRightPanelStore.getState().open(activeThreadRef, "pages");
+  }, [activeThreadRef]);
+  const openHtmlPage = useCallback(
+    (page: { pageKey: string; title: string }, version: number | null = null) => {
+      if (!activeThreadRef) return;
+      useRightPanelStore
+        .getState()
+        .openHtmlRender(activeThreadRef, { pageKey: page.pageKey, title: page.title, version });
+    },
+    [activeThreadRef],
+  );
   const openMessageThread = useCallback(
     (anchorMessageId: MessageId) => {
       if (!activeThreadRef) return;
@@ -5892,12 +5936,17 @@ function ChatViewContent(props: ChatViewProps) {
         }
       />
     ) : activeRightPanelSurface?.kind === "htmlRender" ? (
-      <HtmlRenderFrame
-        key={activeRightPanelSurface.attachmentId}
+      <HtmlPagePanel
+        key={activeRightPanelSurface.pageKey}
         environmentId={environmentId}
-        reference={activeRightPanelSurface}
-        fill
+        page={htmlPages.find((page) => page.pageKey === activeRightPanelSurface.pageKey) ?? null}
+        fallbackTitle={activeRightPanelSurface.title}
+        pinnedVersion={activeRightPanelSurface.version}
+        onSelectVersion={(version) => openHtmlPage(activeRightPanelSurface, version)}
+        onShowAllPages={openPagesSurface}
       />
+    ) : activeRightPanelSurface?.kind === "pages" ? (
+      <HtmlPagesPanel pages={htmlPages} onOpenPage={openHtmlPage} />
     ) : activeRightPanelSurface?.kind === "board" ? (
       <OrchestratorBoardPanel
         mode="embedded"
@@ -5997,6 +6046,8 @@ function ChatViewContent(props: ChatViewProps) {
             onUpdateProjectScript={updateProjectScript}
             onDeleteProjectScript={deleteProjectScript}
             rightPanelOpen={rightPanelOpen}
+            pageCount={htmlPages.length}
+            onOpenPages={openPagesSurface}
           />
         </header>
 
@@ -6317,6 +6368,7 @@ function ChatViewContent(props: ChatViewProps) {
           previewSessions={activePreviewState.sessions}
           terminalLabelsById={activeTerminalLabelsById}
           messageThreadLabelsByAnchorId={messageThreadLabelsByAnchorId}
+          pageTitlesByKey={htmlPageTitlesByKey}
           onActivate={activateRightPanelSurface}
           onCloseSurface={closeRightPanelSurface}
           onCloseOtherSurfaces={closeOtherRightPanelSurfaces}
@@ -6327,6 +6379,7 @@ function ChatViewContent(props: ChatViewProps) {
           onAddTerminal={addTerminalSurface}
           onAddDiff={addDiffSurface}
           onAddFiles={addFilesSurface}
+          onAddPages={openPagesSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
           diffAvailable={isServerThread && isGitRepo}
           filesAvailable={Boolean(activeProject)}
@@ -6346,6 +6399,7 @@ function ChatViewContent(props: ChatViewProps) {
             previewSessions={activePreviewState.sessions}
             terminalLabelsById={activeTerminalLabelsById}
             messageThreadLabelsByAnchorId={messageThreadLabelsByAnchorId}
+            pageTitlesByKey={htmlPageTitlesByKey}
             onActivate={activateRightPanelSurface}
             onCloseSurface={closeRightPanelSurface}
             onCloseOtherSurfaces={closeOtherRightPanelSurfaces}
@@ -6356,6 +6410,7 @@ function ChatViewContent(props: ChatViewProps) {
             onAddTerminal={addTerminalSurface}
             onAddDiff={addDiffSurface}
             onAddFiles={addFilesSurface}
+            onAddPages={openPagesSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
             diffAvailable={isServerThread && isGitRepo}
             filesAvailable={Boolean(activeProject)}

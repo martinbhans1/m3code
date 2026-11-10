@@ -6,7 +6,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime";
-import { CornerUpLeftIcon } from "lucide-react";
+import { AppWindowIcon, CornerUpLeftIcon } from "lucide-react";
 import { memo } from "react";
 import GitActionsControl from "../GitActionsControl";
 import { type DraftId } from "~/composerDraftStore";
@@ -43,6 +43,9 @@ interface ChatHeaderProps {
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
   rightPanelOpen: boolean;
+  /** How many pages agents have shown in this conversation; the button hides at zero. */
+  pageCount?: number;
+  onOpenPages?: (() => void) | undefined;
 }
 
 export function shouldShowOpenInPicker(input: {
@@ -76,6 +79,8 @@ export const ChatHeader = memo(function ChatHeader({
   onUpdateProjectScript,
   onDeleteProjectScript,
   rightPanelOpen,
+  pageCount = 0,
+  onOpenPages,
 }: ChatHeaderProps) {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const isMobile = useIsMobile();
@@ -177,6 +182,28 @@ export const ChatHeader = memo(function ChatHeader({
           rightPanelOpen ? "pr-0" : "pr-16",
         )}
       >
+        {pageCount > 0 && onOpenPages ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  aria-label={`Pages in this conversation: ${pageCount}`}
+                  className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs tabular-nums text-muted-foreground transition-colors hover:bg-accent hover:text-foreground hover:cursor-pointer"
+                  onClick={onOpenPages}
+                />
+              }
+            >
+              <AppWindowIcon className="size-3.5" />
+              {pageCount}
+            </TooltipTrigger>
+            <TooltipPopup side="bottom">
+              {pageCount === 1
+                ? "1 page shown in this conversation"
+                : `${pageCount} pages shown in this conversation`}
+            </TooltipPopup>
+          </Tooltip>
+        ) : null}
         {activeProjectScripts && (
           <ProjectScriptsControl
             scripts={activeProjectScripts}

@@ -13,6 +13,7 @@ export const HTML_RENDER_TOOL_NAME = "html_render";
 /** Largest page the tool accepts, in UTF-8 bytes. */
 export const HTML_RENDER_MAX_BYTES = 512 * 1024;
 export const HTML_RENDER_MAX_TITLE_LENGTH = 200;
+export const HTML_RENDER_MAX_KEY_LENGTH = 64;
 export const HTML_RENDER_MIN_HEIGHT = 80;
 export const HTML_RENDER_MAX_HEIGHT = 2000;
 /** The frame's height before the page reports its own, when the agent gave none. */
@@ -36,18 +37,46 @@ export function htmlRenderFrameHeight(
   return clampHtmlRenderHeight(Math.min(reportedHeight, agentHeight ?? HTML_RENDER_MAX_HEIGHT));
 }
 
+/**
+ * An agent's name for a page it means to revise, or undefined when `key` is
+ * not usable as one. Calls that share a key are versions of one page.
+ */
+export function normalizeHtmlRenderKey(key: unknown): string | undefined {
+  if (typeof key !== "string") return undefined;
+  const trimmed = key.trim();
+  return trimmed.length > 0 &&
+    trimmed.length <= HTML_RENDER_MAX_KEY_LENGTH &&
+    /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(trimmed)
+    ? trimmed
+    : undefined;
+}
+
 /** What an `html_render` result carries so a client can show the page. */
 export interface HtmlRenderReference {
   readonly attachmentId: string;
   readonly title: string;
   /** The most the frame may take, in CSS pixels; absent lets the page decide. */
   readonly height?: number;
+  /** Set when the agent named the page; a later call with the same key is its next version. */
+  readonly key?: string;
+  /** The agent asked for the page to open beside the conversation as well. */
+  readonly panel?: boolean;
+}
+
+/**
+ * What identifies a page across its versions: the agent's key, or the page's
+ * own attachment when it has none. Prefixed so a key can never collide with
+ * an attachment id.
+ */
+export function htmlRenderPageKey(reference: HtmlRenderReference): string {
+  return reference.key ? `key:${reference.key}` : `page:${reference.attachmentId}`;
 }
 
 export function readHtmlRenderReference(value: unknown): HtmlRenderReference | undefined {
   const record = asRecord(value);
   if (!record) return undefined;
   const { attachmentId, title, height } = record;
+  const key = normalizeHtmlRenderKey(record.key);
   if (
     typeof attachmentId !== "string" ||
     attachmentId.length === 0 ||
@@ -62,6 +91,8 @@ export function readHtmlRenderReference(value: unknown): HtmlRenderReference | u
     ...(typeof height === "number" && Number.isFinite(height)
       ? { height: clampHtmlRenderHeight(height) }
       : {}),
+    ...(key ? { key } : {}),
+    ...(record.panel === true ? { panel: true } : {}),
   };
 }
 

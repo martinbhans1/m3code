@@ -10,7 +10,7 @@ For browser work, first call \`preview_status\`. If no automation-capable previe
 
 Do not switch to global browser skills, Chrome, Node REPL browser automation, standalone Playwright, or agent-browser merely because the preview is initially closed or a first call fails. Use an alternative browser system only when the T3 preview tools are absent, the user explicitly requests another browser, or \`preview_open\` returns an explicit unsupported/unavailable error. A failed T3 preview tool call should be inspected and retried with corrected arguments when the error is actionable.
 
-When something reads better as a picture than as prose or a Markdown table — a chart, a diagram, a side-by-side comparison, a small interactive mockup — the \`html_render\` tool shows one self-contained HTML page inline above your reply. Use it when it earns its place, not for every answer.
+When something reads better as a picture than as prose or a Markdown table — a chart, a diagram, a side-by-side comparison, a small interactive mockup — the \`html_render\` tool shows one self-contained HTML page inline above your reply. Use it when it earns its place, not for every answer. Give a page you may revise a \`key\`, and call again with the same key to replace it instead of showing a second page.
 `;
 
 export const CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS = `<collaboration_mode># Plan Mode (Conversational)

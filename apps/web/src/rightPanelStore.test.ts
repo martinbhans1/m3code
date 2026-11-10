@@ -290,20 +290,63 @@ describe("rightPanelStore", () => {
 
   it("opens an agent's page as its own tab and reuses it when opened again", () => {
     const store = useRightPanelStore.getState();
-    store.openHtmlRender(refA, { attachmentId: "page-1", title: "Mockup" });
-    store.openHtmlRender(refA, { attachmentId: "page-2", title: "Chart" });
-    store.openHtmlRender(refA, { attachmentId: "page-1", title: "Mockup" });
+    store.openHtmlRender(refA, { pageKey: "key:mockup", title: "Mockup" });
+    store.openHtmlRender(refA, { pageKey: "page:chart-1", title: "Chart" });
+    store.openHtmlRender(refA, { pageKey: "key:mockup", title: "Mockup v2", version: 1 });
 
     const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
     expect(state.surfaces.map((surface) => surface.id)).toEqual([
-      "htmlRender:page-1",
-      "htmlRender:page-2",
+      "htmlRender:key:mockup",
+      "htmlRender:page:chart-1",
     ]);
     expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
-      id: "htmlRender:page-1",
+      id: "htmlRender:key:mockup",
       kind: "htmlRender",
-      attachmentId: "page-1",
-      title: "Mockup",
+      pageKey: "key:mockup",
+      title: "Mockup v2",
+      version: 1,
+    });
+  });
+
+  it("a page opened in the background never takes over the tab the reader is on", () => {
+    const store = useRightPanelStore.getState();
+    // Nothing showing: the page opens the panel and takes it.
+    store.openHtmlRender(refA, { pageKey: "key:a", title: "A" }, { background: true });
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)?.id).toBe(
+      "htmlRender:key:a",
+    );
+
+    store.open(refA, "diff");
+    store.openHtmlRender(refA, { pageKey: "key:b", title: "B" }, { background: true });
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.activeSurfaceId).toBe("diff");
+    expect(state.surfaces.map((surface) => surface.id)).toContain("htmlRender:key:b");
+
+    // A hidden panel is not something the reader is looking at.
+    store.close(refA);
+    store.openHtmlRender(refA, { pageKey: "key:b", title: "B" }, { background: true });
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)?.id).toBe(
+      "htmlRender:key:b",
+    );
+  });
+
+  it("drops page tabs saved before pages had versions", () => {
+    const migrated = migratePersistedRightPanelState({
+      byThreadKey: {
+        "env-1:thread-A": {
+          isOpen: true,
+          activeSurfaceId: "htmlRender:old",
+          surfaces: [
+            { id: "htmlRender:old", kind: "htmlRender", attachmentId: "old", title: "Old" },
+            { id: "diff", kind: "diff" },
+          ],
+        },
+      },
+    });
+    expect(migrated.byThreadKey["env-1:thread-A"]).toEqual({
+      isOpen: true,
+      activeSurfaceId: null,
+      surfaces: [{ id: "diff", kind: "diff" }],
     });
   });
 

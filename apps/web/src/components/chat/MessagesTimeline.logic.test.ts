@@ -591,6 +591,34 @@ describe("deriveMessagesTimelineRows", () => {
     expect(new Set(rows.map((row) => row.id)).size).toBe(rows.length);
   });
 
+  it("redraws a page's row when a newer version replaces it", () => {
+    const render = {
+      id: "html-render:a",
+      createdAt: "2026-01-01T00:00:04Z",
+      turnId: "turn-1" as never,
+      reference: { attachmentId: "file-1", title: "Mockup", key: "mockup" },
+      pageKey: "key:mockup",
+      version: 1,
+      latest: true,
+    };
+    const rowsFor = (latest: boolean) =>
+      deriveMessagesTimelineRows({
+        timelineEntries: deriveTimelineEntries([], [], [], [], [{ ...render, latest }]),
+        isWorking: false,
+        activeTurnStartedAt: null,
+        turnDiffSummaryByAssistantMessageId: new Map(),
+        revertTurnCountByUserMessageId: new Map(),
+      });
+
+    const first = computeStableMessagesTimelineRows(rowsFor(true), {
+      byId: new Map(),
+      result: [],
+    });
+    expect(computeStableMessagesTimelineRows(rowsFor(true), first)).toBe(first);
+    const replaced = computeStableMessagesTimelineRows(rowsFor(false), first);
+    expect(replaced.result[0]).not.toBe(first.result[0]);
+  });
+
   it("does not fold a settled turn that produced no work entries", () => {
     const rows = deriveMessagesTimelineRows({
       timelineEntries: [

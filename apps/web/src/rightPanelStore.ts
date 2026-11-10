@@ -24,6 +24,7 @@ export const RIGHT_PANEL_KINDS = [
   "terminal",
   "messageThread",
   "htmlRender",
+  "pages",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -68,21 +69,27 @@ export type RightPanelSurface =
   | {
       /**
        * A page an agent showed with `html_render`, opened beside the
-       * conversation so it stays in view while the chat scrolls on. The page
-       * itself is a thread attachment on the server; this only points at it.
+       * conversation so it stays in view while the chat scrolls on. It points
+       * at the page rather than one stored version, so the tab follows the
+       * agent's revisions unless the reader stepped back to an earlier one.
        */
       id: `htmlRender:${string}`;
       kind: "htmlRender";
-      attachmentId: string;
+      pageKey: string;
+      /** The title when the tab was opened, for before the thread has loaded. */
       title: string;
+      /** The version the reader chose to stay on; null follows the newest. */
+      version: number | null;
     }
+  // Every page an agent has shown in this conversation.
+  | { id: "pages"; kind: "pages" }
   | { id: "plan"; kind: "plan" }
   // The orchestrator's status board: every conversation it can see, and what
   // each one is waiting on.
   | { id: "board"; kind: "board" };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
-const RIGHT_PANEL_STORAGE_VERSION = 7;
+const RIGHT_PANEL_STORAGE_VERSION = 8;
 
 export interface ThreadRightPanelState {
   isOpen: boolean;
@@ -105,7 +112,16 @@ interface RightPanelStoreState {
   ) => void;
   openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
   openMessageThread: (ref: ScopedThreadRef, anchorMessageId: string) => void;
-  openHtmlRender: (ref: ScopedThreadRef, page: { attachmentId: string; title: string }) => void;
+  /**
+   * Open a page's tab, or point the one already open at `version`. With
+   * `background`, a tab the reader is on is left alone: the page gets its tab
+   * but only takes over when nothing else is showing.
+   */
+  openHtmlRender: (
+    ref: ScopedThreadRef,
+    page: { pageKey: string; title: string; version?: number | null },
+    options?: { background?: boolean },
+  ) => void;
   splitTerminal: (
     ref: ScopedThreadRef,
     surfaceId: string,
@@ -149,6 +165,8 @@ const singletonSurface = (
       return { id: "plan", kind };
     case "board":
       return { id: "board", kind };
+    case "pages":
+      return { id: "pages", kind };
   }
 };
 
@@ -180,11 +198,16 @@ const messageThreadSurface = (anchorMessageId: string): RightPanelSurface => ({
   anchorMessageId,
 });
 
-const htmlRenderSurface = (page: { attachmentId: string; title: string }): RightPanelSurface => ({
-  id: `htmlRender:${page.attachmentId}`,
+const htmlRenderSurface = (page: {
+  pageKey: string;
+  title: string;
+  version?: number | null;
+}): RightPanelSurface => ({
+  id: `htmlRender:${page.pageKey}`,
   kind: "htmlRender",
-  attachmentId: page.attachmentId,
+  pageKey: page.pageKey,
   title: page.title,
+  version: page.version ?? null,
 });
 
 const terminalSurface = (terminalId: string): RightPanelSurface => ({
@@ -258,6 +281,11 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                           ? surface.revealRequestId
                           : 0;
                       return [{ ...surface, revealLine, revealRequestId }];
+                    }
+                    // Page tabs saved before pages had versions point at one stored
+                    // file rather than a page, and cannot be resolved any more.
+                    if (surface.kind === "htmlRender" && typeof surface.pageKey !== "string") {
+                      return [];
                     }
                     if (surface.kind !== "terminal") return [surface];
                     if (
@@ -340,11 +368,25 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             upsertSurface(current, messageThreadSurface(anchorMessageId)),
           ),
         })),
-      openHtmlRender: (ref, page) =>
+      openHtmlRender: (ref, page, options) =>
         set((state) => ({
-          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
-            upsertSurface(current, htmlRenderSurface(page)),
-          ),
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
+            const surface = htmlRenderSurface(page);
+            const exists = current.surfaces.some((entry) => entry.id === surface.id);
+            const surfaces = exists
+              ? current.surfaces.map((entry) => (entry.id === surface.id ? surface : entry))
+              : [...current.surfaces, surface];
+            const readerIsElsewhere =
+              current.isOpen &&
+              current.activeSurfaceId !== null &&
+              current.activeSurfaceId !== surface.id;
+            return {
+              isOpen: true,
+              surfaces,
+              activeSurfaceId:
+                options?.background && readerIsElsewhere ? current.activeSurfaceId : surface.id,
+            };
+          }),
         })),
       openFile: (ref, relativePath, line, workspaceRoot) =>
         set((state) => ({

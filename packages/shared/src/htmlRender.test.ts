@@ -2,6 +2,9 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   htmlRenderFrameHeight,
+  htmlRenderPageKey,
+  normalizeHtmlRenderKey,
+  readHtmlRenderReference,
   injectHtmlRenderBootstrap,
   readHtmlRenderFrameMessage,
   readHtmlRenderFromToolData,
@@ -68,6 +71,35 @@ describe("readHtmlRenderFromToolData", () => {
         },
       }),
     ).toEqual({ attachmentId: "a", title: "HTML page", height: 80 });
+  });
+});
+
+describe("page keys", () => {
+  it("accepts a plain name and refuses anything that could not be one", () => {
+    expect(normalizeHtmlRenderKey("  ticket-card.v2_final ")).toBe("ticket-card.v2_final");
+    expect(normalizeHtmlRenderKey("has spaces")).toBeUndefined();
+    expect(normalizeHtmlRenderKey("-leading-dash")).toBeUndefined();
+    expect(normalizeHtmlRenderKey("")).toBeUndefined();
+    expect(normalizeHtmlRenderKey("x".repeat(65))).toBeUndefined();
+    expect(normalizeHtmlRenderKey(7)).toBeUndefined();
+  });
+
+  it("carries the key and the panel request, and drops a key it cannot use", () => {
+    expect(
+      readHtmlRenderReference({ attachmentId: "a", title: "T", key: "mockup", panel: true }),
+    ).toEqual({ attachmentId: "a", title: "T", key: "mockup", panel: true });
+    expect(
+      readHtmlRenderReference({ attachmentId: "a", title: "T", key: "no good", panel: "yes" }),
+    ).toEqual({ attachmentId: "a", title: "T" });
+  });
+
+  it("identifies a page by its key, or by itself when it has none", () => {
+    expect(htmlRenderPageKey({ attachmentId: "a", title: "T", key: "mockup" })).toBe("key:mockup");
+    expect(htmlRenderPageKey({ attachmentId: "a", title: "T" })).toBe("page:a");
+    // A key spelled like an attachment id is still a different page.
+    expect(htmlRenderPageKey({ attachmentId: "b", title: "T", key: "a" })).not.toBe(
+      htmlRenderPageKey({ attachmentId: "a", title: "T" }),
+    );
   });
 });
 

@@ -3,6 +3,7 @@ import {
   HTML_RENDER_MAX_BYTES,
   HTML_RENDER_MAX_TITLE_LENGTH,
   injectHtmlRenderBootstrap,
+  normalizeHtmlRenderKey,
 } from "@t3tools/shared/htmlRender";
 import * as Effect from "effect/Effect";
 
@@ -30,6 +31,13 @@ const handlers = {
       if (input.html.trim().length === 0) {
         return yield* new HtmlRenderToolError({
           message: "The page is empty. Pass a complete HTML document.",
+        });
+      }
+      const key = input.key === undefined ? undefined : normalizeHtmlRenderKey(input.key);
+      if (input.key !== undefined && key === undefined) {
+        return yield* new HtmlRenderToolError({
+          message:
+            "The key is not usable. Use letters, digits, dots, dashes and underscores, starting with a letter or digit.",
         });
       }
       const sizeBytes = utf8ByteLength(input.html);
@@ -69,9 +77,12 @@ const handlers = {
           attachmentId,
           title,
           ...(input.height === undefined ? {} : { height: clampHtmlRenderHeight(input.height) }),
+          ...(key ? { key } : {}),
+          ...(input.panel === true ? { panel: true } : {}),
         },
-        message:
-          "Shown to the reader above your reply. Don't mention or describe the page; reply with only what it doesn't already say.",
+        message: key
+          ? `Shown to the reader above your reply. Call again with key "${key}" to replace it with a new version. Don't mention or describe the page; reply with only what it doesn't already say.`
+          : "Shown to the reader above your reply. Don't mention or describe the page; reply with only what it doesn't already say.",
       };
     }),
 } satisfies Parameters<typeof HtmlRenderToolkit.toLayer>[0];

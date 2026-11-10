@@ -2422,6 +2422,98 @@ describe("ChatView timeline estimator parity (full app)", () => {
     }
   });
 
+  it("keeps an agent's page in the finished turn and reachable from the side panel", async () => {
+    const showPage = (id: string, offsetSeconds: number, attachmentId: string, title: string) => ({
+      id: EventId.make(id),
+      tone: "tool" as const,
+      kind: "tool.completed",
+      summary: "html_render",
+      payload: {
+        itemType: "mcp_tool_call",
+        data: {
+          toolName: "mcp__t3-code__html_render",
+          result: {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ htmlRender: { attachmentId, title, key: "mockup" } }),
+              },
+            ],
+          },
+        },
+      },
+      turnId: "turn-page" as TurnId,
+      sequence: offsetSeconds,
+      createdAt: isoAt(offsetSeconds),
+    });
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-inline-page" as MessageId,
+      targetText: "show me a mockup",
+    });
+    const mounted = await mountChatView({
+      viewport: WIDE_FOOTER_VIEWPORT,
+      snapshot: {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === THREAD_ID
+            ? Object.assign({}, thread, {
+                activities: [
+                  showPage("activity-page-v1", 500, "file-1", "Mockup"),
+                  showPage("activity-page-v2", 501, "file-2", "Mockup, tighter"),
+                ],
+              })
+            : thread,
+        ),
+      },
+    });
+
+    try {
+      // The turn is finished, so its tool calls are folded away; the page is not.
+      const inlinePage = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-html-render="file-2"]'),
+        "The newest version of the page is not in the conversation.",
+      );
+      expect(document.querySelector('[data-timeline-row-kind="turn-fold"]')).not.toBeNull();
+      expect(document.querySelector('[data-timeline-row-kind="work"]')).toBeNull();
+      expect(document.querySelector('[data-html-render="file-1"]')).toBeNull();
+      const rowIds = [...document.querySelectorAll("[data-timeline-row-id]")].map((row) =>
+        row.getAttribute("data-timeline-row-id"),
+      );
+      expect(new Set(rowIds).size).toBe(rowIds.length);
+
+      // The header counts pages, not versions, and opens the list of them.
+      await page.getByRole("button", { name: "Pages in this conversation: 1" }).click();
+      const list = await waitForElement(
+        () => document.querySelector<HTMLElement>("[data-html-pages-list]"),
+        "The list of pages did not open.",
+      );
+      expect(list.textContent).toContain("Mockup, tighter");
+      expect(list.textContent).toContain("2 versions");
+
+      await page.getByRole("button", { name: /Mockup, tighter/ }).click();
+      const panel = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-html-page="key:mockup"]'),
+        "The page did not open in the side panel.",
+      );
+      expect(panel.textContent).toContain("Version 2 of 2");
+
+      // The earlier version keeps its place in the conversation as a one-line note.
+      const superseded = document.querySelector<HTMLElement>(
+        '[data-html-render-superseded="file-1"] button',
+      );
+      expect(superseded?.textContent).toContain("version 1");
+      superseded!.click();
+      await vi.waitFor(() =>
+        expect(document.querySelector('[data-html-page="key:mockup"]')?.textContent).toContain(
+          "Version 1 of 2",
+        ),
+      );
+      expect(inlinePage.isConnected).toBe(true);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("renders the shared panel toggles in the responsive right-panel sheet", async () => {
     useRightPanelStore.getState().open(THREAD_REF, "plan");
     useRightPanelStore.getState().openTerminal(THREAD_REF, DEFAULT_TERMINAL_ID);

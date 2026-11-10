@@ -570,12 +570,17 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
       return a.handoff === (b as typeof a).handoff;
 
     case "html-render": {
+      const other = (b as typeof a).htmlRender;
       const left = a.htmlRender.reference;
-      const right = (b as typeof a).htmlRender.reference;
+      const right = other.reference;
       return (
         left.attachmentId === right.attachmentId &&
         left.title === right.title &&
-        left.height === right.height
+        left.height === right.height &&
+        a.htmlRender.pageKey === other.pageKey &&
+        a.htmlRender.version === other.version &&
+        // A version turns into a one-line note the moment a newer one lands.
+        a.htmlRender.latest === other.latest
       );
     }
 

@@ -112,3 +112,46 @@ it.effect("refuses an empty page or title", () =>
     }),
   ).pipe(Effect.provide(TestLayer)),
 );
+
+it.effect("stores each version of a keyed page separately and hands the key back", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const show = (html: string) =>
+        callTool({ html, title: "Mockup", key: " ticket-card ", panel: true }).pipe(
+          Effect.map(
+            (result) =>
+              (
+                result.structuredContent as {
+                  htmlRender: { attachmentId: string; key?: string; panel?: boolean };
+                }
+              ).htmlRender,
+          ),
+        );
+      const first = yield* show("<p>one</p>");
+      const second = yield* show("<p>two</p>");
+
+      expect(first.key).toBe("ticket-card");
+      expect(first.panel).toBe(true);
+      expect(second.key).toBe("ticket-card");
+      // A new version never overwrites the one before it.
+      expect(second.attachmentId).not.toBe(first.attachmentId);
+
+      const plain = yield* callTool({ html: "<p>x</p>", title: "Plain" });
+      expect(plain.structuredContent).not.toHaveProperty("htmlRender.key");
+      expect(plain.structuredContent).not.toHaveProperty("htmlRender.panel");
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("refuses a key that could not name a page", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      expect((yield* callTool({ html: "<p>x</p>", title: "T", key: "has spaces" })).isError).toBe(
+        true,
+      );
+      expect((yield* callTool({ html: "<p>x</p>", title: "T", key: "x".repeat(65) })).isError).toBe(
+        true,
+      );
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);

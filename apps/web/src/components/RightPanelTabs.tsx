@@ -7,6 +7,7 @@ import {
   Files,
   Globe2,
   LayoutDashboard,
+  LayoutList,
   MessagesSquare,
   Plus,
   TerminalSquare,
@@ -46,6 +47,8 @@ interface RightPanelTabsProps {
   terminalLabelsById: ReadonlyMap<string, string>;
   /** Short previews of the messages side threads hang off, keyed by anchor message id. */
   messageThreadLabelsByAnchorId?: ReadonlyMap<string, string>;
+  /** Current titles of the agent's pages, keyed by page; a tab's own title is from when it opened. */
+  pageTitlesByKey?: ReadonlyMap<string, string>;
   onActivate: (surface: RightPanelSurface) => void;
   onCloseSurface: (surface: RightPanelSurface) => void;
   onCloseOtherSurfaces: (surface: RightPanelSurface) => void;
@@ -56,6 +59,7 @@ interface RightPanelTabsProps {
   onAddTerminal: () => void;
   onAddDiff: () => void;
   onAddFiles: () => void;
+  onAddPages: () => void;
   browserAvailable: boolean;
   diffAvailable: boolean;
   filesAvailable: boolean;
@@ -205,6 +209,7 @@ function surfaceTitle(
   sessions: Readonly<Record<string, PreviewSessionSnapshot>>,
   terminalLabelsById: ReadonlyMap<string, string>,
   messageThreadLabelsByAnchorId: ReadonlyMap<string, string>,
+  pageTitlesByKey: ReadonlyMap<string, string>,
 ): string {
   switch (surface.kind) {
     case "diff":
@@ -225,7 +230,9 @@ function surfaceTitle(
     case "messageThread":
       return messageThreadLabelsByAnchorId.get(surface.anchorMessageId) ?? "Thread";
     case "htmlRender":
-      return surface.title;
+      return pageTitlesByKey.get(surface.pageKey) ?? surface.title;
+    case "pages":
+      return "Pages";
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
@@ -293,6 +300,8 @@ function SurfaceIcon({
       return <MessagesSquare className="size-3.5 shrink-0" />;
     case "htmlRender":
       return <AppWindow className="size-3.5 shrink-0" />;
+    case "pages":
+      return <LayoutList className="size-3.5 shrink-0" />;
   }
 }
 
@@ -393,6 +402,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                 props.previewSessions,
                 props.terminalLabelsById,
                 props.messageThreadLabelsByAnchorId ?? EMPTY_MESSAGE_THREAD_LABELS,
+                props.pageTitlesByKey ?? EMPTY_MESSAGE_THREAD_LABELS,
               );
               return (
                 <div
@@ -485,6 +495,10 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                   >
                     <FileDiff />
                     Diff
+                  </SurfaceMenuItem>
+                  <SurfaceMenuItem available onClick={props.onAddPages}>
+                    <LayoutList />
+                    Pages
                   </SurfaceMenuItem>
                 </MenuPopup>
               </Menu>
