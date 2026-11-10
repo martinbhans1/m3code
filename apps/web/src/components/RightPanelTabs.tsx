@@ -1,6 +1,7 @@
 import type { ContextMenuItem, PreviewSessionSnapshot } from "@t3tools/contracts";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import {
+  AppWindow,
   ClipboardList,
   FileDiff,
   Files,
@@ -223,6 +224,8 @@ function surfaceTitle(
       return "Board";
     case "messageThread":
       return messageThreadLabelsByAnchorId.get(surface.anchorMessageId) ?? "Thread";
+    case "htmlRender":
+      return surface.title;
     case "preview": {
       const snapshot = surface.resourceId ? sessions[surface.resourceId] : null;
       if (!snapshot || snapshot.navStatus._tag === "Idle") return "Browser";
@@ -288,6 +291,8 @@ function SurfaceIcon({
       return <LayoutDashboard className="size-3.5 shrink-0" />;
     case "messageThread":
       return <MessagesSquare className="size-3.5 shrink-0" />;
+    case "htmlRender":
+      return <AppWindow className="size-3.5 shrink-0" />;
   }
 }
 

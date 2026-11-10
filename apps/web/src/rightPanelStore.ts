@@ -23,6 +23,7 @@ export const RIGHT_PANEL_KINDS = [
   "preview",
   "terminal",
   "messageThread",
+  "htmlRender",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -64,6 +65,17 @@ export type RightPanelSurface =
       kind: "messageThread";
       anchorMessageId: string;
     }
+  | {
+      /**
+       * A page an agent showed with `html_render`, opened beside the
+       * conversation so it stays in view while the chat scrolls on. The page
+       * itself is a thread attachment on the server; this only points at it.
+       */
+      id: `htmlRender:${string}`;
+      kind: "htmlRender";
+      attachmentId: string;
+      title: string;
+    }
   | { id: "plan"; kind: "plan" }
   // The orchestrator's status board: every conversation it can see, and what
   // each one is waiting on.
@@ -82,7 +94,7 @@ interface RightPanelStoreState {
   byThreadKey: Record<string, ThreadRightPanelState>;
   open: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "messageThread">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "messageThread" | "htmlRender">,
   ) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
   openFile: (
@@ -93,6 +105,7 @@ interface RightPanelStoreState {
   ) => void;
   openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
   openMessageThread: (ref: ScopedThreadRef, anchorMessageId: string) => void;
+  openHtmlRender: (ref: ScopedThreadRef, page: { attachmentId: string; title: string }) => void;
   splitTerminal: (
     ref: ScopedThreadRef,
     surfaceId: string,
@@ -113,7 +126,7 @@ interface RightPanelStoreState {
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "messageThread">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "messageThread" | "htmlRender">,
   ) => void;
   removeThread: (ref: ScopedThreadRef) => void;
 }
@@ -125,7 +138,7 @@ const EMPTY_THREAD_STATE: ThreadRightPanelState = {
 };
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "messageThread">,
+  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "messageThread" | "htmlRender">,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -165,6 +178,13 @@ const messageThreadSurface = (anchorMessageId: string): RightPanelSurface => ({
   id: `messageThread:${anchorMessageId}`,
   kind: "messageThread",
   anchorMessageId,
+});
+
+const htmlRenderSurface = (page: { attachmentId: string; title: string }): RightPanelSurface => ({
+  id: `htmlRender:${page.attachmentId}`,
+  kind: "htmlRender",
+  attachmentId: page.attachmentId,
+  title: page.title,
 });
 
 const terminalSurface = (terminalId: string): RightPanelSurface => ({
@@ -318,6 +338,12 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
             upsertSurface(current, messageThreadSurface(anchorMessageId)),
+          ),
+        })),
+      openHtmlRender: (ref, page) =>
+        set((state) => ({
+          byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) =>
+            upsertSurface(current, htmlRenderSurface(page)),
           ),
         })),
       openFile: (ref, relativePath, line, workspaceRoot) =>

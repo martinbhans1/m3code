@@ -288,6 +288,25 @@ describe("rightPanelStore", () => {
     });
   });
 
+  it("opens an agent's page as its own tab and reuses it when opened again", () => {
+    const store = useRightPanelStore.getState();
+    store.openHtmlRender(refA, { attachmentId: "page-1", title: "Mockup" });
+    store.openHtmlRender(refA, { attachmentId: "page-2", title: "Chart" });
+    store.openHtmlRender(refA, { attachmentId: "page-1", title: "Mockup" });
+
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.map((surface) => surface.id)).toEqual([
+      "htmlRender:page-1",
+      "htmlRender:page-2",
+    ]);
+    expect(selectActiveRightPanelSurface(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      id: "htmlRender:page-1",
+      kind: "htmlRender",
+      attachmentId: "page-1",
+      title: "Mockup",
+    });
+  });
+
   it("tracks one surface per terminal session", () => {
     useRightPanelStore.getState().openTerminal(refA, "term-1");
     useRightPanelStore.getState().openTerminal(refA, "term-2");

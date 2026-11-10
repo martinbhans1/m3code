@@ -71,6 +71,7 @@ import { Button } from "../ui/button";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./ExpandedImagePreview";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { HtmlRenderCard } from "./HtmlRenderFrame";
+import { useRightPanelStore } from "../../rightPanelStore";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
 import { ChangedFilesTree } from "./ChangedFilesTree";
 import { MessageCopyButton } from "./MessageCopyButton";
@@ -1351,11 +1352,17 @@ function ProposedPlanTimelineRow({
 /** A page the agent showed with `html_render`, inline where it was shown. */
 function HtmlRenderTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "html-render" }> }) {
   const ctx = use(TimelineRowCtx);
+  const { threadRef } = ctx;
+  const { reference } = row.htmlRender;
+  const openInPanel = useCallback(() => {
+    if (threadRef) useRightPanelStore.getState().openHtmlRender(threadRef, reference);
+  }, [threadRef, reference]);
   return (
     <div className="min-w-0 px-1 py-0.5">
       <HtmlRenderCard
         environmentId={ctx.activeThreadEnvironmentId}
-        reference={row.htmlRender.reference}
+        reference={reference}
+        onOpenInPanel={threadRef ? openInPanel : undefined}
       />
     </div>
   );

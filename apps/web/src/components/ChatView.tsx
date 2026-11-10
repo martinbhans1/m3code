@@ -129,6 +129,7 @@ import { BranchToolbar } from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
 import { OrchestratorBoardPanel } from "./OrchestratorBoardPanel";
+import { HtmlRenderFrame } from "./chat/HtmlRenderFrame";
 import { MessageThreadPanel, type MessageThreadPendingQuote } from "./chat/MessageThreadPanel";
 import type { MessagesTimelineSharedProps } from "./chat/MessagesTimeline";
 import {
@@ -5889,6 +5890,13 @@ function ChatViewContent(props: ChatViewProps) {
             onIsAtEndChange={NOOP_IS_AT_END_CHANGE}
           />
         }
+      />
+    ) : activeRightPanelSurface?.kind === "htmlRender" ? (
+      <HtmlRenderFrame
+        key={activeRightPanelSurface.attachmentId}
+        environmentId={environmentId}
+        reference={activeRightPanelSurface}
+        fill
       />
     ) : activeRightPanelSurface?.kind === "board" ? (
       <OrchestratorBoardPanel

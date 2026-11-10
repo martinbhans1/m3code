@@ -6,7 +6,7 @@ import {
   type HtmlRenderReference,
   type HtmlRenderTheme,
 } from "@t3tools/shared/htmlRender";
-import { Maximize2Icon } from "lucide-react";
+import { Maximize2Icon, PanelRightIcon } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 
 import { useAssetUrl } from "../../assets/assetUrls";
@@ -120,13 +120,19 @@ export function HtmlRenderFrame({
   );
 }
 
-/** The inline page in a reply, with a button that opens it full screen. */
+/**
+ * The inline page in a reply, with buttons that open it full screen or beside
+ * the conversation.
+ */
 export const HtmlRenderCard = memo(function HtmlRenderCard({
   environmentId,
   reference,
+  onOpenInPanel,
 }: {
   environmentId: EnvironmentId;
   reference: HtmlRenderReference;
+  /** Absent where there is no side panel to open the page in. */
+  onOpenInPanel?: (() => void) | undefined;
 }) {
   const [expanded, setExpanded] = useState(false);
   return (
@@ -135,15 +141,30 @@ export const HtmlRenderCard = memo(function HtmlRenderCard({
         <span className="truncate text-[11px] font-medium text-muted-foreground">
           {reference.title}
         </span>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          aria-label="Open full screen"
-          onClick={() => setExpanded(true)}
-        >
-          <Maximize2Icon className="size-3" />
-        </Button>
+        <div className="flex shrink-0 items-center gap-0.5">
+          {onOpenInPanel ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Open in side panel"
+              title="Open in side panel"
+              onClick={onOpenInPanel}
+            >
+              <PanelRightIcon className="size-3" />
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Open full screen"
+            title="Open full screen"
+            onClick={() => setExpanded(true)}
+          >
+            <Maximize2Icon className="size-3" />
+          </Button>
+        </div>
       </div>
       <HtmlRenderFrame environmentId={environmentId} reference={reference} />
       <Dialog open={expanded} onOpenChange={setExpanded}>
