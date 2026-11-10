@@ -1,8 +1,10 @@
 import type {
   EnvironmentScopedProjectShell,
   EnvironmentScopedThreadShell,
+  ScopedThreadSearchResult,
   VcsStatusState,
 } from "@t3tools/client-runtime";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { SymbolView } from "expo-symbols";
 import { useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, View } from "react-native";
@@ -17,6 +19,7 @@ import type { SavedRemoteConnection } from "../../lib/connection";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import { relativeTime } from "../../lib/time";
 import type { RemoteCatalogState } from "../../state/use-remote-catalog";
+import { useThreadMessageSearch } from "../../state/use-thread-message-search";
 import { useVcsStatus } from "../../state/use-vcs-status";
 import { threadStatusTone } from "../threads/threadPresentation";
 
@@ -32,6 +35,7 @@ interface HomeScreenProps {
   readonly orchestratorProjectKeys: ReadonlySet<string>;
   readonly onAddConnection: () => void;
   readonly onSelectThread: (thread: EnvironmentScopedThreadShell) => void;
+  readonly onSelectSearchResult: (result: ScopedThreadSearchResult) => void;
 }
 
 type ProjectGroupKind = "orchestrator" | "pinned" | "project";
@@ -312,6 +316,62 @@ function ThreadRow(props: {
   );
 }
 
+/* ─── Message search hit ─────────────────────────────────────────────── */
+
+function MessageHitRow(props: {
+  readonly result: ScopedThreadSearchResult;
+  readonly onPress: () => void;
+  readonly isLast: boolean;
+}) {
+  const separatorColor = useThemeColor("--color-separator");
+  const { result } = props;
+  const context = [result.projectTitle, ...(result.archivedAt ? ["Archived"] : [])].join(" · ");
+  const snippet = result.snippet
+    ? `${result.matchedRole === "user" ? "You: " : ""}${result.snippet}`
+    : null;
+
+  return (
+    <Pressable onPress={props.onPress} style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}>
+      <View
+        style={{
+          paddingHorizontal: 16,
+          paddingVertical: 10,
+          gap: 3,
+          borderBottomWidth: props.isLast ? 0 : 1,
+          borderBottomColor: separatorColor,
+        }}
+      >
+        <View className="flex-row items-center justify-between gap-2">
+          <Text
+            className="flex-1 text-[15px] font-t3-bold leading-[20px] text-foreground"
+            numberOfLines={1}
+          >
+            {result.title}
+          </Text>
+          <Text
+            className="text-[12px] text-foreground-tertiary"
+            style={{ fontVariant: ["tabular-nums"] }}
+          >
+            {relativeTime(result.updatedAt)}
+          </Text>
+        </View>
+        <Text className="text-[11px] text-foreground-tertiary" numberOfLines={1}>
+          {context}
+        </Text>
+        {snippet ? (
+          <Text className="text-[13px] leading-[18px] text-foreground-muted" numberOfLines={3}>
+            {snippet}
+          </Text>
+        ) : null}
+      </View>
+    </Pressable>
+  );
+}
+
+function threadKey(environmentId: EnvironmentId, threadId: string): string {
+  return `${environmentId}:${threadId}`;
+}
+
 /* ─── Main screen ────────────────────────────────────────────────────── */
 
 export function HomeScreen(props: HomeScreenProps) {
@@ -346,6 +406,25 @@ export function HomeScreen(props: HomeScreenProps) {
       return projectTitleByKey.get(key)?.toLowerCase().includes(q) ?? false;
     });
   }, [props.threads, props.searchQuery, projectTitleByKey]);
+
+  /* Search inside conversations on the server, alongside the instant title filter */
+  const environmentIdsKey = useMemo(
+    () => [...new Set(props.threads.map((thread) => thread.environmentId))].toSorted().join("|"),
+    [props.threads],
+  );
+  const environmentIds = useMemo(
+    () => (environmentIdsKey ? (environmentIdsKey.split("|") as EnvironmentId[]) : []),
+    [environmentIdsKey],
+  );
+  const messageSearch = useThreadMessageSearch({ query: props.searchQuery, environmentIds });
+  const messageHits = useMemo(() => {
+    if (!messageSearch.active) return [];
+    // A thread already listed above because its title matched isn't repeated here.
+    const shown = new Set(filteredThreads.map((t) => threadKey(t.environmentId, t.id)));
+    return messageSearch.results.filter(
+      (result) => !shown.has(threadKey(result.environmentId, result.threadId)),
+    );
+  }, [messageSearch.active, messageSearch.results, filteredThreads]);
 
   /* Group filtered threads by project */
   const projectGroups = useMemo<ReadonlyArray<ProjectGroup>>(() => {
@@ -404,7 +483,7 @@ export function HomeScreen(props: HomeScreenProps) {
 
   /* Empty states */
   const hasAnyThreads = props.threads.length > 0;
-  const hasResults = filteredThreads.length > 0;
+  const hasResults = filteredThreads.length > 0 || messageHits.length > 0;
   const signedOutLabels = props.catalogState.signedOutEnvironmentLabels;
   const emptyState = deriveEmptyState({
     catalogState: props.catalogState,
@@ -447,8 +526,15 @@ export function HomeScreen(props: HomeScreenProps) {
             </View>
           ) : null}
         </View>
-      ) : !hasResults ? (
-        <EmptyState title="No results" detail={`No threads matching "${props.searchQuery}".`} />
+      ) : !hasResults && !messageSearch.pending ? (
+        <EmptyState
+          title="No results"
+          detail={
+            messageSearch.failed
+              ? `No thread titles match "${props.searchQuery.trim()}", and searching inside conversations failed. Check the connection and try again.`
+              : `Nothing matches "${props.searchQuery.trim()}" in thread titles or messages.`
+          }
+        />
       ) : (
         projectGroups.map((group) => {
           const connection = props.savedConnectionsById[group.project.environmentId];
@@ -486,6 +572,42 @@ export function HomeScreen(props: HomeScreenProps) {
           );
         })
       )}
+      {messageSearch.active && hasAnyThreads && (hasResults || messageSearch.pending) ? (
+        <View>
+          <View className="flex-row items-center gap-2.5 px-1 pb-2">
+            <Text
+              className="flex-1 text-[12px] font-t3-medium uppercase text-foreground-muted"
+              style={{ letterSpacing: 0.5 }}
+            >
+              Found in messages
+            </Text>
+            {messageSearch.pending ? <ActivityIndicator size="small" color={accentColor} /> : null}
+          </View>
+          {messageHits.length > 0 ? (
+            <View
+              className="overflow-hidden rounded-[20px] bg-card"
+              style={{ borderCurve: "continuous" }}
+            >
+              {messageHits.map((result, i) => (
+                <MessageHitRow
+                  key={threadKey(result.environmentId, result.threadId)}
+                  result={result}
+                  onPress={() => props.onSelectSearchResult(result)}
+                  isLast={i === messageHits.length - 1}
+                />
+              ))}
+            </View>
+          ) : (
+            <Text className="px-1 text-[13px] text-foreground-tertiary">
+              {messageSearch.pending
+                ? "Searching inside conversations…"
+                : messageSearch.failed
+                  ? "Couldn't search inside conversations."
+                  : "No other conversations mention this."}
+            </Text>
+          )}
+        </View>
+      ) : null}
     </ScrollView>
   );
 }

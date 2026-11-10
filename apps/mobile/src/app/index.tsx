@@ -47,7 +47,7 @@ export default function HomeRouteScreen() {
           headerTintColor: iconColor,
           headerTitle: "",
           headerSearchBarOptions: {
-            placeholder: "Search threads",
+            placeholder: "Search threads and messages",
             onChangeText: (event) => {
               setSearchQuery(event.nativeEvent.text);
             },
@@ -123,6 +123,9 @@ export default function HomeRouteScreen() {
         onAddConnection={() => router.push("/connections/new")}
         onSelectThread={(thread) => {
           router.push(buildThreadRoutePath(thread));
+        }}
+        onSelectSearchResult={(result) => {
+          router.push(buildThreadRoutePath(result));
         }}
       />
     </>

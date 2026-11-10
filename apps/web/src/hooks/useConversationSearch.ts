@@ -1,81 +1,16 @@
-import type {
-  EnvironmentId,
-  OrchestrationSemanticSearchStatus,
-  OrchestrationSearchThreadsResult,
-  OrchestrationThreadSearchResult,
-} from "@t3tools/contracts";
+import {
+  searchThreadsAcrossEnvironments,
+  type ThreadSearchResponse,
+} from "@t3tools/client-runtime";
+import type { EnvironmentId } from "@t3tools/contracts";
 import { useEffect, useState } from "react";
 import { readEnvironmentApi } from "../environmentApi";
 
-interface ScopedThreadSearchResult extends OrchestrationThreadSearchResult {
-  readonly environmentId: EnvironmentId;
-}
-
-interface ThreadSearchResponseState {
+/** A result set plus the request it answers, so a stale answer can be told apart. */
+interface ThreadSearchResponseState extends ThreadSearchResponse {
   readonly query: string;
   readonly updatedSince: string | null;
   readonly titlesOnly: boolean;
-  readonly results: ReadonlyArray<ScopedThreadSearchResult>;
-  readonly semanticStatus: OrchestrationSemanticSearchStatus;
-}
-
-async function searchThreadsAcrossEnvironments(input: {
-  readonly environmentIds: ReadonlyArray<EnvironmentId>;
-  readonly query: string;
-  readonly updatedSince: string | null;
-  readonly titlesOnly: boolean;
-}): Promise<ThreadSearchResponseState | null> {
-  const settled = await Promise.allSettled(
-    input.environmentIds.map(async (environmentId) => {
-      const api = readEnvironmentApi(environmentId);
-      if (!api) throw new Error(`Environment ${environmentId} is unavailable.`);
-      const response = await api.orchestration.searchThreads({
-        query: input.query,
-        limit: 30,
-        includeArchived: true,
-        includeSemantic: !input.titlesOnly,
-        titlesOnly: input.titlesOnly,
-        ...(input.updatedSince ? { updatedSince: input.updatedSince } : {}),
-      });
-      return { environmentId, response };
-    }),
-  );
-  const fulfilled = settled.filter(
-    (
-      entry,
-    ): entry is PromiseFulfilledResult<{
-      environmentId: EnvironmentId;
-      response: OrchestrationSearchThreadsResult;
-    }> => entry.status === "fulfilled",
-  );
-  if (fulfilled.length === 0) return null;
-
-  const semanticStatus = fulfilled.some((entry) => entry.value.response.semanticStatus === "ready")
-    ? "ready"
-    : fulfilled.some((entry) => entry.value.response.semanticStatus === "indexing")
-      ? "indexing"
-      : "unavailable";
-  const results = fulfilled
-    .flatMap((entry) =>
-      entry.value.response.results.map((result) => ({
-        ...result,
-        environmentId: entry.value.environmentId,
-      })),
-    )
-    // The server hands back one score per relevance tier, so this reads as
-    // "loose matches last, everything else newest first" — the same order each
-    // environment decided on its own, preserved across the merge.
-    .toSorted(
-      (left, right) => right.score - left.score || right.updatedAt.localeCompare(left.updatedAt),
-    )
-    .slice(0, 30);
-  return {
-    query: input.query,
-    updatedSince: input.updatedSince,
-    titlesOnly: input.titlesOnly,
-    results,
-    semanticStatus,
-  };
 }
 
 interface SearchInput {
@@ -111,9 +46,14 @@ export function useConversationSearch(input: SearchInput) {
           updatedSince,
           titlesOnly,
           environmentIds,
+          resolveClient: readEnvironmentApi,
         }).then(
           (response) => {
-            if (!cancelled) setSettled({ key, response });
+            if (!cancelled)
+              setSettled({
+                key,
+                response: response && { ...response, query, updatedSince, titlesOnly },
+              });
           },
           () => {
             if (!cancelled) setSettled({ key, response: null });

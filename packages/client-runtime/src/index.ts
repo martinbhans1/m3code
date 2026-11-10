@@ -31,3 +31,4 @@ export * from "./remote.ts";
 export * from "./managedRelay.ts";
 export * from "./managedRelayState.ts";
 export * from "./deviceAuthorization.ts";
+export * from "./threadSearch.ts";
