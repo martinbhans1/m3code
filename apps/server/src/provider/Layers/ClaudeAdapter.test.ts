@@ -680,6 +680,7 @@ describe("ClaudeAdapterLive", () => {
 
   for (const { model, defaultEffort } of [
     { model: "claude-opus-5-5", defaultEffort: "medium" },
+    { model: "claude-fable-5-2", defaultEffort: "medium" },
     { model: "claude-sonnet-5-5", defaultEffort: "high" },
     { model: "claude-haiku-5-5", defaultEffort: "medium" },
   ]) {

@@ -62,6 +62,8 @@ const MINIMUM_CLAUDE_SONNET_5_VERSION = "2.1.220";
 const MINIMUM_CLAUDE_SONNET_5_5_VERSION = "2.1.284";
 // Claude Code 2.1.293 introduces Haiku 5.5.
 const MINIMUM_CLAUDE_HAIKU_5_5_VERSION = "2.1.293";
+// Claude Code 2.1.321 introduces Fable 5.2.
+const MINIMUM_CLAUDE_FABLE_5_2_VERSION = "2.1.321";
 const MINIMUM_CLAUDE_FABLE_5_VERSION = "2.1.169";
 const MINIMUM_CLAUDE_OPUS_4_8_VERSION = "2.1.154";
 const MINIMUM_CLAUDE_OPUS_4_7_VERSION = "2.1.111";
@@ -84,6 +86,33 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
     slug: "claude-opus-5-5",
     name: "Claude Opus 5.5",
+    isCustom: false,
+    capabilities: createModelCapabilities({
+      optionDescriptors: [
+        buildSelectOptionDescriptor({
+          id: "effort",
+          label: "Reasoning",
+          options: [
+            { value: "low", label: "Low" },
+            { value: "medium", label: "Medium", isDefault: true },
+            { value: "high", label: "High" },
+            { value: "xhigh", label: "Extra High" },
+            { value: "max", label: "Max" },
+            { value: "ultracode", label: "Ultracode" },
+            { value: "ultrathink", label: "Ultrathink" },
+          ],
+          promptInjectedValues: ["ultrathink"],
+        }),
+        buildBooleanOptionDescriptor({
+          id: "fastMode",
+          label: "Fast Mode",
+        }),
+      ],
+    }),
+  },
+  {
+    slug: "claude-fable-5-2",
+    name: "Claude Fable 5.2",
     isCustom: false,
     capabilities: createModelCapabilities({
       optionDescriptors: [
@@ -393,6 +422,10 @@ function supportsClaudeHaiku55(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_HAIKU_5_5_VERSION) >= 0 : false;
 }
 
+function supportsClaudeFable52(version: string | null | undefined): boolean {
+  return version ? compareSemverVersions(version, MINIMUM_CLAUDE_FABLE_5_2_VERSION) >= 0 : false;
+}
+
 function supportsClaudeFable5(version: string | null | undefined): boolean {
   return version ? compareSemverVersions(version, MINIMUM_CLAUDE_FABLE_5_VERSION) >= 0 : false;
 }
@@ -409,6 +442,9 @@ function getBuiltInClaudeModelsForVersion(
   version: string | null | undefined,
 ): ReadonlyArray<ServerProviderModel> {
   return BUILT_IN_MODELS.filter((model) => {
+    if (model.slug === "claude-fable-5-2") {
+      return supportsClaudeFable52(version);
+    }
     if (model.slug === "claude-haiku-5-5") {
       return supportsClaudeHaiku55(version);
     }
@@ -510,6 +546,7 @@ export function normalizeClaudeCliEffort(
   }
   if (
     effort === "xhigh" &&
+    model !== "claude-fable-5-2" &&
     model !== "claude-fable-5" &&
     model !== "claude-opus-4-8" &&
     model !== "claude-opus-5" &&
@@ -1104,7 +1141,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   );
   const versionUpgradeMessage = supportsClaudeSonnet55(parsedVersion)
     ? supportsClaudeHaiku55(parsedVersion)
-      ? undefined
+      ? supportsClaudeFable52(parsedVersion)
+        ? undefined
+        : `Claude Code ${parsedVersion ?? "(unknown version)"} is too old for Claude Fable 5.2. Upgrade to v${MINIMUM_CLAUDE_FABLE_5_2_VERSION} or newer to access it.`
       : `Claude Code ${parsedVersion ?? "(unknown version)"} is too old for Claude Haiku 5.5. Upgrade to v${MINIMUM_CLAUDE_HAIKU_5_5_VERSION} or newer to access it.`
     : supportsClaudeOpus55(parsedVersion)
       ? formatClaudeSonnet55UpgradeMessage(parsedVersion)

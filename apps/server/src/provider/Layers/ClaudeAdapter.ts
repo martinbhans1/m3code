@@ -523,6 +523,7 @@ function selectedClaudeContextWindow(
   modelSelection: ModelSelection | undefined,
 ): number | undefined {
   switch (modelSelection?.model) {
+    case "claude-fable-5-2":
     case "claude-opus-5-5":
     case "claude-sonnet-5-5":
     case "claude-haiku-5-5":

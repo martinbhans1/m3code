@@ -88,6 +88,14 @@ describe("normalizeModelSlug", () => {
     expect(normalizeModelSlug("opus-4.8", claude)).toBe("claude-opus-4-8");
   });
 
+  it("resolves Fable 5.2 aliases without rewriting pinned older Fables", () => {
+    const claude = ProviderDriverKind.make("claudeAgent");
+    for (const alias of ["fable", "fable-5.2", "fable-5-2", "claude-fable-5.2"]) {
+      expect(normalizeModelSlug(alias, claude)).toBe("claude-fable-5-2");
+    }
+    expect(normalizeModelSlug("claude-fable-5", claude)).toBe("claude-fable-5");
+  });
+
   it("maps known aliases to canonical slugs", () => {
     const claude = ProviderDriverKind.make("claudeAgent");
     expect(normalizeModelSlug("gpt-5-codex")).toBe(DEFAULT_MODEL);
