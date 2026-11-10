@@ -3,6 +3,7 @@ import "../../index.css";
 import { EnvironmentId } from "@t3tools/contracts";
 import { injectHtmlRenderBootstrap } from "@t3tools/shared/htmlRender";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser";
 import { render } from "vitest-browser-react";
 
 const { pageUrl } = vi.hoisted(() => ({ pageUrl: { current: "" } }));
@@ -68,7 +69,7 @@ describe("HtmlRenderCard", () => {
     );
 
     try {
-      await screen.getByRole("button", { name: "Open in side panel" }).click();
+      await page.getByRole("button", { name: "Open in side panel" }).click();
       expect(onOpenInPanel).toHaveBeenCalledTimes(1);
 
       await screen.rerender(<HtmlRenderCard environmentId={environmentId} reference={reference} />);
