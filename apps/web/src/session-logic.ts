@@ -619,7 +619,9 @@ export function deriveHtmlRenders(
     const reference = readHtmlRenderFromToolData(payload.data);
     if (!reference) continue;
     renders.push({
-      id: activity.id,
+      // Not the bare activity id: the same activity is also a work-log entry,
+      // and a page sharing its id is folded away with the turn's tool calls.
+      id: `html-render:${activity.id}`,
       createdAt: activity.createdAt,
       turnId: activity.turnId,
       reference,

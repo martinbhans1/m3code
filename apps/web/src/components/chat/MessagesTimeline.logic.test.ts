@@ -6,6 +6,11 @@ import {
   normalizeCompactToolLabel,
   resolveAssistantMessageCopyState,
 } from "./MessagesTimeline.logic";
+import {
+  deriveHtmlRenders,
+  deriveTimelineEntries,
+  deriveWorkLogEntries,
+} from "../../session-logic";
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {
@@ -527,6 +532,63 @@ describe("deriveMessagesTimelineRows", () => {
       "assistant-mid-entry",
       "assistant-final-entry",
     ]);
+  });
+
+  it("keeps an inline page visible when its turn's tool calls fold away", () => {
+    const activities = [
+      {
+        id: "render-done" as never,
+        kind: "tool.completed",
+        tone: "tool" as const,
+        summary: "html_render",
+        turnId: "turn-1" as never,
+        createdAt: "2026-01-01T00:00:04Z",
+        payload: {
+          itemType: "mcp_tool_call",
+          data: {
+            toolName: "mcp__t3-code__html_render",
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    htmlRender: { attachmentId: "thread-1-page", title: "Mockup" },
+                  }),
+                },
+              ],
+            },
+          },
+        },
+      },
+    ];
+    const timelineEntries = deriveTimelineEntries(
+      [
+        {
+          id: "assistant-final" as never,
+          role: "assistant" as const,
+          text: "Here it is.",
+          turnId: "turn-1" as never,
+          createdAt: "2026-01-01T00:00:08Z",
+          completedAt: "2026-01-01T00:00:09Z",
+          streaming: false,
+        },
+      ],
+      [],
+      deriveWorkLogEntries(activities as never),
+      [],
+      deriveHtmlRenders(activities as never),
+    );
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.kind)).toEqual(["turn-fold", "html-render", "message"]);
+    expect(new Set(rows.map((row) => row.id)).size).toBe(rows.length);
   });
 
   it("does not fold a settled turn that produced no work entries", () => {

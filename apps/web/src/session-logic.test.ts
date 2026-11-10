@@ -1898,7 +1898,7 @@ describe("deriveHtmlRenders", () => {
     const renders = deriveHtmlRenders(activities);
     expect(renders).toEqual([
       {
-        id: "render-done",
+        id: "html-render:render-done",
         createdAt: "2026-02-23T00:00:03.000Z",
         turnId: "turn-1",
         reference: { attachmentId: "thread-1-page", title: "Revenue", height: 500 },
