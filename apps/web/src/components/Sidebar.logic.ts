@@ -35,7 +35,7 @@ export interface ThreadStatusPill {
     | "Awaiting Input"
     | "Plan Ready"
     | "Stalled"
-    | "Needs You";
+    | "Waiting on You";
   colorClass: string;
   dotClass: string;
   pulse: boolean;
@@ -48,7 +48,7 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   "Awaiting Input": 6,
   // Outranks Working: in a collapsed project, one thread stuck on the user
   // matters more than another still churning.
-  "Needs You": 5,
+  "Waiting on You": 5,
   Working: 4,
   Connecting: 4,
   Stalled: 3,
@@ -177,7 +177,7 @@ export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
 const UNREAD_THREAD_STATUS_LABELS: ReadonlySet<ThreadStatusPill["label"]> = new Set([
   "Pending Approval",
   "Awaiting Input",
-  "Needs You",
+  "Waiting on You",
   "Plan Ready",
   "Completed",
 ]);
@@ -460,9 +460,11 @@ export function resolveThreadStatusPill(input: {
   // or an explicit dismiss takes it away.
   if (thread.attention?.state === "needs_you") {
     return {
-      label: "Needs You",
-      colorClass: "text-rose-600 dark:text-rose-300/90",
-      dotClass: "bg-rose-500 dark:bg-rose-300/90",
+      label: "Waiting on You",
+      // Same purple as a question the agent is asking: both mean "your move".
+      // The tooltip tells them apart.
+      colorClass: "text-indigo-600 dark:text-indigo-300/90",
+      dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
       pulse: false,
       detail: thread.attention.reason ?? undefined,
     };

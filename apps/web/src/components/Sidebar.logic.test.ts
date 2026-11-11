@@ -546,7 +546,7 @@ describe("resolveThreadStatusPill", () => {
         session: { ...baseThread.session, status: "ready", orchestrationStatus: "ready" },
       },
     });
-    expect(pill?.label).toBe("Needs You");
+    expect(pill?.label).toBe("Waiting on You");
     expect(pill?.detail).toBe("Run the migration on staging");
   });
 

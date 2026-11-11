@@ -97,7 +97,7 @@ export function resolveThreadAttentionSignal(
         headline: "Waiting for your answer",
         signature: `input:${turnKey}`,
       };
-    case "Needs You":
+    case "Waiting on You":
       return {
         kind: "input-needed",
         headline: pill.detail ? `Needs you: ${pill.detail}` : "Needs you",

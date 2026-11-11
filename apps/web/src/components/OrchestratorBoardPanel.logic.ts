@@ -48,7 +48,7 @@ export const GROUP_ORDER: ReadonlyArray<{
 const GROUP_BY_PILL_LABEL: Record<ThreadStatusPill["label"], BoardGroupId> = {
   "Pending Approval": "needsYou",
   "Awaiting Input": "needsYou",
-  "Needs You": "needsYou",
+  "Waiting on You": "needsYou",
   "Plan Ready": "needsYou",
   Stalled: "stalled",
   Working: "working",
