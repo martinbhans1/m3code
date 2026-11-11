@@ -12,6 +12,7 @@ import { ProjectSetupScriptRunnerLive } from "./ProjectSetupScriptRunner.ts";
 const makeProject = (scripts: OrchestrationProject["scripts"]): OrchestrationProject => ({
   id: ProjectId.make("project-1"),
   title: "Project",
+  threadTags: [],
   workspaceRoot: "/repo/project",
   defaultModelSelection: null,
   scripts,

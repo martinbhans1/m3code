@@ -247,6 +247,8 @@ function makeThreadShellSnapshot(params: {
         pinnedAt: null,
         doneAt: null,
         attention: null,
+        goal: null,
+        tags: [],
         session: params.sessionStatus
           ? {
               threadId: params.threadId,

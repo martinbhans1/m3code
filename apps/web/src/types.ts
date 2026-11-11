@@ -7,6 +7,7 @@ import type {
   OrchestrationSessionStatus,
   OrchestrationThreadActivity,
   ProjectScript as ContractProjectScript,
+  ProjectThreadTag,
   ThreadId,
   ProjectId,
   TurnId,
@@ -101,6 +102,8 @@ export interface Project {
   createdAt?: string | undefined;
   updatedAt?: string | undefined;
   scripts: ProjectScript[];
+  /** The project's controlled tag vocabulary; threads only carry names from it. */
+  threadTags: readonly ProjectThreadTag[];
 }
 
 export interface Thread {
@@ -125,6 +128,9 @@ export interface Thread {
   worktreePath: string | null;
   turnDiffSummaries: TurnDiffSummary[];
   activities: OrchestrationThreadActivity[];
+  /** What finished looks like for this conversation; see OrchestrationThread.goal. */
+  goal: string | null;
+  tags: readonly string[];
 }
 
 export interface ThreadShell {
@@ -142,6 +148,8 @@ export interface ThreadShell {
   updatedAt?: string | undefined;
   branch: string | null;
   worktreePath: string | null;
+  goal: string | null;
+  tags: readonly string[];
 }
 
 export interface ThreadTurnState {
@@ -174,6 +182,8 @@ export interface SidebarThreadSummary {
   hasActionableProposedPlan: boolean;
   /** Set when this thread's work was deliberately continued in another one. */
   handoffThreadId: ThreadId | null;
+  /** Names from the project's tag vocabulary, for the sidebar filter. */
+  tags: readonly string[];
 }
 
 export interface ThreadSession {

@@ -264,6 +264,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           title: "Project 1",
           workspaceRoot: "/tmp/project-1",
           repositoryIdentity: null,
+          threadTags: [],
           defaultModelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
@@ -313,6 +314,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pinnedAt: null,
           doneAt: null,
           attention: null,
+          goal: null,
+          tags: [],
           deletedAt: null,
           messages: [
             {
@@ -381,6 +384,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           title: "Project 1",
           workspaceRoot: "/tmp/project-1",
           repositoryIdentity: null,
+          threadTags: [],
           defaultModelSelection: {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5-codex",
@@ -429,6 +433,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           pinnedAt: null,
           doneAt: null,
           attention: null,
+          goal: null,
+          tags: [],
           session: {
             threadId: ThreadId.make("thread-1"),
             status: "running",

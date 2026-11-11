@@ -40,6 +40,8 @@ export const ProjectionThread = Schema.Struct({
   pinnedAt: Schema.NullOr(IsoDateTime),
   doneAt: Schema.NullOr(IsoDateTime),
   attention: Schema.NullOr(ThreadAttention),
+  goal: Schema.NullOr(Schema.String),
+  tags: Schema.Array(Schema.String),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   pendingApprovalCount: NonNegativeInt,
   pendingUserInputCount: NonNegativeInt,

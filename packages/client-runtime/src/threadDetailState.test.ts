@@ -55,6 +55,8 @@ const BASE_THREAD: OrchestrationThread = {
   pinnedAt: null,
   doneAt: null,
   attention: null,
+  goal: null,
+  tags: [],
   deletedAt: null,
   messages: [],
   proposedPlans: [],

@@ -57,6 +57,7 @@ import Migration0041 from "./Migrations/041_ProviderUsageReadings.ts";
 import Migration0042 from "./Migrations/042_UsageReportIndexes.ts";
 import Migration0043 from "./Migrations/043_DurableDeviceAuthorization.ts";
 import Migration0044 from "./Migrations/044_ProjectionThreadsAttention.ts";
+import Migration0045 from "./Migrations/045_ThreadGoalAndTags.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -113,6 +114,7 @@ export const migrationEntries = [
   [42, "UsageReportIndexes", Migration0042],
   [43, "DurableDeviceAuthorization", Migration0043],
   [44, "ProjectionThreadsAttention", Migration0044],
+  [45, "ThreadGoalAndTags", Migration0045],
 ] as const;
 
 export const makeMigrationLoader = (throughId?: number) =>

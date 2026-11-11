@@ -385,6 +385,8 @@ const makeThread = (input?: {
     : null,
   branch: null,
   worktreePath: null,
+  goal: null,
+  tags: [],
   turnDiffSummaries: [],
   activities: [],
 });
@@ -406,6 +408,7 @@ function setStoreThreads(threads: ReadonlyArray<ReturnType<typeof makeThread>>) 
         createdAt: "2026-03-29T00:00:00.000Z",
         updatedAt: "2026-03-29T00:00:00.000Z",
         scripts: [],
+        threadTags: [],
       },
     },
     threadIds: threads.map((thread) => thread.id),
@@ -430,6 +433,8 @@ function setStoreThreads(threads: ReadonlyArray<ReturnType<typeof makeThread>>) 
           updatedAt: thread.updatedAt,
           branch: thread.branch,
           worktreePath: thread.worktreePath,
+          goal: thread.goal,
+          tags: thread.tags,
         },
       ]),
     ),
@@ -626,6 +631,8 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       latestTurn: previousLatestTurn,
       branch: null,
       worktreePath: null,
+      goal: null,
+      tags: [],
       turnDiffSummaries: [],
       activities: [],
     });
@@ -663,6 +670,8 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       latestTurn: previousLatestTurn,
       branch: null,
       worktreePath: null,
+      goal: null,
+      tags: [],
       turnDiffSummaries: [],
       activities: [],
     });
@@ -709,6 +718,8 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       latestTurn: previousLatestTurn,
       branch: null,
       worktreePath: null,
+      goal: null,
+      tags: [],
       turnDiffSummaries: [],
       activities: [],
     });
@@ -752,6 +763,8 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       latestTurn: previousLatestTurn,
       branch: null,
       worktreePath: null,
+      goal: null,
+      tags: [],
       turnDiffSummaries: [],
       activities: [],
     });
@@ -795,6 +808,8 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       latestTurn: previousLatestTurn,
       branch: null,
       worktreePath: null,
+      goal: null,
+      tags: [],
       turnDiffSummaries: [],
       activities: [],
     });
@@ -845,6 +860,8 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
       latestTurn: previousLatestTurn,
       branch: null,
       worktreePath: null,
+      goal: null,
+      tags: [],
       turnDiffSummaries: [],
       activities: [],
     });

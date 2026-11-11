@@ -31,6 +31,10 @@
       "types": "./src/followups.ts",
       "import": "./src/followups.ts"
     },
+    "./threadTags": {
+      "types": "./src/threadTags.ts",
+      "import": "./src/threadTags.ts"
+    },
     "./desktopIdentity": {
       "types": "./src/desktopIdentity.ts",
       "import": "./src/desktopIdentity.ts"

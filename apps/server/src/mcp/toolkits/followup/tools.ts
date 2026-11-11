@@ -248,10 +248,96 @@ export const SetAttentionTool = Tool.make("set_attention", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+export const SetGoalInput = Schema.Struct({
+  goal: Schema.String.annotate({
+    description:
+      "What finished looks like for this conversation, in one or two plain sentences, as the user would put it: 'Ticket list loads under a second on staging and the slow query is gone.' If the user stated a goal, use their words as closely as you can. If they did not, write your best reading of what they are after.",
+  }),
+});
+
+// The goal is the user's, not the agent's. The agent gets exactly one write —
+// the first one, on a conversation that has none — so the user sees from the
+// start how their opening message was understood. Every change after that is
+// the user's own edit; an agent that thinks the goal has drifted says so in
+// its reply instead.
+export const SetGoalTool = Tool.make("set_goal", {
+  description:
+    "Record the goal of this conversation: what finished looks like. The user sees it above the conversation and it is sent back to you with every message, so it is how both of you know where the finish line is.\n\nCall it once, early in your first turn, when this conversation has no goal yet. Take the goal from what the user said; do not wait for a sentence that starts 'the goal is'. If they did not state one, write your best understanding, so they can see at a glance whether you understood them.\n\nYou cannot change a goal once it is set; only the user can. If the work has clearly outgrown it, say so in one line in your reply and suggest the new wording.",
+  parameters: SetGoalInput,
+  success: Schema.Struct({ goal: Schema.String }),
+  failure: FollowupToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Set this conversation's goal")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+const ThreadTagEntry = Schema.Struct({
+  name: Schema.String,
+  description: Schema.String,
+});
+
+export const ListTagsTool = Tool.make("list_tags", {
+  description:
+    "Read this project's tag vocabulary — every tag a conversation here may carry, with what belongs under each — and the tags this conversation already has. Always read it before set_tags.",
+  parameters: Schema.Struct({}),
+  success: Schema.Struct({
+    vocabulary: Schema.Array(ThreadTagEntry),
+    threadTags: Schema.Array(Schema.String),
+  }),
+  failure: FollowupToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Read the project's tags")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+export const SetTagsInput = Schema.Struct({
+  tags: Schema.Array(Schema.String).annotate({
+    description:
+      "The full set of tags this conversation should carry, replacing what it has: names from the vocabulary list_tags returned, plus any you are creating in newTags. One to four.",
+  }),
+  newTags: Schema.optional(
+    Schema.Array(ThreadTagEntry).annotate({
+      description:
+        "Tags to add to the project vocabulary, only when no existing tag covers the area. name: short, lower-case, named after the product area as the user would call it ('tickets', 'opportunity-detail', 'imports'). description: one line on what belongs under it, so the next agent reuses it instead of inventing a synonym.",
+    }),
+  ),
+});
+
+// Tags only work if one area of the product has exactly one name. The tool
+// refuses a name that is not in the vocabulary, and refuses a new tag that is
+// only a spelling variant of an existing one, so an agent cannot quietly split
+// "tickets" into "ticket" and "tickets-page". Synonyms it cannot catch, the
+// descriptions and the user's merge in settings do.
+export const SetTagsTool = Tool.make("set_tags", {
+  description:
+    "Tag this conversation with the areas of the product it works on, so the user can filter their conversations by area later and find this one again.\n\nRules:\n- Call list_tags first and reuse an existing tag whenever one fits, even loosely. Two names for one area makes both useless.\n- Tag by the area of the product or codebase touched — a page, a feature, a subsystem — not by the kind of work ('bugfix', 'refactor') or by status.\n- Create a new tag only when nothing in the vocabulary covers the area, and give it a description.\n- One to four tags. Work that spans the whole app gets the broad tag for it rather than a tag per page.\n\nCall it once the subject of the conversation is clear, usually in your first turn, and again only when the work moves into an area the tags do not cover.",
+  parameters: SetTagsInput,
+  success: Schema.Struct({
+    tags: Schema.Array(Schema.String),
+    created: Schema.Array(Schema.String),
+  }),
+  failure: FollowupToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Tag this conversation")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const FollowupToolkit = Toolkit.make(
   SuggestFollowupTool,
   ListFollowupsTool,
   ResolveFollowupTool,
   RenameConversationTool,
   SetAttentionTool,
+  SetGoalTool,
+  ListTagsTool,
+  SetTagsTool,
 );

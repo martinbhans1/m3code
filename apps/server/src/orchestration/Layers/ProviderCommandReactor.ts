@@ -67,6 +67,26 @@ function toNonEmptyProviderInput(value: string | undefined): string | undefined 
   return normalized && normalized.length > 0 ? normalized : undefined;
 }
 
+/**
+ * Send the conversation's goal along with every user message, so the agent
+ * always knows where the finish line is — including after a context compaction
+ * has long since dropped the message where it was stated. The stored message,
+ * and so what the user sees in the transcript, is untouched.
+ */
+export function withThreadGoal(
+  input: string | undefined,
+  goal: string | null | undefined,
+): string | undefined {
+  const trimmedGoal = goal?.trim();
+  if (!input || !trimmedGoal) return input;
+  return `${input}
+
+<conversation_goal>
+${trimmedGoal}
+</conversation_goal>
+(The goal of this conversation, as the user currently has it. It is theirs to change: work toward it, say so when it is met, and if the work has outgrown it, say so in your reply with suggested new wording rather than acting as if it had changed.)`;
+}
+
 function mapProviderSessionStatusToOrchestrationStatus(
   status: "connecting" | "ready" | "running" | "error" | "closed",
 ): OrchestrationSession["status"] {
@@ -693,7 +713,7 @@ const make = Effect.gen(function* () {
     if (input.modelSelection !== undefined) {
       threadModelSelections.set(input.threadId, input.modelSelection);
     }
-    const normalizedInput = toNonEmptyProviderInput(input.messageText);
+    const normalizedInput = withThreadGoal(toNonEmptyProviderInput(input.messageText), thread.goal);
     const normalizedAttachments = input.attachments ?? [];
     const activeSession = yield* providerService
       .listSessions()

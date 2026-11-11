@@ -87,6 +87,8 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     latestTurn: null,
     branch: null,
     worktreePath: null,
+    goal: null,
+    tags: [],
     ...overrides,
   };
 }
@@ -105,6 +107,7 @@ function makeState(thread: Thread): AppState {
     createdAt: "2026-02-13T00:00:00.000Z",
     updatedAt: "2026-02-13T00:00:00.000Z",
     scripts: [],
+    threadTags: [],
   };
   const threadIdsByProjectId: EnvironmentState["threadIdsByProjectId"] = {
     [thread.projectId]: [thread.id],
@@ -132,6 +135,8 @@ function makeState(thread: Thread): AppState {
         updatedAt: thread.updatedAt,
         branch: thread.branch,
         worktreePath: thread.worktreePath,
+        goal: thread.goal,
+        tags: thread.tags,
       },
     },
     threadSessionById: {
@@ -592,6 +597,7 @@ describe("incremental orchestration updates", () => {
             model: DEFAULT_MODEL,
           },
           scripts: [],
+          threadTags: [],
           createdAt: "2026-02-27T00:00:01.000Z",
           updatedAt: "2026-02-27T00:00:01.000Z",
         },
@@ -631,6 +637,7 @@ describe("incremental orchestration updates", () => {
               model: DEFAULT_MODEL,
             },
             scripts: [],
+            threadTags: [],
             createdAt: "2026-02-27T00:00:00.000Z",
             updatedAt: "2026-02-27T00:00:00.000Z",
           },
@@ -643,6 +650,7 @@ describe("incremental orchestration updates", () => {
               model: DEFAULT_MODEL,
             },
             scripts: [],
+            threadTags: [],
             createdAt: now,
             updatedAt: now,
           },
@@ -669,6 +677,8 @@ describe("incremental orchestration updates", () => {
             pinnedAt: null,
             doneAt: null,
             attention: null,
+            goal: null,
+            tags: [],
             session: null,
             latestUserMessageAt: null,
             hasPendingApprovals: false,
@@ -697,6 +707,8 @@ describe("incremental orchestration updates", () => {
             pinnedAt: null,
             doneAt: null,
             attention: null,
+            goal: null,
+            tags: [],
             session: null,
             latestUserMessageAt: null,
             hasPendingApprovals: false,
@@ -745,6 +757,7 @@ describe("incremental orchestration updates", () => {
           createdAt: "2026-02-27T00:00:00.000Z",
           updatedAt: "2026-02-27T00:00:00.000Z",
           scripts: [],
+          threadTags: [],
         },
         [recreatedProjectId]: {
           id: recreatedProjectId,
@@ -758,6 +771,7 @@ describe("incremental orchestration updates", () => {
           createdAt: "2026-02-27T00:00:00.000Z",
           updatedAt: "2026-02-27T00:00:00.000Z",
           scripts: [],
+          threadTags: [],
         },
       },
     });

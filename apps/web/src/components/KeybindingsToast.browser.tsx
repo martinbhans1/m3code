@@ -187,6 +187,7 @@ function createMinimalSnapshot(): OrchestrationReadModel {
           model: "gpt-5",
         },
         scripts: [],
+        threadTags: [],
         createdAt: NOW_ISO,
         updatedAt: NOW_ISO,
         deletedAt: null,
@@ -214,6 +215,8 @@ function createMinimalSnapshot(): OrchestrationReadModel {
         pinnedAt: null,
         doneAt: null,
         attention: null,
+        goal: null,
+        tags: [],
         deletedAt: null,
         messages: [
           {
@@ -255,6 +258,7 @@ function toShellSnapshot(snapshot: OrchestrationReadModel) {
       repositoryIdentity: project.repositoryIdentity ?? null,
       defaultModelSelection: project.defaultModelSelection,
       scripts: project.scripts,
+      threadTags: [],
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
     })),

@@ -279,6 +279,8 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
       pinnedAt: null,
       doneAt: null,
       attention: null,
+      goal: null,
+      tags: [],
       session: null,
       latestUserMessageAt: null,
       hasPendingApprovals: false,
@@ -405,6 +407,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           repositoryIdentity: null,
           defaultModelSelection: null,
           scripts: [],
+          threadTags: [],
           createdAt: now,
           updatedAt: now,
         } satisfies OrchestrationProjectShell;
@@ -432,6 +435,8 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           pinnedAt: null,
           doneAt: null,
           attention: null,
+          goal: null,
+          tags: [],
           session: {
             threadId,
             status: "running",
@@ -567,6 +572,7 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           repositoryIdentity: null,
           defaultModelSelection: null,
           scripts: [],
+          threadTags: [],
           createdAt: now,
           updatedAt: now,
         } satisfies OrchestrationProjectShell;
@@ -594,6 +600,8 @@ describe.sequential("signRelayAgentActivityPublishProof", () => {
           pinnedAt: null,
           doneAt: null,
           attention: null,
+          goal: null,
+          tags: [],
           session: {
             threadId,
             status: "running",

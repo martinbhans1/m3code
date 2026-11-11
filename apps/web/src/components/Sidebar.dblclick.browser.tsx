@@ -58,6 +58,7 @@ function buildThread(title: string): SidebarThreadSummary {
     latestTurn: null,
     branch: null,
     worktreePath: null,
+    tags: [],
     latestUserMessageAt: null,
     hasPendingApprovals: false,
     hasPendingUserInput: false,

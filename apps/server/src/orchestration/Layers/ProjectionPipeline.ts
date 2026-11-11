@@ -480,6 +480,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             workspaceRoot: event.payload.workspaceRoot,
             defaultModelSelection: event.payload.defaultModelSelection,
             scripts: event.payload.scripts,
+            threadTags: [],
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
             deletedAt: null,
@@ -503,6 +504,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
               ? { defaultModelSelection: event.payload.defaultModelSelection }
               : {}),
             ...(event.payload.scripts !== undefined ? { scripts: event.payload.scripts } : {}),
+            ...(event.payload.threadTags !== undefined
+              ? { threadTags: event.payload.threadTags }
+              : {}),
             updatedAt: event.payload.updatedAt,
           });
           return;
@@ -638,6 +642,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             pinnedAt: null,
             doneAt: null,
             attention: null,
+            goal: null,
+            tags: [],
             latestUserMessageAt: null,
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
@@ -771,6 +777,8 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             ...(event.payload.worktreePath !== undefined
               ? { worktreePath: event.payload.worktreePath }
               : {}),
+            ...(event.payload.goal !== undefined ? { goal: event.payload.goal } : {}),
+            ...(event.payload.tags !== undefined ? { tags: event.payload.tags } : {}),
             updatedAt: event.payload.updatedAt,
           });
           return;

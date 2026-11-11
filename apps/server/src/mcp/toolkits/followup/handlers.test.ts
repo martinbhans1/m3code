@@ -205,6 +205,10 @@ const followupToolCallActivities: Array<OrchestrationThreadActivity> = [
   } as unknown as OrchestrationThreadActivity,
 ];
 
+/** The calling conversation's goal and tags, as the projection would return them. */
+const callingThread: { goal: string | null; tags: string[] } = { goal: null, tags: [] };
+let projectVocabulary: Array<{ name: string; description: string }> = [];
+
 const dispatched: OrchestrationCommand[] = [];
 /** Kinds the handler asked the projection for, so the narrow read stays narrow. */
 const requestedKinds: Array<ReadonlyArray<string>> = [];
@@ -232,8 +236,20 @@ const TestServicesLive = Layer.mergeAll(
           requestedThreadId === spinOffThreadId
             ? Option.some(spinOffThread)
             : requestedThreadId === threadId
-              ? Option.some({ ...spinOffThread, id: threadId, title: "Email templates" })
+              ? Option.some({
+                  ...spinOffThread,
+                  id: threadId,
+                  title: "Email templates",
+                  goal: callingThread.goal,
+                  tags: callingThread.tags,
+                })
               : Option.none(),
+        ),
+      getProjectShellById: (requestedProjectId: ProjectId) =>
+        Effect.succeed(
+          requestedProjectId === projectId
+            ? Option.some({ id: projectId, threadTags: projectVocabulary })
+            : Option.none(),
         ),
     } as unknown as ProjectionSnapshotQuery["Service"]),
   ),
@@ -459,6 +475,90 @@ it.effect("renames the calling conversation, and only that one", () =>
       const empty = yield* callTool("rename_conversation", { title: "   " });
       expect(empty.isError).toBe(true);
       expect(dispatched).toHaveLength(0);
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("sets the goal once, and leaves every later change to the user", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      dispatched.length = 0;
+      callingThread.goal = null;
+
+      const result = yield* callTool("set_goal", {
+        goal: "  Ticket list loads in under a second on staging.  ",
+      });
+      expect(result.isError).toBe(false);
+      expect(dispatched).toHaveLength(1);
+      expect(dispatched[0]).toMatchObject({
+        type: "thread.meta.update",
+        threadId,
+        goal: "Ticket list loads in under a second on staging.",
+      });
+
+      // Once a goal exists the agent is refused, and nothing is dispatched.
+      dispatched.length = 0;
+      callingThread.goal = "Ticket list loads in under a second on staging.";
+      const again = yield* callTool("set_goal", { goal: "Something else entirely" });
+      expect(again.isError).toBe(true);
+      expect(dispatched).toHaveLength(0);
+      callingThread.goal = null;
+    }),
+  ).pipe(Effect.provide(TestLayer)),
+);
+
+it.effect("tags only from the vocabulary, and refuses a spelling variant of an existing tag", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      dispatched.length = 0;
+      callingThread.tags = [];
+      projectVocabulary = [{ name: "tickets", description: "Support tickets: list, detail, SLA" }];
+
+      // A name that is not in the vocabulary is refused, with the vocabulary named.
+      const unknown = yield* callTool("set_tags", { tags: ["support"] });
+      expect(unknown.isError).toBe(true);
+      expect(JSON.stringify(unknown.content)).toContain("tickets");
+
+      // "Ticket" is the same tag as "tickets", so it may not be created...
+      const variant = yield* callTool("set_tags", {
+        tags: ["ticket"],
+        newTags: [{ name: "Ticket", description: "Tickets" }],
+      });
+      expect(variant.isError).toBe(true);
+      expect(dispatched).toHaveLength(0);
+
+      // ...but using it resolves to the canonical name.
+      const reuse = yield* callTool("set_tags", { tags: ["Ticket"] });
+      expect(reuse.isError).toBe(false);
+      expect(reuse.structuredContent).toEqual({ tags: ["tickets"], created: [] });
+      expect(dispatched).toEqual([
+        expect.objectContaining({ type: "thread.meta.update", threadId, tags: ["tickets"] }),
+      ]);
+
+      // A genuinely new area is added to the project, then used.
+      dispatched.length = 0;
+      const created = yield* callTool("set_tags", {
+        tags: ["tickets", "Opportunity Detail"],
+        newTags: [{ name: "Opportunity Detail", description: "The single-opportunity page" }],
+      });
+      expect(created.isError).toBe(false);
+      expect(created.structuredContent).toEqual({
+        tags: ["tickets", "opportunity-detail"],
+        created: ["opportunity-detail"],
+      });
+      expect(dispatched[0]).toMatchObject({
+        type: "project.meta.update",
+        projectId,
+        threadTags: [
+          { name: "tickets", description: "Support tickets: list, detail, SLA" },
+          { name: "opportunity-detail", description: "The single-opportunity page" },
+        ],
+      });
+      expect(dispatched[1]).toMatchObject({
+        type: "thread.meta.update",
+        tags: ["tickets", "opportunity-detail"],
+      });
+      projectVocabulary = [];
     }),
   ).pipe(Effect.provide(TestLayer)),
 );

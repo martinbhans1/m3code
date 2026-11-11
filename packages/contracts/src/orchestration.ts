@@ -238,6 +238,23 @@ export const ProjectScript = Schema.Struct({
 });
 export type ProjectScript = typeof ProjectScript.Type;
 
+/**
+ * One entry in a project's controlled tag vocabulary. Threads may only carry
+ * tags that exist here, so "tickets" and "support" never split one area of the
+ * product into two filters. `name` is the normalized slug every thread stores;
+ * `description` tells an agent what belongs under it, which is what makes it
+ * reuse the tag instead of inventing a near-synonym.
+ */
+export const ProjectThreadTag = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  description: Schema.String,
+});
+export type ProjectThreadTag = typeof ProjectThreadTag.Type;
+
+const ProjectThreadTags = Schema.Array(ProjectThreadTag).pipe(
+  Schema.withDecodingDefault(Effect.succeed([])),
+);
+
 export const OrchestrationProject = Schema.Struct({
   id: ProjectId,
   title: TrimmedNonEmptyString,
@@ -245,6 +262,7 @@ export const OrchestrationProject = Schema.Struct({
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
   defaultModelSelection: Schema.NullOr(ModelSelection),
   scripts: Schema.Array(ProjectScript),
+  threadTags: ProjectThreadTags,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
@@ -524,6 +542,12 @@ export const OrchestrationThread = Schema.Struct({
   // The agent's end-of-turn verdict. Cleared by the projection the same way
   // doneAt is: a newer user message means the user has answered it.
   attention: Schema.NullOr(ThreadAttention).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  // What "finished" means for this conversation. Set once by the agent from the
+  // user's opening message, editable by the user after that, and sent along
+  // with every turn so the agent always knows where the finish line is.
+  goal: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  // Names from the project's controlled tag vocabulary.
+  tags: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   deletedAt: Schema.NullOr(IsoDateTime),
   messages: Schema.Array(OrchestrationMessage),
   proposedPlans: Schema.Array(OrchestrationProposedPlan).pipe(
@@ -554,6 +578,7 @@ export const OrchestrationProjectShell = Schema.Struct({
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
   defaultModelSelection: Schema.NullOr(ModelSelection),
   scripts: Schema.Array(ProjectScript),
+  threadTags: ProjectThreadTags,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -582,6 +607,12 @@ export const OrchestrationThreadShell = Schema.Struct({
   // The agent's end-of-turn verdict. Cleared by the projection the same way
   // doneAt is: a newer user message means the user has answered it.
   attention: Schema.NullOr(ThreadAttention).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  // What "finished" means for this conversation. Set once by the agent from the
+  // user's opening message, editable by the user after that, and sent along
+  // with every turn so the agent always knows where the finish line is.
+  goal: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  // Names from the project's controlled tag vocabulary.
+  tags: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
   session: Schema.NullOr(OrchestrationSession),
   latestUserMessageAt: Schema.NullOr(IsoDateTime),
   hasPendingApprovals: Schema.Boolean,
@@ -674,6 +705,7 @@ const ProjectMetaUpdateCommand = Schema.Struct({
   workspaceRoot: Schema.optional(TrimmedNonEmptyString),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
+  threadTags: Schema.optional(Schema.Array(ProjectThreadTag)),
 });
 
 const ProjectDeleteCommand = Schema.Struct({
@@ -766,6 +798,8 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  goal: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  tags: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
 });
 
 const ThreadRuntimeModeSetCommand = Schema.Struct({
@@ -1127,6 +1161,7 @@ export const ProjectMetaUpdatedPayload = Schema.Struct({
   repositoryIdentity: Schema.optional(Schema.NullOr(RepositoryIdentity)),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
+  threadTags: Schema.optional(Schema.Array(ProjectThreadTag)),
   updatedAt: IsoDateTime,
 });
 
@@ -1200,6 +1235,8 @@ export const ThreadMetaUpdatedPayload = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  goal: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  tags: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
   updatedAt: IsoDateTime,
 });
 

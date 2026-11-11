@@ -17,6 +17,7 @@ function makeProject(
     repositoryIdentity: null,
     defaultModelSelection: null,
     scripts: [],
+    threadTags: [],
     createdAt: "2026-04-01T00:00:00.000Z",
     updatedAt: "2026-04-01T00:00:00.000Z",
     ...input,
@@ -32,6 +33,8 @@ function makeThread(
 ): EnvironmentScopedThreadShell {
   return {
     attention: null,
+    goal: null,
+    tags: [],
     handoffThreadId: null,
     sourceThreadId: null,
     runtimeMode: "full-access",

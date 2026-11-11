@@ -1,4 +1,17 @@
-import { CommandId, type IsoDateTime, type OrchestrationFollowup } from "@t3tools/contracts";
+import {
+  CommandId,
+  type IsoDateTime,
+  type OrchestrationFollowup,
+  type ProjectId,
+  type ThreadId,
+} from "@t3tools/contracts";
+import {
+  canonicalizeThreadTags,
+  findMatchingThreadTag,
+  normalizeThreadTagName,
+  THREAD_GOAL_MAX_LENGTH,
+  THREAD_TAG_MAX_PER_THREAD,
+} from "@t3tools/shared/threadTags";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -23,6 +36,47 @@ const snapshotError = (action: string) => (cause: unknown) =>
   new FollowupToolError({
     message: `Failed to ${action}: ${cause instanceof Error ? cause.message : String(cause)}`,
   });
+
+const readThreadShell = Effect.fn("followup.readThreadShell")(function* (threadId: ThreadId) {
+  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const shell = yield* projectionSnapshotQuery
+    .getThreadShellById(threadId)
+    .pipe(Effect.mapError(snapshotError("read this conversation")));
+  if (Option.isNone(shell)) {
+    return yield* new FollowupToolError({ message: "This conversation could not be found." });
+  }
+  return shell.value;
+});
+
+const readProjectShell = Effect.fn("followup.readProjectShell")(function* (projectId: ProjectId) {
+  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const project = yield* projectionSnapshotQuery
+    .getProjectShellById(projectId)
+    .pipe(Effect.mapError(snapshotError("read this project")));
+  if (Option.isNone(project)) {
+    return yield* new FollowupToolError({
+      message: "This conversation's project could not be found.",
+    });
+  }
+  return project.value;
+});
+
+/** Dispatch a command on this thread's behalf, mapping failure to a tool error. */
+const dispatchCommand = Effect.fn("followup.dispatchCommand")(function* (
+  action: string,
+  command: Parameters<OrchestrationEngineService["Service"]["dispatch"]>[0],
+) {
+  const orchestrationEngine = yield* OrchestrationEngineService;
+  const startup = yield* ServerRuntimeStartup;
+  yield* startup.enqueueCommand(orchestrationEngine.dispatch(command)).pipe(
+    Effect.mapError(
+      (cause) =>
+        new FollowupToolError({
+          message: `Failed to ${action}: ${cause instanceof Error ? cause.message : String(cause)}`,
+        }),
+    ),
+  );
+});
 
 /**
  * Every follow-up this conversation has, oldest first.
@@ -296,6 +350,127 @@ const handlers = {
         );
 
       return { state: input.state };
+    }),
+  set_goal: (input) =>
+    Effect.gen(function* () {
+      const invocation = yield* McpInvocationContext.McpInvocationContext;
+      const crypto = yield* Crypto.Crypto;
+
+      const goal = input.goal.trim().slice(0, THREAD_GOAL_MAX_LENGTH);
+      if (goal.length === 0) {
+        return yield* new FollowupToolError({
+          message: "The goal is empty. Write what finished looks like for this conversation.",
+        });
+      }
+      const shell = yield* readThreadShell(invocation.threadId);
+      if (shell.goal) {
+        return yield* new FollowupToolError({
+          message: `This conversation already has a goal: "${shell.goal}". Only the user can change it. If the work has outgrown it, say so in your reply and suggest the new wording.`,
+        });
+      }
+
+      const commandUuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+      yield* dispatchCommand("set the goal", {
+        type: "thread.meta.update",
+        commandId: CommandId.make(`goal:${commandUuid}`),
+        threadId: invocation.threadId,
+        goal,
+      });
+      return { goal };
+    }),
+
+  list_tags: () =>
+    Effect.gen(function* () {
+      const invocation = yield* McpInvocationContext.McpInvocationContext;
+      const shell = yield* readThreadShell(invocation.threadId);
+      const project = yield* readProjectShell(shell.projectId);
+      return { vocabulary: project.threadTags, threadTags: shell.tags };
+    }),
+
+  set_tags: (input) =>
+    Effect.gen(function* () {
+      const invocation = yield* McpInvocationContext.McpInvocationContext;
+      const crypto = yield* Crypto.Crypto;
+
+      const shell = yield* readThreadShell(invocation.threadId);
+      const project = yield* readProjectShell(shell.projectId);
+      const vocabularyLine =
+        project.threadTags.length === 0
+          ? "The vocabulary is empty, so every tag has to be created in newTags."
+          : `Existing tags: ${project.threadTags.map((tag) => tag.name).join(", ")}.`;
+
+      // New entries must not be a spelling variant of the vocabulary or of
+      // each other, and must say what belongs under them.
+      const vocabulary = [...project.threadTags];
+      const created: string[] = [];
+      for (const entry of input.newTags ?? []) {
+        const name = normalizeThreadTagName(entry.name);
+        const description = entry.description.trim();
+        if (name.length === 0) {
+          return yield* new FollowupToolError({
+            message: `"${entry.name}" is not a usable tag name. Use a short lower-case name for the product area.`,
+          });
+        }
+        const existing = findMatchingThreadTag(vocabulary, name);
+        if (existing) {
+          return yield* new FollowupToolError({
+            message: `"${entry.name}" is a variant of the existing tag "${existing.name}" (${existing.description || "no description"}). Use "${existing.name}" instead of creating a new one.`,
+          });
+        }
+        if (description.length === 0) {
+          return yield* new FollowupToolError({
+            message: `The new tag "${name}" needs a description: one line on what belongs under it, so the next agent reuses it.`,
+          });
+        }
+        vocabulary.push({ name, description });
+        created.push(name);
+      }
+
+      const { tags, unknown } = canonicalizeThreadTags(vocabulary, input.tags);
+      if (unknown.length > 0) {
+        return yield* new FollowupToolError({
+          message: `Not in this project's vocabulary: ${unknown.join(", ")}. ${vocabularyLine} Reuse one of those, or create the tag in newTags with a description if nothing covers the area.`,
+        });
+      }
+      if (tags.length === 0) {
+        return yield* new FollowupToolError({
+          message: `Pass at least one tag. ${vocabularyLine}`,
+        });
+      }
+      if (tags.length > THREAD_TAG_MAX_PER_THREAD) {
+        return yield* new FollowupToolError({
+          message: `At most ${THREAD_TAG_MAX_PER_THREAD} tags per conversation. Work that spans the app gets the broad tag for it rather than one tag per page.`,
+        });
+      }
+      const unusedNew = created.filter((name) => !tags.includes(name));
+      if (unusedNew.length > 0) {
+        return yield* new FollowupToolError({
+          message: `You created ${unusedNew.join(", ")} but did not tag this conversation with it. Only create tags you are using.`,
+        });
+      }
+
+      if (created.length > 0) {
+        const projectCommandUuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+        yield* dispatchCommand("add the new tags to the project", {
+          type: "project.meta.update",
+          commandId: CommandId.make(`tag-vocabulary:${projectCommandUuid}`),
+          projectId: shell.projectId,
+          threadTags: vocabulary,
+        });
+      }
+
+      const unchanged =
+        tags.length === shell.tags.length && tags.every((tag) => shell.tags.includes(tag));
+      if (!unchanged) {
+        const commandUuid = yield* crypto.randomUUIDv4.pipe(Effect.orDie);
+        yield* dispatchCommand("tag the conversation", {
+          type: "thread.meta.update",
+          commandId: CommandId.make(`tags:${commandUuid}`),
+          threadId: invocation.threadId,
+          tags,
+        });
+      }
+      return { tags, created };
     }),
 } satisfies Parameters<typeof FollowupToolkit.toLayer>[0];
 

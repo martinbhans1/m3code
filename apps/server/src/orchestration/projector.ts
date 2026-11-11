@@ -214,6 +214,7 @@ export function projectEvent(
             workspaceRoot: payload.workspaceRoot,
             defaultModelSelection: payload.defaultModelSelection,
             scripts: payload.scripts,
+            threadTags: existing?.threadTags ?? [],
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
             deletedAt: null,
@@ -246,6 +247,7 @@ export function projectEvent(
                     ? { defaultModelSelection: payload.defaultModelSelection }
                     : {}),
                   ...(payload.scripts !== undefined ? { scripts: payload.scripts } : {}),
+                  ...(payload.threadTags !== undefined ? { threadTags: payload.threadTags } : {}),
                   updatedAt: payload.updatedAt,
                 }
               : project,
@@ -412,6 +414,8 @@ export function projectEvent(
               : {}),
             ...(payload.branch !== undefined ? { branch: payload.branch } : {}),
             ...(payload.worktreePath !== undefined ? { worktreePath: payload.worktreePath } : {}),
+            ...(payload.goal !== undefined ? { goal: payload.goal } : {}),
+            ...(payload.tags !== undefined ? { tags: payload.tags } : {}),
             updatedAt: payload.updatedAt,
           }),
         })),

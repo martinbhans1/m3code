@@ -19,6 +19,7 @@ const stubProject = {
   repositoryIdentity: null,
   defaultModelSelection: null,
   scripts: [],
+  threadTags: [],
   createdAt: "2026-04-01T00:00:00.000Z",
   updatedAt: "2026-04-01T00:00:00.000Z",
 } as const;
@@ -41,6 +42,8 @@ const stubThread = {
   pinnedAt: null,
   doneAt: null,
   attention: null,
+  goal: null,
+  tags: [],
   latestUserMessageAt: null,
   hasPendingApprovals: false,
   hasPendingUserInput: false,
