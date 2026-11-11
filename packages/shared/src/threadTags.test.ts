@@ -5,6 +5,7 @@ import {
   findMatchingThreadTag,
   mergeThreadTagVocabularies,
   normalizeThreadTagName,
+  planThreadTagEdit,
   threadMatchesListFilter,
 } from "./threadTags.ts";
 
@@ -68,5 +69,45 @@ describe("mergeThreadTagVocabularies", () => {
         (tag) => tag.name,
       ),
     ).toEqual(["activities", "tickets"]);
+  });
+});
+
+describe("planThreadTagEdit", () => {
+  const threads = [{ tags: ["support", "activities"] }, { tags: ["tickets"] }, { tags: [] }];
+  const withSynonym = [...vocabulary, { name: "support", description: "Customer support" }];
+
+  it("merges a synonym into the existing tag and moves its threads", () => {
+    const plan = planThreadTagEdit(withSynonym, threads, {
+      kind: "rename",
+      from: "support",
+      to: "Tickets",
+    });
+    if ("error" in plan) throw new Error(plan.error);
+    expect(plan.mergedInto).toBe("tickets");
+    expect(plan.vocabulary.map((tag) => tag.name)).toEqual([
+      "tickets",
+      "opportunity-detail",
+      "activities",
+    ]);
+    expect([...plan.threadTags]).toEqual([[0, ["tickets", "activities"]]]);
+  });
+
+  it("renames in place when the new name is free", () => {
+    const plan = planThreadTagEdit(withSynonym, threads, {
+      kind: "rename",
+      from: "support",
+      to: "Help Desk",
+    });
+    if ("error" in plan) throw new Error(plan.error);
+    expect(plan.mergedInto).toBeNull();
+    expect(plan.vocabulary.at(-1)).toEqual({ name: "help-desk", description: "Customer support" });
+    expect(plan.threadTags.get(0)).toEqual(["help-desk", "activities"]);
+  });
+
+  it("deletes a tag from the vocabulary and from its threads", () => {
+    const plan = planThreadTagEdit(withSynonym, threads, { kind: "delete", name: "tickets" });
+    if ("error" in plan) throw new Error(plan.error);
+    expect(plan.vocabulary.some((tag) => tag.name === "tickets")).toBe(false);
+    expect([...plan.threadTags]).toEqual([[1, []]]);
   });
 });

@@ -117,3 +117,78 @@ export function mergeThreadTagVocabularies(
   }
   return [...byName.values()].toSorted((left, right) => left.name.localeCompare(right.name));
 }
+
+/**
+ * One edit the user makes to a project's vocabulary, and what it does to the
+ * conversations that carry the tag:
+ *
+ * - rename to a new name: the entry is renamed and every thread follows.
+ * - rename onto an existing name (a merge): the old entry disappears and its
+ *   threads move under the existing tag — how "support" gets folded into
+ *   "tickets" after an agent coined a synonym.
+ * - delete: the entry disappears and threads drop the tag.
+ */
+export type ThreadTagEdit =
+  | { readonly kind: "rename"; readonly from: string; readonly to: string }
+  | { readonly kind: "describe"; readonly name: string; readonly description: string }
+  | { readonly kind: "delete"; readonly name: string };
+
+export interface ThreadTagEditPlan {
+  readonly vocabulary: ProjectThreadTag[];
+  /** The tag list each affected thread should end up with, by index into the input. */
+  readonly threadTags: ReadonlyMap<number, string[]>;
+  /** Set when a rename landed on an existing tag. */
+  readonly mergedInto: string | null;
+}
+
+export function planThreadTagEdit(
+  vocabulary: ReadonlyArray<ProjectThreadTag>,
+  threads: ReadonlyArray<{ readonly tags: ReadonlyArray<string> }>,
+  edit: ThreadTagEdit,
+): ThreadTagEditPlan | { readonly error: string } {
+  if (edit.kind === "describe") {
+    if (!vocabulary.some((tag) => tag.name === edit.name)) return { error: "Unknown tag." };
+    return {
+      vocabulary: vocabulary.map((tag) =>
+        tag.name === edit.name ? { ...tag, description: edit.description.trim() } : tag,
+      ),
+      threadTags: new Map(),
+      mergedInto: null,
+    };
+  }
+
+  const from = edit.kind === "rename" ? edit.from : edit.name;
+  if (!vocabulary.some((tag) => tag.name === from)) return { error: "Unknown tag." };
+
+  let to: string | null = null;
+  let mergedInto: string | null = null;
+  let nextVocabulary: ProjectThreadTag[];
+  if (edit.kind === "rename") {
+    const normalized = normalizeThreadTagName(edit.to);
+    if (normalized.length === 0) return { error: "Use letters or digits for the name." };
+    const others = vocabulary.filter((tag) => tag.name !== from);
+    const existing = findMatchingThreadTag(others, normalized);
+    if (existing) {
+      to = existing.name;
+      mergedInto = existing.name;
+      nextVocabulary = others;
+    } else {
+      to = normalized;
+      nextVocabulary = vocabulary.map((tag) => (tag.name === from ? { ...tag, name: to! } : tag));
+    }
+  } else {
+    nextVocabulary = vocabulary.filter((tag) => tag.name !== from);
+  }
+
+  const threadTags = new Map<number, string[]>();
+  threads.forEach((thread, index) => {
+    if (!thread.tags.includes(from)) return;
+    const next: string[] = [];
+    for (const tag of thread.tags) {
+      const mapped = tag === from ? to : tag;
+      if (mapped !== null && !next.includes(mapped)) next.push(mapped);
+    }
+    threadTags.set(index, next);
+  });
+  return { vocabulary: nextVocabulary, threadTags, mergedInto };
+}

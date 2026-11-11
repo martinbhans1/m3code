@@ -1,8 +1,20 @@
 import "../index.css";
 
-import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
-import { page } from "vite-plus/test/browser";
+import { EnvironmentId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
 import { cleanup, render } from "vitest-browser-react";
+
+const dispatched = vi.hoisted(() => [] as unknown[]);
+vi.mock("../environmentApi", () => ({
+  readEnvironmentApi: () => ({
+    orchestration: {
+      dispatchCommand: async (command: unknown) => {
+        dispatched.push(command);
+      },
+    },
+  }),
+}));
 
 import { useSidebarThreadFilterStore } from "../sidebarThreadFilter";
 import {
@@ -18,13 +30,22 @@ const projects: SidebarThreadFilterProject[] = [
       { name: "opportunity-detail", description: "The single-opportunity page" },
       { name: "tickets", description: "Support tickets" },
     ],
+    memberProjectRefs: [],
+    threads: [],
     tagCounts: new Map([
       ["tickets", 3],
       ["opportunity-detail", 1],
     ]),
   },
   // A project nobody has tagged yet gets no section at all.
-  { projectKey: "other", displayName: "Other", vocabulary: [], tagCounts: new Map() },
+  {
+    projectKey: "other",
+    displayName: "Other",
+    vocabulary: [],
+    memberProjectRefs: [],
+    threads: [],
+    tagCounts: new Map(),
+  },
 ];
 
 describe("SidebarThreadFilterMenu", () => {
@@ -58,5 +79,56 @@ describe("SidebarThreadFilterMenu", () => {
 
     await page.getByRole("menuitem", { name: "Clear tag filters" }).click();
     expect(useSidebarThreadFilterStore.getState().selectedTagsByProject).toEqual({});
+  });
+});
+
+describe("Manage tags", () => {
+  const environmentId = EnvironmentId.make("environment-local");
+  const projectId = ProjectId.make("project-dealjourney");
+  const synonymProject: SidebarThreadFilterProject = {
+    projectKey: "dealjourney",
+    displayName: "Deal Journey",
+    vocabulary: [
+      { name: "support", description: "Customer support" },
+      { name: "tickets", description: "Support tickets" },
+    ],
+    memberProjectRefs: [{ environmentId, projectId }],
+    threads: [
+      { environmentId, id: ThreadId.make("t-1"), tags: ["support"] },
+      { environmentId, id: ThreadId.make("t-2"), tags: ["tickets"] },
+    ],
+    tagCounts: new Map([
+      ["support", 1],
+      ["tickets", 1],
+    ]),
+  };
+
+  beforeEach(() => {
+    dispatched.length = 0;
+  });
+  afterEach(() => cleanup());
+
+  it("merges a synonym into the existing tag by renaming it", async () => {
+    await render(<SidebarThreadFilterMenu projects={[synonymProject]} />);
+    await page.getByTestId("sidebar-thread-filter-trigger").click();
+    await page.getByRole("menuitem", { name: "Manage tags…" }).click();
+
+    const name = page.getByRole("textbox", { name: "Name of tag support" });
+    await name.fill("tickets");
+    await userEvent.keyboard("{Enter}");
+
+    await expect.poll(() => dispatched.length).toBe(2);
+    expect(dispatched).toEqual([
+      expect.objectContaining({
+        type: "project.meta.update",
+        projectId,
+        threadTags: [{ name: "tickets", description: "Support tickets" }],
+      }),
+      expect.objectContaining({
+        type: "thread.meta.update",
+        threadId: ThreadId.make("t-1"),
+        tags: ["tickets"],
+      }),
+    ]);
   });
 });

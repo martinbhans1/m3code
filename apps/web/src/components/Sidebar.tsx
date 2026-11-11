@@ -4030,14 +4030,19 @@ export default function Sidebar() {
       if (bucket) bucket.push(thread);
       else threadsByProjectKey.set(projectKey, [thread]);
     }
-    return sortedProjects.map((project) => ({
-      projectKey: project.projectKey,
-      displayName: project.displayName,
-      vocabulary: mergeThreadTagVocabularies(
-        project.memberProjects.map((member) => member.threadTags),
-      ),
-      tagCounts: countThreadTags(threadsByProjectKey.get(project.projectKey) ?? []),
-    }));
+    return sortedProjects.map((project) => {
+      const threads = threadsByProjectKey.get(project.projectKey) ?? [];
+      return {
+        projectKey: project.projectKey,
+        displayName: project.displayName,
+        vocabulary: mergeThreadTagVocabularies(
+          project.memberProjects.map((member) => member.threadTags),
+        ),
+        memberProjectRefs: project.memberProjectRefs,
+        threads,
+        tagCounts: countThreadTags(threads),
+      };
+    });
   }, [sortedProjects, visibleThreads]);
   const pinnedThreadGroups = useMemo<SidebarPinnedThreadGroup[]>(() => {
     const groupsByProjectKey = new Map<string, SidebarPinnedThreadGroup>();
