@@ -581,6 +581,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
           : Effect.succeed({
               pendingUserInputCount: current.pendingUserInputCount,
               pendingFollowupCount: current.pendingFollowupCount,
+              runningSubagentCount: current.runningSubagentCount,
               handoffThreadId: current.handoffThreadId,
               sourceThreadId: current.sourceThreadId,
             }),
@@ -595,8 +596,13 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             )
           : Effect.succeed(current.hasActionableProposedPlan === 1),
       ]);
-      const { pendingUserInputCount, pendingFollowupCount, handoffThreadId, sourceThreadId } =
-        activitySummary;
+      const {
+        pendingUserInputCount,
+        pendingFollowupCount,
+        runningSubagentCount,
+        handoffThreadId,
+        sourceThreadId,
+      } = activitySummary;
 
       // The "settled" stamp is state the user set, but it expires against the
       // conversation itself: a newer user message means they came back to it.
@@ -619,6 +625,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         pendingApprovalCount,
         pendingUserInputCount,
         pendingFollowupCount,
+        runningSubagentCount,
         handoffThreadId,
         sourceThreadId,
         hasActionableProposedPlan: hasActionableProposedPlan ? 1 : 0,
@@ -652,6 +659,7 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
             pendingApprovalCount: 0,
             pendingUserInputCount: 0,
             pendingFollowupCount: 0,
+            runningSubagentCount: 0,
             handoffThreadId: null,
             sourceThreadId: null,
             hasActionableProposedPlan: 0,

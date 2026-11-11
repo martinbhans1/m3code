@@ -101,6 +101,7 @@ projectionRepositoriesLayer("Projection repositories", (it) => {
         pendingApprovalCount: 0,
         pendingUserInputCount: 0,
         pendingFollowupCount: 0,
+        runningSubagentCount: 0,
         hasActionableProposedPlan: 0,
         handoffThreadId: null,
         sourceThreadId: null,

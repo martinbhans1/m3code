@@ -684,6 +684,7 @@ describe("incremental orchestration updates", () => {
             hasPendingApprovals: false,
             hasPendingUserInput: false,
             hasPendingFollowups: false,
+            runningSubagentCount: 0,
             hasActionableProposedPlan: false,
           },
           {
@@ -714,6 +715,7 @@ describe("incremental orchestration updates", () => {
             hasPendingApprovals: false,
             hasPendingUserInput: false,
             hasPendingFollowups: false,
+            runningSubagentCount: 0,
             hasActionableProposedPlan: false,
           },
         ],

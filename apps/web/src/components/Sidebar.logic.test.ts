@@ -1165,3 +1165,68 @@ describe("sortProjectsForSidebar", () => {
     expect(timestamp).toBe(Date.parse("2026-03-09T10:10:00.000Z"));
   });
 });
+
+describe("subagents still working after the turn ended", () => {
+  const settledAt = "2026-03-09T10:05:00.000Z";
+  const readySession = {
+    provider: ProviderDriverKind.make("claudeAgent"),
+    status: "ready" as const,
+    createdAt: "2026-03-09T10:00:00.000Z",
+    updatedAt: settledAt,
+    orchestrationStatus: "ready" as const,
+  };
+  const thread = {
+    hasActionableProposedPlan: false,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    attention: null,
+    interactionMode: "default" as const,
+    latestTurn: makeLatestTurn(),
+    session: readySession,
+    updatedAt: settledAt,
+    runningSubagentCount: 2,
+  };
+  const now = Date.parse("2026-03-09T10:10:00.000Z");
+
+  it("reads as subagents working, not completed, while they are out", () => {
+    const pill = resolveThreadStatusPill({ thread, now });
+    expect(pill?.label).toBe("Subagents Working");
+    expect(pill?.pulse).toBe(true);
+    expect(pill?.detail).toContain("2 subagents");
+    // Not "your turn" yet, so the row must not be marked unread.
+    expect(isUnreadThreadStatus(pill)).toBe(false);
+  });
+
+  it("falls back to completed once they have all reported back", () => {
+    expect(
+      resolveThreadStatusPill({ thread: { ...thread, runningSubagentCount: 0 }, now })?.label,
+    ).toBe("Completed");
+  });
+
+  it("ignores subagents on a session that has stopped, since they died with it", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread: {
+          ...thread,
+          session: { ...readySession, status: "closed", orchestrationStatus: "stopped" },
+        },
+        now,
+      })?.label,
+    ).toBe("Completed");
+  });
+
+  it("stops claiming work after an hour of silence from them", () => {
+    expect(
+      resolveThreadStatusPill({
+        thread,
+        now: Date.parse(settledAt) + 60 * 60 * 1000,
+      })?.label,
+    ).toBe("Completed");
+  });
+
+  it("still lets an open question outrank them", () => {
+    expect(
+      resolveThreadStatusPill({ thread: { ...thread, hasPendingUserInput: true }, now })?.label,
+    ).toBe("Awaiting Input");
+  });
+});

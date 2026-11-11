@@ -51,6 +51,9 @@ function collectThreadAttentionCandidates(state: AppState): ThreadAttentionCandi
         latestTurn: thread.latestTurn,
         session: thread.session,
         updatedAt: thread.updatedAt,
+        // Without it a turn that ends while subagents are still out would be
+        // announced as "Agent finished" when it has only paused for them.
+        runningSubagentCount: thread.runningSubagentCount,
         // Deliberately no `lastVisitedAt`: this coordinator tracks what it has
         // already announced itself, and a thread visited before its latest turn
         // finished is still news.

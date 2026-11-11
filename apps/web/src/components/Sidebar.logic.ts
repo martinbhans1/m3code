@@ -35,7 +35,8 @@ export interface ThreadStatusPill {
     | "Awaiting Input"
     | "Plan Ready"
     | "Stalled"
-    | "Waiting on You";
+    | "Waiting on You"
+    | "Subagents Working";
   colorClass: string;
   dotClass: string;
   pulse: boolean;
@@ -51,6 +52,7 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   "Waiting on You": 5,
   Working: 4,
   Connecting: 4,
+  "Subagents Working": 4,
   Stalled: 3,
   "Plan Ready": 2,
   Completed: 1,
@@ -66,6 +68,8 @@ export type ThreadStatusInput = Pick<
   | "latestTurn"
   | "session"
 > & {
+  /** Absent on callers that predate it; treated as none running. */
+  runningSubagentCount?: number | undefined;
   lastVisitedAt?: string | undefined;
   updatedAt?: string | undefined;
 };
@@ -153,6 +157,24 @@ export function useThreadJumpHintVisibility(): {
     showThreadJumpHints,
     updateThreadJumpHintsVisibility,
   };
+}
+
+/**
+ * The agent's turn has ended but subagents it started are still out. Only
+ * counted while the session is alive (a stopped or crashed session took its
+ * subagents with it) and while the thread is still hearing from them: every
+ * subagent progress update bumps the thread's `updatedAt`, so an hour of
+ * silence means the "finished" report was lost, not that work is happening.
+ */
+export function hasLiveSubagents(thread: ThreadStatusInput, now: number): boolean {
+  if ((thread.runningSubagentCount ?? 0) <= 0) return false;
+  const status = thread.session?.orchestrationStatus;
+  if (status !== "ready" && status !== "running" && status !== "starting") return false;
+  return !isStaleRunningTurn({
+    isRunning: true,
+    lastActivityAt: thread.updatedAt ?? thread.session?.updatedAt,
+    now,
+  });
 }
 
 export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
@@ -452,6 +474,22 @@ export function resolveThreadStatusPill(input: {
       colorClass: "text-sky-600 dark:text-sky-300/80",
       dotClass: "bg-sky-500 dark:bg-sky-300/80",
       pulse: true,
+    };
+  }
+
+  if (hasLiveSubagents(thread, input.now ?? Date.now())) {
+    const count = thread.runningSubagentCount ?? 0;
+    return {
+      label: "Subagents Working",
+      // Violet-fuchsia rather than Working's sky: the agent's own turn is over,
+      // but it is waiting on helpers, so it is not your move yet either.
+      colorClass: "text-fuchsia-600 dark:text-fuchsia-300/90",
+      dotClass: "bg-fuchsia-500 dark:bg-fuchsia-300/90",
+      pulse: true,
+      detail:
+        count === 1
+          ? "1 subagent still working; the agent picks up when it reports back"
+          : `${count} subagents still working; the agent picks up when they report back`,
     };
   }
 

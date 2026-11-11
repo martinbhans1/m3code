@@ -54,6 +54,7 @@ function makeThread(
     pinnedAt: input.pinnedAt ?? null,
     doneAt: input.doneAt ?? null,
     hasPendingFollowups: input.hasPendingFollowups ?? false,
+    runningSubagentCount: 0,
   };
 }
 

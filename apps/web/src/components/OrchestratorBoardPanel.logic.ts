@@ -53,6 +53,7 @@ const GROUP_BY_PILL_LABEL: Record<ThreadStatusPill["label"], BoardGroupId> = {
   Stalled: "stalled",
   Working: "working",
   Connecting: "working",
+  "Subagents Working": "working",
   Completed: "settled",
 };
 

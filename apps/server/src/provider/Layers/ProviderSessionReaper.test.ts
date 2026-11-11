@@ -111,6 +111,7 @@ function makeReadModel(
       hasPendingApprovals: false,
       hasPendingUserInput: false,
       hasPendingFollowups: false,
+      runningSubagentCount: 0,
       hasActionableProposedPlan: false,
       handoffThreadId: null,
       sourceThreadId: null,

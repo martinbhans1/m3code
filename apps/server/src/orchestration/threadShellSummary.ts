@@ -1,7 +1,7 @@
 /**
  * threadShellSummary - The per-thread counts the sidebar and the orchestrator
  * read without opening a conversation: pending approvals, unanswered questions,
- * open follow-ups, handoff links, when the user last wrote, and whether a
+ * open follow-ups, subagents still running, handoff links, when the user last wrote, and whether a
  * proposed plan is waiting to be acted on.
  *
  * Two things live here together on purpose. The derivations, which are
@@ -24,6 +24,16 @@ import {
 import type { ProjectionThreadActivity } from "../persistence/Services/ProjectionThreadActivities.ts";
 import type { ProjectionThreadProposedPlan } from "../persistence/Services/ProjectionThreadProposedPlans.ts";
 
+/**
+ * Background work the agent hands off and waits on. Background shell commands
+ * (`local_bash`) are deliberately left out: a dev server or a log tail can run
+ * for the life of the session, and counting it would keep a finished thread
+ * reading as busy forever.
+ */
+const SUBAGENT_TASK_TYPES: ReadonlySet<string> = new Set(["local_agent", "local_workflow"]);
+
+const SUBAGENT_ACTIVITY_KINDS = ["task.started", "task.completed"] as const;
+
 const USER_INPUT_ACTIVITY_KINDS = [
   "user-input.requested",
   "user-input.resolved",
@@ -38,6 +48,7 @@ const USER_INPUT_ACTIVITY_KINDS = [
  */
 export const SHELL_SUMMARY_ACTIVITY_KINDS: ReadonlyArray<string> = [
   ...USER_INPUT_ACTIVITY_KINDS,
+  ...SUBAGENT_ACTIVITY_KINDS,
   FOLLOWUP_ACTIVITY_KIND,
   HANDOFF_ACTIVITY_KIND,
 ];
@@ -134,6 +145,7 @@ export function shellSummaryScopeForEvent(
 export interface ThreadShellActivitySummary {
   readonly pendingUserInputCount: number;
   readonly pendingFollowupCount: number;
+  readonly runningSubagentCount: number;
   readonly handoffThreadId: ThreadId | null;
   readonly sourceThreadId: ThreadId | null;
 }
@@ -151,6 +163,7 @@ export function deriveThreadShellActivitySummary(
   return {
     pendingUserInputCount: derivePendingUserInputCountFromActivities(activities),
     pendingFollowupCount: derivePendingFollowupCountFromActivities(activities),
+    runningSubagentCount: deriveRunningSubagentCountFromActivities(activities),
     handoffThreadId,
     sourceThreadId,
   };
@@ -208,6 +221,47 @@ export function derivePendingUserInputCountFromActivities(
   }
 
   return openRequestIds.size;
+}
+
+/**
+ * Subagents started and not yet reported back. A completion matches its start
+ * by task id whatever order the two arrive in, so a completion that lands
+ * first (or a start replayed late) cannot leave a phantom running.
+ */
+export function deriveRunningSubagentCountFromActivities(
+  activities: ReadonlyArray<ProjectionThreadActivity>,
+): number {
+  const startedTaskIds = new Set<string>();
+  const completedTaskIds = new Set<string>();
+  for (const activity of activities) {
+    if (activity.kind !== "task.started" && activity.kind !== "task.completed") {
+      continue;
+    }
+    const payload =
+      typeof activity.payload === "object" && activity.payload !== null
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    const taskId = typeof payload?.taskId === "string" ? payload.taskId : null;
+    if (taskId === null || taskId.length === 0) {
+      continue;
+    }
+    if (activity.kind === "task.completed") {
+      completedTaskIds.add(taskId);
+      continue;
+    }
+    const taskType = typeof payload?.taskType === "string" ? payload.taskType : null;
+    if (taskType !== null && SUBAGENT_TASK_TYPES.has(taskType)) {
+      startedTaskIds.add(taskId);
+    }
+  }
+
+  let running = 0;
+  for (const taskId of startedTaskIds) {
+    if (!completedTaskIds.has(taskId)) {
+      running += 1;
+    }
+  }
+  return running;
 }
 
 /**

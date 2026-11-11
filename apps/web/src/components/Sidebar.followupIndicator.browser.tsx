@@ -43,6 +43,7 @@ function buildThread(hasPendingFollowups: boolean): SidebarThreadSummary {
     hasPendingApprovals: false,
     hasPendingUserInput: false,
     hasPendingFollowups,
+    runningSubagentCount: 0,
     hasActionableProposedPlan: false,
   };
 }

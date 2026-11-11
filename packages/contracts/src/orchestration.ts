@@ -620,6 +620,10 @@ export const OrchestrationThreadShell = Schema.Struct({
   // Defaulted so a client can still decode a shell from a server that predates
   // the pending_followup_count column.
   hasPendingFollowups: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // Subagents the agent started and has not heard back from. Non-zero while the
+  // turn has ended but the agent is still waiting on their results, which is
+  // not the same thing as "done". Defaulted like hasPendingFollowups.
+  runningSubagentCount: NonNegativeInt.pipe(Schema.withDecodingDefault(Effect.succeed(0))),
   hasActionableProposedPlan: Schema.Boolean,
   // Set when this thread was handed off to another conversation ("you can look
   // away from this one"), or was itself spun off from one. Both defaulted for

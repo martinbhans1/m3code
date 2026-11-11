@@ -177,6 +177,8 @@ export interface SidebarThreadSummary {
   hasPendingApprovals: boolean;
   hasPendingUserInput: boolean;
   hasPendingFollowups: boolean;
+  /** Subagents started and not yet reported back (turn may already be over). */
+  runningSubagentCount: number;
   /** The agent's end-of-turn verdict; cleared when the user replies. */
   attention: ThreadAttention | null;
   hasActionableProposedPlan: boolean;

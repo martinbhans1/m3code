@@ -60,6 +60,7 @@ const BASE_SNAPSHOT: OrchestrationShellSnapshot = {
       hasPendingApprovals: false,
       hasPendingUserInput: false,
       hasPendingFollowups: false,
+      runningSubagentCount: 0,
       hasActionableProposedPlan: false,
     },
   ],
