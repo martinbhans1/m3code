@@ -5,7 +5,15 @@ import * as Option from "effect/Option";
 import { pipe } from "effect/Function";
 import { EnvironmentId, type ProjectScript } from "@t3tools/contracts";
 import { projectScriptCwd, projectScriptRuntimeEnv } from "@t3tools/shared/projectScripts";
-import { Pressable, ScrollView, Text as RNText, View } from "react-native";
+import {
+  ActionSheetIOS,
+  Alert,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text as RNText,
+  View,
+} from "react-native";
 import { useThemeColor } from "../../lib/useThemeColor";
 import { useVcsStatus } from "../../state/use-vcs-status";
 import { dismissGitActionResult, useGitActionProgress } from "../../state/use-vcs-action-state";
@@ -306,6 +314,59 @@ export function ThreadRouteScreen() {
       Option.getOrNull,
     );
 
+  const isCompleted = selectedThreadDetail.doneAt !== null;
+  const goal = selectedThreadDetail.goal;
+  // Long-press on the title: everything about the conversation itself, as
+  // opposed to the git and terminal controls in the toolbar below.
+  const openThreadActions = () => {
+    const editGoal = () =>
+      Alert.prompt(
+        "Goal",
+        "What does finished look like for this conversation?",
+        (text) => void commands.onSetThreadGoal(text),
+        "plain-text",
+        goal ?? "",
+      );
+    const rename = () =>
+      Alert.prompt(
+        "Rename conversation",
+        undefined,
+        (text) => void commands.onRenameThread(text),
+        "plain-text",
+        selectedThreadDetail.title,
+      );
+    if (Platform.OS !== "ios") {
+      // Android has no text prompt, so the goal is shown but edited on desktop.
+      Alert.alert(selectedThreadDetail.title, goal ? `Goal: ${goal}` : "No goal yet", [
+        {
+          text: isCompleted ? "Reopen" : "Mark completed",
+          onPress: () => void commands.onSetThreadCompleted(!isCompleted),
+        },
+        { text: "Cancel", style: "cancel" },
+      ]);
+      return;
+    }
+    const options = [
+      isCompleted ? "Reopen" : "Mark completed",
+      goal ? "Edit goal" : "Set goal",
+      "Rename",
+      "Cancel",
+    ];
+    ActionSheetIOS.showActionSheetWithOptions(
+      {
+        title: selectedThreadDetail.title,
+        message: goal ? `Goal: ${goal}` : "No goal yet",
+        options,
+        cancelButtonIndex: options.length - 1,
+      },
+      (index) => {
+        if (index === 0) void commands.onSetThreadCompleted(!isCompleted);
+        else if (index === 1) editGoal();
+        else if (index === 2) rename();
+      },
+    );
+  };
+
   const headerSubtitle = [
     selectedThreadProject?.title ?? null,
     selectedEnvironmentConnection?.environmentLabel ?? null,
@@ -326,9 +387,7 @@ export function ThreadRouteScreen() {
           headerTitle: () => (
             <Pressable
               style={{ alignItems: "center", maxWidth: 200 }}
-              onLongPress={() => {
-                // TODO: trigger rename modal
-              }}
+              onLongPress={openThreadActions}
             >
               <RNText
                 numberOfLines={1}

@@ -208,6 +208,7 @@ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { ChatHeader } from "./chat/ChatHeader";
+import { ThreadGoalBar } from "./chat/ThreadGoalBar";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import { type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { NoActiveThreadState } from "./NoActiveThreadState";
@@ -6060,6 +6061,7 @@ function ChatViewContent(props: ChatViewProps) {
             error={activeThread.error}
             onDismiss={() => setThreadError(activeThread.id, null)}
           />
+          {routeKind !== "draft" ? <ThreadGoalBar threadRef={routeThreadRef} /> : null}
           {/* Main content area with optional plan sidebar */}
           <div className="flex min-h-0 min-w-0 flex-1">
             {/* Chat column */}

@@ -31,6 +31,32 @@ export default function HomeRouteScreen() {
   const { savedConnectionsById } = useRemoteEnvironmentState();
   const router = useRouter();
   const [searchQuery, setSearchQuery] = useState("");
+  const [hideCompleted, setHideCompleted] = useState(true);
+  const [selectedTagsByProject, setSelectedTagsByProject] = useState<
+    Readonly<Record<string, ReadonlyArray<string>>>
+  >({});
+  const taggedProjects = useMemo(
+    () =>
+      projects
+        .filter((project) => project.threadTags.length > 0)
+        .map((project) => ({
+          key: scopedProjectKey(project.environmentId, project.id),
+          title: project.title,
+          tags: project.threadTags,
+        })),
+    [projects],
+  );
+  const hasTagSelection = Object.values(selectedTagsByProject).some((tags) => tags.length > 0);
+  const toggleTag = (projectKey: string, tag: string) =>
+    setSelectedTagsByProject((current) => {
+      const selected = current[projectKey] ?? [];
+      return {
+        ...current,
+        [projectKey]: selected.includes(tag)
+          ? selected.filter((entry) => entry !== tag)
+          : [...selected, tag],
+      };
+    });
 
   const iconColor = useThemeColor("--color-icon");
   const mutedColor = useThemeColor("--color-foreground-muted");
@@ -95,6 +121,47 @@ export default function HomeRouteScreen() {
       </Stack.Toolbar>
 
       <Stack.Toolbar placement="right">
+        <Stack.Toolbar.Menu
+          icon={
+            hasTagSelection
+              ? "line.3.horizontal.decrease.circle.fill"
+              : "line.3.horizontal.decrease.circle"
+          }
+          title="Filter conversations"
+          separateBackground
+        >
+          <Stack.Toolbar.MenuAction
+            isOn={hideCompleted}
+            onPress={() => setHideCompleted((current) => !current)}
+            unstable_keepPresented
+          >
+            <Stack.Toolbar.Label>Hide completed</Stack.Toolbar.Label>
+          </Stack.Toolbar.MenuAction>
+          {taggedProjects.map((project) => (
+            <Stack.Toolbar.Menu
+              key={project.key}
+              inline
+              title={taggedProjects.length > 1 ? `Tags · ${project.title}` : "Tags"}
+            >
+              {project.tags.map((tag) => (
+                <Stack.Toolbar.MenuAction
+                  key={tag.name}
+                  isOn={(selectedTagsByProject[project.key] ?? []).includes(tag.name)}
+                  onPress={() => toggleTag(project.key, tag.name)}
+                  subtitle={tag.description || undefined}
+                  unstable_keepPresented
+                >
+                  <Stack.Toolbar.Label>{tag.name}</Stack.Toolbar.Label>
+                </Stack.Toolbar.MenuAction>
+              ))}
+            </Stack.Toolbar.Menu>
+          ))}
+          {hasTagSelection ? (
+            <Stack.Toolbar.MenuAction onPress={() => setSelectedTagsByProject({})}>
+              <Stack.Toolbar.Label>Clear tag filters</Stack.Toolbar.Label>
+            </Stack.Toolbar.MenuAction>
+          ) : null}
+        </Stack.Toolbar.Menu>
         <Stack.Toolbar.Button
           icon="gearshape"
           onPress={() => router.push("/settings")}
@@ -119,6 +186,8 @@ export default function HomeRouteScreen() {
         catalogState={catalogState}
         savedConnectionsById={savedConnectionsById}
         searchQuery={searchQuery}
+        hideCompleted={hideCompleted}
+        selectedTagsByProject={selectedTagsByProject}
         orchestratorProjectKeys={orchestratorProjectKeys}
         onAddConnection={() => router.push("/connections/new")}
         onSelectThread={(thread) => {

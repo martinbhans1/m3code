@@ -517,7 +517,9 @@ it.effect("tags only from the vocabulary, and refuses a spelling variant of an e
       // A name that is not in the vocabulary is refused, with the vocabulary named.
       const unknown = yield* callTool("set_tags", { tags: ["support"] });
       expect(unknown.isError).toBe(true);
-      expect(JSON.stringify(unknown.content)).toContain("tickets");
+      expect(unknown.content).toEqual([
+        expect.objectContaining({ text: expect.stringContaining("Existing tags: tickets") }),
+      ]);
 
       // "Ticket" is the same tag as "tickets", so it may not be created...
       const variant = yield* callTool("set_tags", {

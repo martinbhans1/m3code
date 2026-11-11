@@ -7,6 +7,8 @@ import {
   type RuntimeMode,
 } from "@t3tools/contracts";
 
+import { THREAD_GOAL_MAX_LENGTH } from "@t3tools/shared/threadTags";
+
 import { uuidv4 } from "../lib/uuid";
 import { environmentRuntimeManager } from "./use-environment-runtime";
 import { getEnvironmentClient } from "./environment-session-registry";
@@ -176,8 +178,44 @@ export function useSelectedThreadCommands(input: {
     [selectedThread],
   );
 
+  /** Mark the conversation completed (hidden from the list) or reopen it. */
+  const onSetThreadCompleted = useCallback(
+    async (completed: boolean) => {
+      if (!selectedThread) return;
+      const client = getEnvironmentClient(selectedThread.environmentId);
+      if (!client) return;
+      await client.orchestration.dispatchCommand({
+        type: completed ? "thread.mark-done" : "thread.unmark-done",
+        commandId: CommandId.make(uuidv4()),
+        threadId: selectedThread.id,
+      });
+    },
+    [selectedThread],
+  );
+
+  /** The user's edit of the conversation's goal; an empty string clears it. */
+  const onSetThreadGoal = useCallback(
+    async (goal: string) => {
+      if (!selectedThread) return;
+      const client = getEnvironmentClient(selectedThread.environmentId);
+      if (!client) return;
+      const trimmed = goal.trim().slice(0, THREAD_GOAL_MAX_LENGTH);
+      const nextGoal = trimmed.length > 0 ? trimmed : null;
+      if (nextGoal === selectedThread.goal) return;
+      await client.orchestration.dispatchCommand({
+        type: "thread.meta.update",
+        commandId: CommandId.make(uuidv4()),
+        threadId: selectedThread.id,
+        goal: nextGoal,
+      });
+    },
+    [selectedThread],
+  );
+
   return {
     onRefresh,
+    onSetThreadCompleted,
+    onSetThreadGoal,
     onUpdateThreadModelSelection,
     onUpdateThreadRuntimeMode,
     onUpdateThreadInteractionMode,

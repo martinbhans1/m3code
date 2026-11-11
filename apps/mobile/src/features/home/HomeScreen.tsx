@@ -5,6 +5,7 @@ import type {
   VcsStatusState,
 } from "@t3tools/client-runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { threadMatchesListFilter } from "@t3tools/shared/threadTags";
 import { SymbolView } from "expo-symbols";
 import { useCallback, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, View } from "react-native";
@@ -31,6 +32,10 @@ interface HomeScreenProps {
   readonly catalogState: RemoteCatalogState;
   readonly savedConnectionsById: Readonly<Record<string, SavedRemoteConnection>>;
   readonly searchQuery: string;
+  /** Hide completed conversations (ignored while searching, so old work stays findable). */
+  readonly hideCompleted: boolean;
+  /** Scoped project key -> tags the list is narrowed to. */
+  readonly selectedTagsByProject: Readonly<Record<string, ReadonlyArray<string>>>;
   /** Scoped keys of each environment's orchestrator project. */
   readonly orchestratorProjectKeys: ReadonlySet<string>;
   readonly onAddConnection: () => void;
@@ -399,13 +404,27 @@ export function HomeScreen(props: HomeScreenProps) {
   /* Filter threads by search query */
   const filteredThreads = useMemo(() => {
     const q = props.searchQuery.trim().toLowerCase();
-    if (!q) return props.threads;
-    return props.threads.filter((t) => {
+    const listed = props.threads.filter((thread) =>
+      threadMatchesListFilter(thread, {
+        hideCompleted: props.hideCompleted && !q,
+        selectedTags:
+          props.selectedTagsByProject[scopedProjectKey(thread.environmentId, thread.projectId)] ??
+          [],
+      }),
+    );
+    if (!q) return listed;
+    return listed.filter((t) => {
       if (t.title.toLowerCase().includes(q)) return true;
       const key = scopedProjectKey(t.environmentId, t.projectId);
       return projectTitleByKey.get(key)?.toLowerCase().includes(q) ?? false;
     });
-  }, [props.threads, props.searchQuery, projectTitleByKey]);
+  }, [
+    props.threads,
+    props.searchQuery,
+    props.hideCompleted,
+    props.selectedTagsByProject,
+    projectTitleByKey,
+  ]);
 
   /* Search inside conversations on the server, alongside the instant title filter */
   const environmentIdsKey = useMemo(

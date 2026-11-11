@@ -80,3 +80,40 @@ export function countThreadTags(
   }
   return counts;
 }
+
+/**
+ * The sidebar / thread-list filter, shared by web and mobile so both platforms
+ * hide exactly the same conversations.
+ *
+ * - `hideCompleted` drops threads the user marked done.
+ * - `selectedTags` keeps only threads carrying at least one of them; empty
+ *   means "no tag filter".
+ */
+export interface ThreadListFilter {
+  readonly hideCompleted: boolean;
+  readonly selectedTags: ReadonlyArray<string>;
+}
+
+export function threadMatchesListFilter(
+  thread: { readonly doneAt: string | null; readonly tags: ReadonlyArray<string> },
+  filter: ThreadListFilter,
+): boolean {
+  if (filter.hideCompleted && thread.doneAt !== null) return false;
+  if (filter.selectedTags.length > 0) {
+    return thread.tags.some((tag) => filter.selectedTags.includes(tag));
+  }
+  return true;
+}
+
+/** One vocabulary for a group of projects that the UI shows as one (same repo, several machines). */
+export function mergeThreadTagVocabularies(
+  vocabularies: ReadonlyArray<ReadonlyArray<ProjectThreadTag>>,
+): ProjectThreadTag[] {
+  const byName = new Map<string, ProjectThreadTag>();
+  for (const vocabulary of vocabularies) {
+    for (const tag of vocabulary) {
+      if (!byName.has(tag.name)) byName.set(tag.name, tag);
+    }
+  }
+  return [...byName.values()].toSorted((left, right) => left.name.localeCompare(right.name));
+}

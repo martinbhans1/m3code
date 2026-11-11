@@ -1,5 +1,15 @@
 import { SidebarSearchButton } from "./SidebarSearchButton";
 import {
+  SidebarThreadFilterMenu,
+  type SidebarThreadFilterProject,
+} from "./SidebarThreadFilterMenu";
+import { useProjectThreadListFilter } from "../sidebarThreadFilter";
+import {
+  countThreadTags,
+  mergeThreadTagVocabularies,
+  threadMatchesListFilter,
+} from "@t3tools/shared/threadTags";
+import {
   ArchiveIcon,
   ArrowUpDownIcon,
   CheckCircle2Icon,
@@ -671,14 +681,14 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
               <TooltipTrigger
                 render={
                   <span
-                    aria-label="Marked done"
+                    aria-label="Completed"
                     className="inline-flex shrink-0 items-center justify-center text-emerald-600 dark:text-emerald-400/90"
                   >
                     <CheckCircle2Icon className="size-3" />
                   </span>
                 }
               />
-              <TooltipPopup side="top">Marked done</TooltipPopup>
+              <TooltipPopup side="top">Completed</TooltipPopup>
             </Tooltip>
           )}
           {/* The agent's own "done" is a hint, not the user's stamp: muted, and
@@ -1365,13 +1375,22 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     (state) => state.hiddenTagsByProject[project.projectKey] ?? EMPTY_HIDDEN_THREAD_TAGS,
   );
   const toggleThreadTag = useThreadTagFilterStore((state) => state.toggleTag);
+  const { hideCompleted, selectedTags: selectedThreadTags } = useProjectThreadListFilter(
+    project.projectKey,
+  );
   const { projectStatus, visibleProjectThreads, orderedProjectThreadKeys, threadTags } =
     useMemo(() => {
-      const unpinnedThreads = projectThreads.filter(
-        (thread) =>
+      // The open conversation stays listed whatever the filters say, so marking
+      // it completed (or filtering by a tag it lacks) never yanks it from view.
+      const listFilter = { hideCompleted, selectedTags: selectedThreadTags };
+      const unpinnedThreads = projectThreads.filter((thread) => {
+        const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+        return (
           thread.archivedAt === null &&
-          !pinnedThreadKeySet.has(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))),
-      );
+          !pinnedThreadKeySet.has(threadKey) &&
+          (threadKey === activeRouteThreadKey || threadMatchesListFilter(thread, listFilter))
+        );
+      });
       const threadTags = deriveThreadTags(unpinnedThreads.map((thread) => thread.title));
       // The open conversation stays listed even when its tag is switched off.
       const visibleProjectThreads = sortThreads(
@@ -1399,6 +1418,8 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     }, [
       activeRouteThreadKey,
       hiddenThreadTags,
+      hideCompleted,
+      selectedThreadTags,
       pinnedThreadKeySet,
       projectThreads,
       resolveProjectThreadStatus,
@@ -2223,7 +2244,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           { id: isPinned ? "unpin" : "pin", label: isPinned ? "Unpin thread" : "Pin thread" },
           {
             id: isDone ? "unmark-done" : "mark-done",
-            label: isDone ? "Reopen thread" : "Mark done",
+            label: isDone ? "Reopen thread" : "Mark completed",
           },
           // Only offered while the flag is up: it is how a stale "needs you"
           // goes away when the user handled it somewhere other than a reply.
@@ -3412,6 +3433,7 @@ interface SidebarProjectsContentProps {
   onPinnedThreadUnpin: (threadKey: string) => void;
   navigateToThread: (threadRef: ScopedThreadRef) => void;
   sortedProjects: readonly SidebarProjectSnapshot[];
+  threadFilterProjects: readonly SidebarThreadFilterProject[];
   revealedThreadCountByProject: ReadonlyMap<string, number>;
   activeRouteProjectKey: string | null;
   routeThreadKey: string | null;
@@ -3461,6 +3483,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
     onPinnedThreadUnpin,
     navigateToThread,
     sortedProjects,
+    threadFilterProjects,
     revealedThreadCountByProject,
     activeRouteProjectKey,
     routeThreadKey,
@@ -3555,6 +3578,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
             Projects
           </span>
           <div className="flex items-center gap-1">
+            <SidebarThreadFilterMenu projects={threadFilterProjects} />
             <ProjectSortMenu
               projectSortOrder={projectSortOrder}
               threadSortOrder={threadSortOrder}
@@ -3989,6 +4013,32 @@ export default function Sidebar() {
     sidebarProjects,
     visibleThreads,
   ]);
+  const threadFilterProjects = useMemo<SidebarThreadFilterProject[]>(() => {
+    const projectKeyByScopedRef = new Map<string, string>();
+    for (const project of sortedProjects) {
+      for (const ref of project.memberProjectRefs) {
+        projectKeyByScopedRef.set(scopedProjectKey(ref), project.projectKey);
+      }
+    }
+    const threadsByProjectKey = new Map<string, SidebarThreadSummary[]>();
+    for (const thread of visibleThreads) {
+      const projectKey = projectKeyByScopedRef.get(
+        scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
+      );
+      if (!projectKey) continue;
+      const bucket = threadsByProjectKey.get(projectKey);
+      if (bucket) bucket.push(thread);
+      else threadsByProjectKey.set(projectKey, [thread]);
+    }
+    return sortedProjects.map((project) => ({
+      projectKey: project.projectKey,
+      displayName: project.displayName,
+      vocabulary: mergeThreadTagVocabularies(
+        project.memberProjects.map((member) => member.threadTags),
+      ),
+      tagCounts: countThreadTags(threadsByProjectKey.get(project.projectKey) ?? []),
+    }));
+  }, [sortedProjects, visibleThreads]);
   const pinnedThreadGroups = useMemo<SidebarPinnedThreadGroup[]>(() => {
     const groupsByProjectKey = new Map<string, SidebarPinnedThreadGroup>();
     for (const threadKey of pinnedThreadKeys) {
@@ -4461,6 +4511,7 @@ export default function Sidebar() {
       ) : (
         <>
           <SidebarProjectsContent
+            threadFilterProjects={threadFilterProjects}
             showArm64IntelBuildWarning={showArm64IntelBuildWarning}
             arm64IntelBuildWarningDescription={arm64IntelBuildWarningDescription}
             desktopUpdateButtonAction={desktopUpdateButtonAction}

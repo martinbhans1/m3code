@@ -118,6 +118,18 @@ export function useThreadActions() {
     });
   }, []);
 
+  /** The user's edit of the conversation's goal. `null` clears it. */
+  const setThreadGoal = useCallback(async (target: ScopedThreadRef, goal: string | null) => {
+    const api = readEnvironmentApi(target.environmentId);
+    if (!api) return;
+    await api.orchestration.dispatchCommand({
+      type: "thread.meta.update",
+      commandId: newCommandId(),
+      threadId: target.threadId,
+      goal,
+    });
+  }, []);
+
   /** Dismiss the agent's "needs you" flag without replying to it. */
   const clearThreadAttention = useCallback(async (target: ScopedThreadRef) => {
     const api = readEnvironmentApi(target.environmentId);
@@ -320,6 +332,7 @@ export function useThreadActions() {
     unarchiveThread,
     setThreadPinned,
     setThreadDone,
+    setThreadGoal,
     clearThreadAttention,
     deleteThread,
     confirmAndDeleteThread,
