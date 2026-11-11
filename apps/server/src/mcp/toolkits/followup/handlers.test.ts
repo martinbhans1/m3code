@@ -551,8 +551,7 @@ it.effect("tags only from the vocabulary, and refuses a spelling variant of an e
       expect(dispatched[0]).toMatchObject({
         type: "project.meta.update",
         projectId,
-        threadTags: [
-          { name: "tickets", description: "Support tickets: list, detail, SLA" },
+        appendThreadTags: [
           { name: "opportunity-detail", description: "The single-opportunity page" },
         ],
       });

@@ -21,6 +21,8 @@ interface SidebarThreadFilterState {
   setHideCompleted: (hideCompleted: boolean) => void;
   toggleTag: (projectKey: string, tag: string) => void;
   clearTags: () => void;
+  /** Follow a rename or merge (`to` set) or a delete (`to` null) in the selection. */
+  remapTag: (projectKey: string, from: string, to: string | null) => void;
 }
 
 const EMPTY_TAGS: readonly string[] = [];
@@ -40,6 +42,14 @@ export const useSidebarThreadFilterStore = create<SidebarThreadFilterState>()(
           return { selectedTagsByProject: { ...state.selectedTagsByProject, [projectKey]: next } };
         }),
       clearTags: () => set({ selectedTagsByProject: {} }),
+      remapTag: (projectKey, from, to) =>
+        set((state) => {
+          const selected = state.selectedTagsByProject[projectKey];
+          if (!selected?.includes(from)) return state;
+          const next = selected.filter((tag) => tag !== from);
+          if (to !== null && !next.includes(to)) next.push(to);
+          return { selectedTagsByProject: { ...state.selectedTagsByProject, [projectKey]: next } };
+        }),
     }),
     {
       name: "m3code:sidebar-thread-filter:v1",

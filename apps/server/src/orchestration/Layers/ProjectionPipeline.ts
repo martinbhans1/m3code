@@ -473,19 +473,23 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
       "applyProjectsProjection",
     )(function* (event, _attachmentSideEffects) {
       switch (event.type) {
-        case "project.created":
+        case "project.created": {
+          const existingProject = yield* projectionProjectRepository.getById({
+            projectId: event.payload.projectId,
+          });
           yield* projectionProjectRepository.upsert({
             projectId: event.payload.projectId,
             title: event.payload.title,
             workspaceRoot: event.payload.workspaceRoot,
             defaultModelSelection: event.payload.defaultModelSelection,
             scripts: event.payload.scripts,
-            threadTags: [],
+            threadTags: Option.isSome(existingProject) ? existingProject.value.threadTags : [],
             createdAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
             deletedAt: null,
           });
           return;
+        }
 
         case "project.meta-updated": {
           const existingRow = yield* projectionProjectRepository.getById({

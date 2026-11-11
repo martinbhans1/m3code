@@ -16,4 +16,8 @@ describe("withThreadGoal", () => {
     expect(withThreadGoal("Hello", "   ")).toBe("Hello");
     expect(withThreadGoal(undefined, "A goal")).toBeUndefined();
   });
+
+  it("never appends to a slash command", () => {
+    expect(withThreadGoal("/compact", "A goal")).toBe("/compact");
+  });
 });

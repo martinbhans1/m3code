@@ -455,7 +455,7 @@ const handlers = {
           type: "project.meta.update",
           commandId: CommandId.make(`tag-vocabulary:${projectCommandUuid}`),
           projectId: shell.projectId,
-          threadTags: vocabulary,
+          appendThreadTags: vocabulary.filter((tag) => created.includes(tag.name)),
         });
       }
 

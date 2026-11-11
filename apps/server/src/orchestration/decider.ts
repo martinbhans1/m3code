@@ -7,6 +7,7 @@ import {
   type OrchestrationReadModel,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import { appendThreadTagEntries } from "@t3tools/shared/threadTags";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import type * as PlatformError from "effect/PlatformError";
@@ -142,7 +143,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "project.meta.update": {
-      yield* requireProject({
+      const project = yield* requireProject({
         readModel,
         command,
         projectId: command.projectId,
@@ -164,7 +165,14 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? { defaultModelSelection: command.defaultModelSelection }
             : {}),
           ...(command.scripts !== undefined ? { scripts: command.scripts } : {}),
-          ...(command.threadTags !== undefined ? { threadTags: command.threadTags } : {}),
+          ...(command.threadTags !== undefined || command.appendThreadTags !== undefined
+            ? {
+                threadTags: appendThreadTagEntries(
+                  command.threadTags ?? project.threadTags,
+                  command.appendThreadTags ?? [],
+                ),
+              }
+            : {}),
           updatedAt: occurredAt,
         },
       };

@@ -6061,7 +6061,9 @@ function ChatViewContent(props: ChatViewProps) {
             error={activeThread.error}
             onDismiss={() => setThreadError(activeThread.id, null)}
           />
-          {routeKind !== "draft" ? <ThreadGoalBar threadRef={routeThreadRef} /> : null}
+          {routeKind !== "draft" ? (
+            <ThreadGoalBar key={scopedThreadKey(routeThreadRef)} threadRef={routeThreadRef} />
+          ) : null}
           {/* Main content area with optional plan sidebar */}
           <div className="flex min-h-0 min-w-0 flex-1">
             {/* Chat column */}

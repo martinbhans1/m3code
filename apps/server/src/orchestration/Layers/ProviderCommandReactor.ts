@@ -78,7 +78,9 @@ export function withThreadGoal(
   goal: string | null | undefined,
 ): string | undefined {
   const trimmedGoal = goal?.trim();
-  if (!input || !trimmedGoal) return input;
+  // A slash command ("/compact", a custom command) takes its arguments from
+  // the rest of the line; a goal block appended there would become one.
+  if (!input || !trimmedGoal || input.trimStart().startsWith("/")) return input;
   return `${input}
 
 <conversation_goal>

@@ -70,6 +70,18 @@ export function canonicalizeThreadTags(
   return { tags, unknown };
 }
 
+/** Add vocabulary entries, skipping any that are a variant of one already there. */
+export function appendThreadTagEntries(
+  vocabulary: ReadonlyArray<ProjectThreadTag>,
+  additions: ReadonlyArray<ProjectThreadTag>,
+): ProjectThreadTag[] {
+  const next = [...vocabulary];
+  for (const entry of additions) {
+    if (!findMatchingThreadTag(next, entry.name)) next.push(entry);
+  }
+  return next;
+}
+
 /** Count how many live threads carry each tag, for the filter menu and tag manager. */
 export function countThreadTags(
   threads: ReadonlyArray<{ readonly tags: ReadonlyArray<string> }>,

@@ -706,6 +706,12 @@ const ProjectMetaUpdateCommand = Schema.Struct({
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
   threadTags: Schema.optional(Schema.Array(ProjectThreadTag)),
+  /**
+   * Add entries to the vocabulary without replacing it. Merged in the decider,
+   * which handles one command at a time, so two agents creating tags at once
+   * cannot overwrite each other the way two whole-list writes would.
+   */
+  appendThreadTags: Schema.optional(Schema.Array(ProjectThreadTag)),
 });
 
 const ProjectDeleteCommand = Schema.Struct({

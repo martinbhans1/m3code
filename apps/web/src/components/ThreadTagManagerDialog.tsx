@@ -1,9 +1,14 @@
 import type { ProjectThreadTag, ScopedProjectRef } from "@t3tools/contracts";
-import { planThreadTagEdit, type ThreadTagEdit } from "@t3tools/shared/threadTags";
+import {
+  normalizeThreadTagName,
+  planThreadTagEdit,
+  type ThreadTagEdit,
+} from "@t3tools/shared/threadTags";
 import { Trash2Icon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { readEnvironmentApi } from "../environmentApi";
+import { useSidebarThreadFilterStore } from "../sidebarThreadFilter";
 import { newCommandId } from "../lib/utils";
 import type { SidebarThreadSummary } from "../types";
 import { Button } from "./ui/button";
@@ -86,16 +91,32 @@ function ThreadTagRow({
 }) {
   const [name, setName] = useState(tag.name);
   const [description, setDescription] = useState(tag.description);
+  const [editingName, setEditingName] = useState(false);
+  const [editingDescription, setEditingDescription] = useState(false);
   const count = project.threads.filter((thread) => thread.tags.includes(tag.name)).length;
 
+  // Pick up changes made elsewhere (an agent, another machine) unless the user
+  // is typing in that field, so a blur never writes stale text back.
+  useEffect(() => {
+    if (!editingName) setName(tag.name);
+  }, [editingName, tag.name]);
+  useEffect(() => {
+    if (!editingDescription) setDescription(tag.description);
+  }, [editingDescription, tag.description]);
+
   const commitName = () => {
-    if (name.trim() === tag.name || name.trim().length === 0) {
+    setEditingName(false);
+    const normalized = normalizeThreadTagName(name);
+    if (normalized === tag.name || normalized.length === 0) {
       setName(tag.name);
       return;
     }
-    void applyThreadTagEdit(project, { kind: "rename", from: tag.name, to: name });
+    void applyThreadTagEdit(project, { kind: "rename", from: tag.name, to: name }).then((ok) => {
+      if (!ok) setName(tag.name);
+    });
   };
   const commitDescription = () => {
+    setEditingDescription(false);
     if (description.trim() === tag.description) return;
     void applyThreadTagEdit(project, { kind: "describe", name: tag.name, description });
   };
@@ -106,6 +127,7 @@ function ThreadTagRow({
         aria-label={`Name of tag ${tag.name}`}
         size="sm"
         value={name}
+        onFocus={() => setEditingName(true)}
         onChange={(event) => setName(event.target.value)}
         onBlur={commitName}
         onKeyDown={(event) => {
@@ -117,6 +139,7 @@ function ThreadTagRow({
         size="sm"
         value={description}
         placeholder="What belongs under this tag"
+        onFocus={() => setEditingDescription(true)}
         onChange={(event) => setDescription(event.target.value)}
         onBlur={commitDescription}
         onKeyDown={(event) => {
@@ -144,11 +167,14 @@ function ThreadTagRow({
   );
 }
 
-async function applyThreadTagEdit(project: ThreadTagManagerProject, edit: ThreadTagEdit) {
+async function applyThreadTagEdit(
+  project: ThreadTagManagerProject,
+  edit: ThreadTagEdit,
+): Promise<boolean> {
   const plan = planThreadTagEdit(project.vocabulary, project.threads, edit);
   if ("error" in plan) {
     toastManager.add({ type: "error", title: plan.error });
-    return;
+    return false;
   }
   try {
     // Every machine's copy gets the same vocabulary, so the tag lists stop
@@ -175,14 +201,24 @@ async function applyThreadTagEdit(project: ThreadTagManagerProject, edit: Thread
         tags,
       });
     }
+    // A filter on the old name would otherwise leave the list empty with no
+    // checkbox left to untick.
+    if (edit.kind !== "describe") {
+      const from = edit.kind === "rename" ? edit.from : edit.name;
+      const to =
+        edit.kind === "rename" ? (plan.mergedInto ?? normalizeThreadTagName(edit.to)) : null;
+      useSidebarThreadFilterStore.getState().remapTag(project.projectKey, from, to);
+    }
     if (plan.mergedInto) {
       toastManager.add({ type: "success", title: `Merged into "${plan.mergedInto}"` });
     }
+    return true;
   } catch (error) {
     toastManager.add({
       type: "error",
       title: "Could not update the tag",
       description: error instanceof Error ? error.message : String(error),
     });
+    return false;
   }
 }
